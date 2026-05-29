@@ -52,27 +52,22 @@ def test_bug_001_cli_flag_threads_into_create_app() -> None:
 
     from dash_server import __main__ as entry
 
-    parser = _build_parser(entry)
+    parser = entry.build_parser()
     args = parser.parse_args(["--instance-path", "/tmp/x", "--port", "5099"])
     assert args.instance_path == "/tmp/x"
     assert args.port == 5099
 
 
-def _build_parser(entry_module):  # type: ignore[no-untyped-def]
-    """Reconstruct the argparse parser from `dash_server.__main__.main` for inspection.
+def test_bug_001_cli_accepts_port_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dash_server import __main__ as entry
 
-    Done by reading the source — we can't introspect a parser that lives inside a
-    function. This keeps the test resilient to other CLI flags changing.
-    """
+    monkeypatch.setenv("DASH_SERVER_HOST", "0.0.0.0")
+    monkeypatch.setenv("DASH_SERVER_PORT", "5200")
 
-    import argparse
+    args = entry.build_parser().parse_args([])
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=5000)
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--instance-path", default=None)
-    return parser
+    assert args.host == "0.0.0.0"
+    assert args.port == 5200
 
 
 # -- BUG-016: idempotent GitOps backfill -------------------------------------

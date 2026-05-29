@@ -298,7 +298,7 @@ It only needs to know the profile name, for example:
 Then it can generate a dashboard against that profile:
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -340,7 +340,7 @@ dash-server
 Then create the profile through MCP:
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -374,7 +374,7 @@ This is useful when you want the server to manage the local secret file for you.
 Create the profile through MCP:
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -411,7 +411,7 @@ export EXA_PASSWORD='your-secret-password'
 ```
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -438,7 +438,7 @@ curl -s http://127.0.0.1:5000/mcp \
 ### 2. Validate the connection
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -462,7 +462,7 @@ If this passes, the server was able to:
 ### 3. Generate a dashboard scaffold
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -561,7 +561,7 @@ That keeps:
 ### Read all profiles through MCP
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -576,7 +576,7 @@ curl -s http://127.0.0.1:5000/mcp \
 ### Read one profile through MCP
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",

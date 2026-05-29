@@ -50,11 +50,22 @@ DASH_SERVER_APP_WORKER_START_TIMEOUT_SECONDS    # default 30
 DASH_SERVER_APP_WORKER_IDLE_STOP_SECONDS        # default 600; 0 disables idle-stop
 DASH_SERVER_APP_WORKER_MAX_RESTARTS_PER_5_MINUTES  # default 5
 DASH_SERVER_APP_WORKER_HOST                     # default 127.0.0.1
+DASH_SERVER_APP_WORKER_PORT_RANGE               # optional START-END; default unset uses OS ephemeral ports
 
 # Forkserver baseline (memory-sharing optimization)
 DASH_SERVER_APP_WORKER_PREWARM_POOL_SIZE        # default 1; 0 disables forkserver (spawn-only)
 DASH_SERVER_APP_WORKER_PREWARM_PACKAGES         # comma-list; default "dash,plotly,pyexasol,dash_server_runtime"
 ```
+
+The main `dash-server` control-plane listener is configured separately with
+`DASH_SERVER_HOST`, `DASH_SERVER_PORT`, or the CLI flags `--host` and `--port`.
+It defaults to `127.0.0.1:5100`.
+
+On macOS Monterey 12 and later, AirPlay Receiver can bind ports `5000` and
+`7000`. `dash-server` defaults to `5100` instead of Flask's classic `5000` to
+avoid that local macOS collision. Keep `5000` and `7000` out of
+`DASH_SERVER_APP_WORKER_PORT_RANGE` if you set a worker range on Macs where
+AirPlay Receiver is enabled.
 
 ## How to choose
 

@@ -48,6 +48,46 @@ Hosted mode also requires an auth provider:
 - `DASH_SERVER_AUTH_PROVIDER=trusted_proxy`
 - or `DASH_SERVER_AUTH_PROVIDER=oidc`
 
+## Network and Port Settings
+
+The control-plane HTTP listener defaults to `127.0.0.1:5100`.
+
+Use CLI flags for ad hoc runs:
+
+```bash
+dash-server --host 127.0.0.1 --port 5200
+```
+
+Use environment variables for repeatable service definitions:
+
+```bash
+DASH_SERVER_HOST=127.0.0.1
+DASH_SERVER_PORT=5200
+```
+
+When you change the control-plane port, update every browser, curl, reverse
+proxy, and MCP client URL. For example, with `DASH_SERVER_PORT=5200`, the local
+MCP endpoint is `http://127.0.0.1:5200/mcp`.
+
+On macOS Monterey 12 and later, AirPlay Receiver can bind ports `5000` and
+`7000` through system ControlCenter / AirPlay helper processes. `dash-server`
+defaults to `5100` instead of Flask's classic `5000` to avoid that local macOS
+collision. If you explicitly run `dash-server --port 5000` and startup fails,
+either disable AirPlay Receiver in macOS sharing settings or choose another
+port.
+
+When `DASH_SERVER_APP_RUNTIME_MODE=isolated`, hosted app workers also bind
+loopback HTTP ports behind the control-plane proxy. By default the OS chooses
+free ephemeral worker ports. To restrict those worker ports for firewall rules,
+test harnesses, or local conflict avoidance, set an inclusive range:
+
+```bash
+DASH_SERVER_APP_WORKER_PORT_RANGE=5500-5599
+```
+
+Do not include `5000` or `7000` in `DASH_SERVER_APP_WORKER_PORT_RANGE` on Macs
+where AirPlay Receiver is enabled.
+
 ## Minimum Hosted Configuration
 
 Example hosted baseline:

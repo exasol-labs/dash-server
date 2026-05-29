@@ -212,13 +212,13 @@ dash-server
 
 Default local URL:
 
-- `http://127.0.0.1:5000`
+- `http://127.0.0.1:5100`
 
 ### First check
 
 Open:
 
-- `http://127.0.0.1:5000/apps/demo`
+- `http://127.0.0.1:5100/apps/demo`
 
 That verifies the hosted Dash runtime is up.
 
@@ -227,7 +227,7 @@ That verifies the hosted Dash runtime is up.
 If you used the startup bootstrap env vars above, `analytics-prod` should already exist without any MCP profile-creation step:
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -245,7 +245,7 @@ From there, your agent can immediately create dashboards against `analytics-prod
 
 `dash-server` exposes MCP over Streamable HTTP at:
 
-- `http://127.0.0.1:5000/mcp`
+- `http://127.0.0.1:5100/mcp`
 
 For local Claude Desktop, you can bridge that HTTP endpoint with `mcp-remote`:
 
@@ -254,7 +254,7 @@ For local Claude Desktop, you can bridge that HTTP endpoint with `mcp-remote`:
   "mcpServers": {
     "dash-server": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:5000/mcp"]
+      "args": ["mcp-remote", "http://localhost:5100/mcp"]
     }
   }
 }
@@ -283,6 +283,7 @@ For the deeper design and code-level walkthrough, see [docs/architecture.md](doc
 - Getting started: [docs/getting-started.md](docs/getting-started.md)
 - MCP client setup: [docs/mcp-clients.md](docs/mcp-clients.md)
 - MCP tools and resources: [docs/mcp-reference.md](docs/mcp-reference.md)
+- Hosted/admin guide: [docs/hosted-mode.md](docs/hosted-mode.md)
 - Exasol workflow: [docs/exasol.md](docs/exasol.md)
 - Architecture: [docs/architecture.md](docs/architecture.md)
 - Runtime modes (dependency + process isolation): [docs/runtime-modes.md](docs/runtime-modes.md)

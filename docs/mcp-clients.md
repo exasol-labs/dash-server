@@ -2,13 +2,24 @@
 
 `dash-server` exposes MCP over Streamable HTTP at:
 
-- `http://127.0.0.1:5000/mcp`
+- `http://127.0.0.1:5100/mcp`
+
+If you start `dash-server` on a different control-plane port, update every MCP
+client URL to match. For example, with `DASH_SERVER_PORT=5200` or
+`dash-server --port 5200`, the local MCP endpoint is
+`http://127.0.0.1:5200/mcp`.
+
+On macOS Monterey 12 and later, AirPlay Receiver can occupy ports `5000` and
+`7000`. `dash-server` defaults to `5100` instead of Flask's classic `5000` to
+avoid that local macOS collision. If you explicitly use port `5000` and it is
+already in use, move the control-plane listener with `DASH_SERVER_PORT` or
+`--port`.
 
 This document covers the practical setup paths for ChatGPT and Claude.
 
 ## ChatGPT
 
-For local testing, `curl` against `http://127.0.0.1:5000/mcp` is enough.
+For local testing, `curl` against `http://127.0.0.1:5100/mcp` is enough.
 
 For ChatGPT itself, you will usually need a reachable HTTPS endpoint, not a localhost address. In practice that means either:
 
@@ -44,14 +55,14 @@ Claude supports remote MCP-style integrations. For `dash-server`, there are two 
 
 ### Claude Desktop on localhost
 
-If `dash-server` is running locally at `http://127.0.0.1:5000`, you can configure Claude Desktop like this:
+If `dash-server` is running locally at `http://127.0.0.1:5100`, you can configure Claude Desktop like this:
 
 ```json
 {
   "mcpServers": {
     "dash-server": {
       "command": "npx",
-      "args": ["mcp-remote", "http://localhost:5000/mcp"]
+      "args": ["mcp-remote", "http://localhost:5100/mcp"]
     }
   }
 }

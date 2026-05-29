@@ -79,6 +79,8 @@ def _validate_hosted_mode_config(app: Flask) -> None:
 def _validate_runtime_isolation_config(app: Flask) -> None:
     """Validate the runtime-isolation flags (see persona-study-remediation-plan)."""
 
+    _validate_port_config(app)
+
     dep_iso = str(app.config.get("APP_DEPENDENCY_ISOLATION", "shared")).strip().lower()
     runtime_mode = str(app.config.get("APP_RUNTIME_MODE", "in_process")).strip().lower()
     if dep_iso not in {"shared", "per_app"}:
@@ -112,6 +114,42 @@ def _validate_runtime_isolation_config(app: Flask) -> None:
                 dep_iso,
                 runtime_mode,
             )
+
+
+def _validate_port_config(app: Flask) -> None:
+    control_plane_port = _coerce_port(
+        app.config.get("DASH_SERVER_PORT", 5100),
+        key="DASH_SERVER_PORT",
+    )
+    app.config["DASH_SERVER_PORT"] = control_plane_port
+
+    worker_range = app.config.get("APP_WORKER_PORT_RANGE")
+    if worker_range is None or str(worker_range).strip() == "":
+        app.config["APP_WORKER_PORT_RANGE"] = None
+        return
+    start, end = _parse_port_range(str(worker_range), key="DASH_SERVER_APP_WORKER_PORT_RANGE")
+    app.config["APP_WORKER_PORT_RANGE"] = f"{start}-{end}"
+
+
+def _coerce_port(value: Any, *, key: str) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{key} must be an integer port.") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f"{key} must be between 1 and 65535.")
+    return port
+
+
+def _parse_port_range(value: str, *, key: str) -> tuple[int, int]:
+    if "-" not in value:
+        raise RuntimeError(f"{key} must use START-END syntax.")
+    start_text, end_text = (part.strip() for part in value.split("-", 1))
+    start = _coerce_port(start_text, key=key)
+    end = _coerce_port(end_text, key=key)
+    if start > end:
+        raise RuntimeError(f"{key} start must be less than or equal to end.")
+    return start, end
 
 
 def _validate_hosted_auth_provider_config(app: Flask) -> None:
@@ -358,6 +396,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             start_timeout_seconds=int(app.config.get("APP_WORKER_START_TIMEOUT_SECONDS", 30)),
             idle_stop_seconds=int(app.config.get("APP_WORKER_IDLE_STOP_SECONDS", 600)),
             host=str(app.config.get("APP_WORKER_HOST", "127.0.0.1")),
+            port_range=app.config.get("APP_WORKER_PORT_RANGE"),
             diagnostics_service=diagnostics_service,
             enable_forkserver=prewarm_pool_size > 0,
             prewarm_packages=prewarm_packages,

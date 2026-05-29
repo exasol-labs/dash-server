@@ -1105,6 +1105,19 @@ def test_mcp_resources_list_includes_repo_status(client):
     assert latest_build_diff["title"] == "demo latest-build-to-draft diff"
 
 
+def test_runtime_status_reports_configured_port_settings(client):
+    runtime_status = _resource_json(
+        client,
+        "dash://runtime/status",
+        request_id=131,
+    )
+
+    assert runtime_status["control_plane_host"] == "127.0.0.1"
+    assert runtime_status["control_plane_port"] == 5100
+    assert runtime_status["worker_host"] == "127.0.0.1"
+    assert runtime_status["worker_port_range"] is None
+
+
 def test_repo_status_reports_dirty_worktrees_after_draft_edit(client):
     patch_response = _call_mcp(
         client,

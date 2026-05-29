@@ -7,6 +7,7 @@ The worker emits a single ``{"event":"ready","port":N}`` line on stdout (flushed
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import json
 import os
 import traceback
@@ -22,8 +23,7 @@ from ._runtime_services import (
 
 def serve(args: argparse.Namespace) -> int:
     import signal
-    import socket
-    from wsgiref.simple_server import make_server, WSGIRequestHandler
+    from wsgiref.simple_server import WSGIRequestHandler
 
     try:
         manifest_data: dict[str, Any]
@@ -165,17 +165,26 @@ def serve(args: argparse.Namespace) -> int:
 
     listen_host = args.listen_host or "127.0.0.1"
     listen_port = int(args.listen_port or 0)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((listen_host, listen_port))
-    bound_host, bound_port = sock.getsockname()
-    sock.close()
 
     class _QuietHandler(WSGIRequestHandler):
         def log_message(self, format, *args):
             return  # Worker stdout is reserved for structured event lines.
 
-    httpd = make_server(bound_host, bound_port, server.wsgi_app, handler_class=_QuietHandler)
+    try:
+        httpd = _make_http_server(
+            listen_host,
+            listen_port,
+            args.listen_port_range,
+            server.wsgi_app,
+            _QuietHandler,
+        )
+    except ValueError as exc:
+        print(json.dumps({"event": "failed", "phase": "port_config", "error": str(exc)}), flush=True)
+        return 1
+    except OSError as exc:
+        print(json.dumps({"event": "failed", "phase": "bind", "error": str(exc)}), flush=True)
+        return 1
+    bound_host, bound_port = httpd.server_address[:2]
 
     def _terminate(_signum, _frame):
         httpd.shutdown()
@@ -205,3 +214,51 @@ def serve(args: argparse.Namespace) -> int:
     finally:
         httpd.server_close()
     return 0
+
+
+def _make_http_server(
+    listen_host: str,
+    listen_port: int,
+    listen_port_range: str | None,
+    wsgi_app: Callable[..., Any],
+    handler_class: type[Any],
+) -> Any:
+    from wsgiref.simple_server import make_server
+
+    if listen_port > 0:
+        return make_server(listen_host, listen_port, wsgi_app, handler_class=handler_class)
+
+    parsed_range = _parse_port_range(listen_port_range)
+    if parsed_range is None:
+        return make_server(listen_host, 0, wsgi_app, handler_class=handler_class)
+
+    start, end = parsed_range
+    last_error: OSError | None = None
+    for candidate in range(start, end + 1):
+        try:
+            return make_server(listen_host, candidate, wsgi_app, handler_class=handler_class)
+        except OSError as exc:
+            last_error = exc
+    raise OSError(
+        f"no free worker port in configured range {start}-{end}"
+        + (f": {last_error}" if last_error else "")
+    )
+
+
+def _parse_port_range(value: str | None) -> tuple[int, int] | None:
+    if value is None or not str(value).strip():
+        return None
+    raw = str(value).strip()
+    if "-" not in raw:
+        raise ValueError("worker port range must use START-END syntax")
+    start_text, end_text = (part.strip() for part in raw.split("-", 1))
+    try:
+        start = int(start_text)
+        end = int(end_text)
+    except ValueError as exc:
+        raise ValueError("worker port range bounds must be integers") from exc
+    if not 1 <= start <= 65535 or not 1 <= end <= 65535:
+        raise ValueError("worker port range bounds must be between 1 and 65535")
+    if start > end:
+        raise ValueError("worker port range start must be less than or equal to end")
+    return start, end

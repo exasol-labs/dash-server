@@ -77,7 +77,7 @@ _17 server-wide resources plus the per-app pattern below ({{app}} matches any re
 - **`dash://repo/status`** — Read-only status for the local GitOps repository, including draft worktrees and current runtime-isolation settings.
 - **`dash://runtime/environments`** — Inventory of materialized per-app envs, disk usage, and wheel-cache size (per_app dependency mode).
 - **`dash://runtime/logs/runtime.events`** — Server-wide audit log of operational decisions: env_evicted, wheel_cache_pruned, wheel_cache_gc_skipped, unsafe_override_warning.
-- **`dash://runtime/status`** — Current APP_DEPENDENCY_ISOLATION and APP_RUNTIME_MODE settings plus the cache and worker config knobs.
+- **`dash://runtime/status`** — Current control-plane host/port, APP_DEPENDENCY_ISOLATION, APP_RUNTIME_MODE, cache roots, and worker config knobs.
 - **`dash://runtime/workers`** — Snapshot of out-of-process workers, baselines, RSS totals, and p50 cold-start time (isolated runtime mode).
 
 ### Per-app (`dash://apps/{app}/…`)
@@ -106,7 +106,7 @@ _17 server-wide resources plus the per-app pattern below ({{app}} matches any re
 ## Example: Create an App
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -142,7 +142,7 @@ curl -s http://127.0.0.1:5000/mcp \
 Break the draft:
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -163,7 +163,7 @@ curl -s http://127.0.0.1:5000/mcp \
 Collect diagnostics:
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -181,7 +181,7 @@ curl -s http://127.0.0.1:5000/mcp \
 Inspect recent errors:
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -198,7 +198,7 @@ curl -s http://127.0.0.1:5000/mcp \
 Use `force_clean` only when you need to bypass cached dependency-install state. It does not force a new source snapshot or reset local module import isolation.
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",

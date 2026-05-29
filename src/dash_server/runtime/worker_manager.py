@@ -183,6 +183,7 @@ class AppWorkerManager:
         idle_stop_seconds: int = 600,
         idle_sweep_interval_seconds: float = 30.0,
         host: str = "127.0.0.1",
+        port_range: str | None = None,
         diagnostics_service: Any | None = None,
         enable_forkserver: bool = False,
         prewarm_packages: tuple[str, ...] = ("dash", "flask", "dash_server_runtime"),
@@ -205,6 +206,7 @@ class AppWorkerManager:
         self.idle_stop_seconds = idle_stop_seconds
         self.idle_sweep_interval_seconds = idle_sweep_interval_seconds
         self.host = host
+        self.port_range = port_range
         self.diagnostics_service = diagnostics_service
         # Phase 3.5c: when enabled, the manager keeps one long-lived "baseline" process
         # per python_executable that has prewarmed Dash/Flask/dash_server_runtime, and
@@ -304,6 +306,8 @@ class AppWorkerManager:
                 "--listen-port",
                 "0",
             ]
+            if self.port_range:
+                cmd += ["--listen-port-range", self.port_range]
             if self.gitops_repo_path:
                 cmd += ["--gitops-repo-path", self.gitops_repo_path]
             if self.exasol_secrets_root:
@@ -930,6 +934,7 @@ class AppWorkerManager:
             "revision_number": revision_number,
             "listen_host": self.host,
             "listen_port": 0,
+            "listen_port_range": self.port_range,
             "gitops_repo_path": self.gitops_repo_path,
             "exasol_secrets_root": self.exasol_secrets_root,
             "diagnostics_root": self.diagnostics_root,

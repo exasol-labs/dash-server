@@ -41,6 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--revision-number", type=int, default=0)
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=0)
+    parser.add_argument(
+        "--listen-port-range",
+        default=None,
+        help="Optional inclusive worker port range as START-END. Ignored when --listen-port is non-zero.",
+    )
     parser.add_argument("--gitops-repo-path", default=None)
     parser.add_argument("--exasol-secrets-root", default=None)
     parser.add_argument("--diagnostics-root", default=None)

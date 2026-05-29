@@ -68,6 +68,12 @@ def _wait_port_open(host: str, port: int, timeout: float = 5.0) -> bool:
     return False
 
 
+def _reserve_then_release_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def test_worker_manager_spawns_worker_and_emits_ready(tmp_path):
     """Spawn a worker, read its ready event, hit its loopback port."""
 
@@ -97,6 +103,32 @@ def test_worker_manager_spawns_worker_and_emits_ready(tmp_path):
         payload = json.loads(persisted.read_text())
         assert payload["port"] == record.port
         assert payload["pid"] == record.pid
+    finally:
+        manager.stop_all()
+
+
+def test_worker_manager_uses_configured_port_range(tmp_path):
+    app_dir = _write_tiny_app(tmp_path)
+    port = _reserve_then_release_port()
+    if port > 65515:
+        start, end = port - 20, port
+    else:
+        start, end = port, port + 20
+    manager = AppWorkerManager(
+        workers_root=str(tmp_path / "workers"),
+        port_range=f"{start}-{end}",
+    )
+    try:
+        record = manager.start(
+            app_name="tiny",
+            revision_number=1,
+            mount_path="/apps/tiny",
+            app_source=app_dir / "app.py",
+            manifest={"name": "tiny", "title": "Tiny", "route": "/apps/tiny"},
+        )
+
+        assert start <= record.port <= end
+        assert _wait_port_open(record.host, record.port, timeout=5.0)
     finally:
         manager.stop_all()
 
@@ -390,6 +422,51 @@ def test_app_factory_creates_worker_manager_only_in_isolated_mode(tmp_path, monk
     )
     assert app2.extensions.get("worker_manager") is not None
     assert app2.extensions["runtime_service"].runtime_mode == "isolated"
+
+
+def test_app_factory_passes_worker_port_range_to_manager(tmp_path):
+    from dash_server.app_factory import create_app
+
+    app = create_app(
+        {
+            "TESTING": True,
+            "REGISTRY_DB_PATH": str(tmp_path / "registry.sqlite3"),
+            "ARTIFACTS_ROOT": str(tmp_path / "artifacts"),
+            "WORKSPACES_ROOT": str(tmp_path / "workspaces"),
+            "DIAGNOSTICS_ROOT": str(tmp_path / "diagnostics"),
+            "DEPENDENCY_STATE_ROOT": str(tmp_path / "dependency_state"),
+            "GITOPS_REPO_PATH": str(tmp_path / "gitops-repo"),
+            "EXASOL_SECRETS_ROOT": str(tmp_path / "exasol-secrets"),
+            "AUTO_INSTALL_DEPENDENCIES": False,
+            "APP_RUNTIME_MODE": "isolated",
+            "APP_WORKER_PORT_RANGE": "5500-5599",
+        }
+    )
+
+    manager = app.extensions["worker_manager"]
+    assert manager.port_range == "5500-5599"
+    assert app.config["APP_WORKER_PORT_RANGE"] == "5500-5599"
+
+
+def test_app_factory_rejects_invalid_worker_port_range(tmp_path):
+    from dash_server.app_factory import create_app
+
+    with pytest.raises(RuntimeError, match="DASH_SERVER_APP_WORKER_PORT_RANGE"):
+        create_app(
+            {
+                "TESTING": True,
+                "REGISTRY_DB_PATH": str(tmp_path / "registry.sqlite3"),
+                "ARTIFACTS_ROOT": str(tmp_path / "artifacts"),
+                "WORKSPACES_ROOT": str(tmp_path / "workspaces"),
+                "DIAGNOSTICS_ROOT": str(tmp_path / "diagnostics"),
+                "DEPENDENCY_STATE_ROOT": str(tmp_path / "dependency_state"),
+                "GITOPS_REPO_PATH": str(tmp_path / "gitops-repo"),
+                "EXASOL_SECRETS_ROOT": str(tmp_path / "exasol-secrets"),
+                "AUTO_INSTALL_DEPENDENCIES": False,
+                "APP_RUNTIME_MODE": "isolated",
+                "APP_WORKER_PORT_RANGE": "7000-5000",
+            }
+        )
 
 
 # --- Phase 3.5a regression tests (worker package relocation) ---

@@ -54,14 +54,57 @@ dash-server
 
 Default local address:
 
-- `http://127.0.0.1:5000`
+- `http://127.0.0.1:5100`
+
+## Port Configuration and macOS AirPlay Receiver
+
+The control-plane HTTP listener defaults to `127.0.0.1:5100`.
+
+You can change it with CLI flags:
+
+```bash
+dash-server --host 127.0.0.1 --port 5200
+```
+
+Or with environment variables:
+
+```bash
+export DASH_SERVER_HOST=127.0.0.1
+export DASH_SERVER_PORT=5200
+dash-server
+```
+
+On macOS Monterey 12 and later, AirPlay Receiver can bind ports `5000` and
+`7000` through system ControlCenter / AirPlay helper processes. `dash-server`
+defaults to `5100` instead of Flask's classic `5000` to avoid that local macOS
+collision. If you explicitly run `dash-server --port 5000` and startup fails,
+either disable AirPlay Receiver in macOS sharing settings or choose another
+`dash-server` port.
+
+When you change the control-plane port, update all local URLs:
+
+- Browser dashboards: `http://127.0.0.1:5200/apps/demo`
+- MCP endpoint: `http://127.0.0.1:5200/mcp`
+- MCP client bridge args such as `mcp-remote http://localhost:5200/mcp`
+
+In isolated runtime mode, each hosted app worker also binds a loopback HTTP port
+behind the proxy. By default the OS chooses free ephemeral worker ports. To
+limit workers to an explicit range, set:
+
+```bash
+export DASH_SERVER_APP_RUNTIME_MODE=isolated
+export DASH_SERVER_APP_WORKER_PORT_RANGE=5500-5599
+```
+
+Do not include `5000` or `7000` in `DASH_SERVER_APP_WORKER_PORT_RANGE` on Macs
+where AirPlay Receiver is enabled.
 
 ## First Five Minutes
 
 ### 1. Check that the Exasol profile was bootstrapped
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -79,14 +122,14 @@ You should see `analytics-prod` in the returned profile list.
 
 Visit:
 
-- `http://127.0.0.1:5000/apps/demo`
+- `http://127.0.0.1:5100/apps/demo`
 
 That verifies the hosted-app runtime is working.
 
 ### 3. Confirm the MCP endpoint is up
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp
+curl -s http://127.0.0.1:5100/mcp
 ```
 
 You should get an SSE-ready response body.
@@ -94,7 +137,7 @@ You should get an SSE-ready response body.
 ### 4. Initialize an MCP session
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -115,7 +158,7 @@ Once the profile exists, the agent can go straight to dashboard creation with `p
 ### 6. List hosted apps
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",
@@ -131,7 +174,7 @@ curl -s http://127.0.0.1:5000/mcp \
 ### 7. Read the app inventory resource
 
 ```bash
-curl -s http://127.0.0.1:5000/mcp \
+curl -s http://127.0.0.1:5100/mcp \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc": "2.0",

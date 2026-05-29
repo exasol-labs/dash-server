@@ -18,6 +18,8 @@ class Config:
     """Default configuration for local development."""
 
     TESTING = False
+    DASH_SERVER_HOST: str = os.environ.get("DASH_SERVER_HOST", "127.0.0.1")
+    DASH_SERVER_PORT: int = int(os.environ.get("DASH_SERVER_PORT", "5100"))
     SECRET_KEY: str | None = os.environ.get("DASH_SERVER_SECRET_KEY")
     SESSION_COOKIE_SECURE: bool = _env_bool("DASH_SERVER_SESSION_COOKIE_SECURE", False)
     SESSION_COOKIE_HTTPONLY: bool = _env_bool("DASH_SERVER_SESSION_COOKIE_HTTPONLY", True)
@@ -174,6 +176,7 @@ class Config:
         os.environ.get("DASH_SERVER_APP_WHEEL_CACHE_GC_INTERVAL_SECONDS", "600")
     )
     APP_WORKER_HOST: str = os.environ.get("DASH_SERVER_APP_WORKER_HOST", "127.0.0.1")
+    APP_WORKER_PORT_RANGE: str | None = os.environ.get("DASH_SERVER_APP_WORKER_PORT_RANGE")
     APP_WORKER_PREWARM_POOL_SIZE: int = int(
         os.environ.get("DASH_SERVER_APP_WORKER_PREWARM_POOL_SIZE", "1")
     )

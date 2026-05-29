@@ -539,6 +539,8 @@ class MCPServer:
             return {}
         config = current_app.config
         return {
+            "control_plane_host": config.get("DASH_SERVER_HOST", "127.0.0.1"),
+            "control_plane_port": config.get("DASH_SERVER_PORT", 5100),
             "dependency_isolation": config.get("APP_DEPENDENCY_ISOLATION", "shared"),
             "runtime_mode": config.get("APP_RUNTIME_MODE", "in_process"),
             "app_environments_root": config.get("APP_ENVIRONMENTS_ROOT"),
@@ -546,6 +548,8 @@ class MCPServer:
             "pycache_root": config.get("APP_PYCACHE_ROOT"),
             "environments_disk_cap_gb": config.get("APP_ENVIRONMENTS_DISK_CAP_GB"),
             "wheel_cache_disk_cap_gb": config.get("APP_WHEEL_CACHE_DISK_CAP_GB"),
+            "worker_host": config.get("APP_WORKER_HOST", "127.0.0.1"),
+            "worker_port_range": config.get("APP_WORKER_PORT_RANGE"),
             "worker_prewarm_pool_size": config.get("APP_WORKER_PREWARM_POOL_SIZE"),
             "worker_idle_stop_seconds": config.get("APP_WORKER_IDLE_STOP_SECONDS"),
         }
@@ -2473,7 +2477,10 @@ class MCPServer:
                 "uri": "dash://runtime/status",
                 "name": "runtime-status",
                 "title": "Runtime isolation status",
-                "description": "Current APP_DEPENDENCY_ISOLATION and APP_RUNTIME_MODE settings plus the cache and worker config knobs.",
+                "description": (
+                    "Current control-plane host/port, APP_DEPENDENCY_ISOLATION, "
+                    "APP_RUNTIME_MODE, cache roots, and worker config knobs."
+                ),
                 "mimeType": "application/json",
             },
             {
