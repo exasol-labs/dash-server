@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dashboards</title>
+    <style>
+      :root {
+        --page-bg: #f5efe3;
+        --panel-bg: rgba(255, 252, 247, 0.86);
+        --panel-border: rgba(73, 52, 33, 0.16);
+        --text-strong: #1f1a16;
+        --text-muted: #66594f;
+        --accent: #0f766e;
+        --accent-soft: rgba(15, 118, 110, 0.12);
+        --success-bg: #d9f7ef;
+        --success-text: #0f5132;
+        --warning-bg: #fff1cc;
+        --warning-text: #8a5b00;
+        --danger-bg: #ffdeda;
+        --danger-text: #8c1d18;
+        --muted-bg: #ebe1d3;
+        --muted-text: #605247;
+        --shadow: 0 24px 60px rgba(59, 40, 23, 0.12);
+        --radius-xl: 28px;
+        --radius-lg: 22px;
+        --radius-md: 14px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(241, 205, 118, 0.35), transparent 30rem),
+          radial-gradient(circle at top right, rgba(86, 152, 224, 0.18), transparent 26rem),
+          linear-gradient(180deg, #f8f2e7 0%, var(--page-bg) 52%, #efe5d6 100%);
+        color: var(--text-strong);
+        font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        width: min(1180px, calc(100vw - 2rem));
+        margin: 0 auto;
+        padding: 2rem 0 3rem;
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        padding: 2.5rem;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-xl);
+        background: linear-gradient(145deg, rgba(255, 250, 242, 0.98), rgba(248, 240, 227, 0.9));
+        box-shadow: var(--shadow);
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -4rem -4rem auto;
+        width: 14rem;
+        height: 14rem;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(15, 118, 110, 0.18), transparent 68%);
+        pointer-events: none;
+      }
+
+      .eyebrow {
+        margin: 0 0 0.75rem;
+        color: var(--accent);
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 12ch;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        font-size: clamp(2.8rem, 5vw, 4.6rem);
+        line-height: 0.94;
+      }
+
+      .hero-copy {
+        margin: 1rem 0 0;
+        max-width: 44rem;
+        color: var(--text-muted);
+        font-size: 1.05rem;
+        line-height: 1.65;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1rem;
+        margin-top: 2rem;
+      }
+
+      .summary-card {
+        padding: 1rem 1.1rem;
+        border: 1px solid rgba(73, 52, 33, 0.1);
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.68);
+      }
+
+      .summary-label {
+        display: block;
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .summary-value {
+        display: block;
+        margin-top: 0.45rem;
+        font-size: 1.9rem;
+        font-weight: 700;
+      }
+
+      .catalog-shell {
+        margin-top: 1.5rem;
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius-xl);
+        background: var(--panel-bg);
+        box-shadow: 0 14px 32px rgba(59, 40, 23, 0.08);
+        backdrop-filter: blur(12px);
+        overflow: hidden;
+      }
+
+      .catalog-header,
+      .catalog-row {
+        display: grid;
+        grid-template-columns: minmax(0, 2.4fr) minmax(11rem, 1fr) minmax(12rem, 1.35fr) auto;
+        gap: 1rem;
+        align-items: start;
+      }
+
+      .catalog-header {
+        padding: 0.95rem 1.2rem;
+        border-bottom: 1px solid rgba(73, 52, 33, 0.1);
+        background: rgba(107, 82, 58, 0.08);
+      }
+
+      .catalog-heading {
+        font-size: 0.74rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
+      .catalog-list {
+        display: block;
+      }
+
+      .catalog-row {
+        padding: 1rem 1.2rem;
+        border-bottom: 1px solid rgba(73, 52, 33, 0.08);
+        transition: background 180ms ease;
+      }
+
+      .catalog-row:last-child {
+        border-bottom: 0;
+      }
+
+      .catalog-row:hover {
+        background: rgba(255, 255, 255, 0.46);
+      }
+
+      .dashboard-main {
+        min-width: 0;
+      }
+
+      .dashboard-title-line {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        min-width: 0;
+      }
+
+      .dashboard-title {
+        margin: 0;
+        font-size: 1.08rem;
+        line-height: 1.2;
+      }
+
+      .dashboard-name {
+        display: block;
+        margin-top: 0.28rem;
+        color: var(--text-muted);
+        font-size: 0.86rem;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.42rem 0.7rem;
+        border-radius: 999px;
+        font-size: 0.76rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+      }
+
+      .badge-success {
+        background: var(--success-bg);
+        color: var(--success-text);
+      }
+
+      .badge-warning {
+        background: var(--warning-bg);
+        color: var(--warning-text);
+      }
+
+      .badge-danger {
+        background: var(--danger-bg);
+        color: var(--danger-text);
+      }
+
+      .badge-muted {
+        background: var(--muted-bg);
+        color: var(--muted-text);
+      }
+
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        margin-top: 0.65rem;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.36rem 0.6rem;
+        border-radius: 999px;
+        background: rgba(73, 52, 33, 0.08);
+        color: var(--text-muted);
+        font-size: 0.78rem;
+      }
+
+      .description {
+        margin: 0.7rem 0 0;
+        color: var(--text-muted);
+        line-height: 1.6;
+        font-size: 0.94rem;
+      }
+
+      .status-detail {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 0.88rem;
+        line-height: 1.5;
+      }
+
+      .status-block,
+      .routes {
+        display: grid;
+        gap: 0.55rem;
+      }
+
+      .route-row {
+        display: grid;
+        gap: 0.3rem;
+        padding: 0.72rem 0.8rem;
+        border-radius: var(--radius-md);
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .route-label {
+        display: block;
+        font-size: 0.74rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
+      .route-path {
+        display: block;
+        margin-top: 0.18rem;
+        font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
+        font-size: 0.86rem;
+        word-break: break-all;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+        justify-content: flex-end;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.55rem;
+        padding: 0.65rem 0.9rem;
+        border-radius: 999px;
+        font-weight: 700;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      .button-primary {
+        background: var(--accent);
+        color: #fffdf7;
+      }
+
+      .button-secondary {
+        border: 1px solid rgba(15, 118, 110, 0.2);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .empty-state {
+        margin-top: 1.5rem;
+        padding: 2rem;
+        border: 1px dashed rgba(73, 52, 33, 0.22);
+        border-radius: var(--radius-lg);
+        background: rgba(255, 255, 255, 0.55);
+        text-align: center;
+        color: var(--text-muted);
+      }
+
+      @media (max-width: 900px) {
+        .summary-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .catalog-header {
+          display: none;
+        }
+
+        .catalog-row {
+          grid-template-columns: 1fr;
+        }
+
+        .actions {
+          justify-content: flex-start;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .page {
+          width: min(100vw - 1rem, 100%);
+          padding-top: 0.5rem;
+        }
+
+        .hero {
+          padding: 1.5rem;
+        }
+
+        .summary-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .catalog-shell {
+          border-radius: var(--radius-lg);
+        }
+
+        .catalog-row {
+          padding: 1rem;
+        }
+
+        .dashboard-title-line {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <p class="eyebrow">Dash Server</p>
+        <h1>Available dashboards</h1>
+        <p class="hero-copy">
+          Browse the dashboards currently hosted on this server, check whether each one is live or in preview,
+          and jump straight to the published route that matches your need.
+        </p>
+        {% if catalog.viewer %}
+          <p class="hero-copy">
+            Viewing as {{ catalog.viewer.principal.display_name }}
+            {% if not catalog.viewer.principal.is_authenticated %}
+              · sign in to see dashboards shared with you
+            {% endif %}
+          </p>
+        {% endif %}
+        <div class="summary-grid" aria-label="Dashboard summary">
+          <div class="summary-card">
+            <span class="summary-label">Total dashboards</span>
+            <span class="summary-value">{{ catalog.summary.total_apps }}</span>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Live now</span>
+            <span class="summary-value">{{ catalog.summary.published_apps }}</span>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Preview routes</span>
+            <span class="summary-value">{{ catalog.summary.preview_apps }}</span>
+          </div>
+          <div class="summary-card">
+            <span class="summary-label">Public apps</span>
+            <span class="summary-value">{{ catalog.summary.public_apps }}</span>
+          </div>
+        </div>
+      </section>
+
+      {% if catalog.apps %}
+        <section class="catalog-shell" aria-label="Hosted dashboards">
+          <div class="catalog-header" role="presentation">
+            <div class="catalog-heading">Dashboard</div>
+            <div class="catalog-heading">Status</div>
+            <div class="catalog-heading">Routes</div>
+            <div class="catalog-heading">Open</div>
+          </div>
+          <div class="catalog-list" role="list">
+            {% for app in catalog.apps %}
+              <article class="catalog-row" role="listitem">
+                <div class="dashboard-main">
+                  <div class="dashboard-title-line">
+                    <h2 class="dashboard-title">{{ app.title }}</h2>
+                    <span class="badge badge-{{ app.status.tone }}">{{ app.status.label }}</span>
+                  </div>
+                  <span class="dashboard-name">{{ app.name }}</span>
+                  <div class="meta-row">
+                    <span class="chip">{{ app.visibility }}</span>
+                    <span class="chip">{{ app.auth_policy }}</span>
+                    <span class="chip">{{ app.access.reason }}</span>
+                    {% if app.template %}
+                      <span class="chip">{{ app.template }}</span>
+                    {% endif %}
+                    <span class="chip">Draft v{{ app.draft_candidate_version }}</span>
+                  </div>
+                  <p class="description">{{ app.description }}</p>
+                </div>
+
+                <div class="status-block">
+                  <p class="status-detail">{{ app.status.detail }}</p>
+                </div>
+
+                <div class="routes">
+                  <div class="route-row">
+                    <span class="route-label">Live route</span>
+                    <span class="route-path">{{ app.live.path }}</span>
+                    <span class="chip">
+                      {% if app.live.published %}
+                        Revision r{{ "%06d"|format(app.live.revision_number or 0) }}
+                      {% elif app.live.revision_number %}
+                        Revision r{{ "%06d"|format(app.live.revision_number) }}
+                      {% else %}
+                        Not published
+                      {% endif %}
+                    </span>
+                  </div>
+                  {% if app.preview.visible and app.preview.path %}
+                    <div class="route-row">
+                      <span class="route-label">Preview route</span>
+                      <span class="route-path">{{ app.preview.path }}</span>
+                      <span class="chip">
+                        Revision r{{ "%06d"|format(app.preview.revision_number or 0) }}
+                      </span>
+                    </div>
+                  {% endif %}
+                </div>
+
+                <div class="actions">
+                  {% if app.live.published %}
+                    <a class="button button-primary" href="{{ app.live.path }}">Open live</a>
+                  {% endif %}
+                  {% if app.preview.visible and app.preview.path %}
+                    <a class="button button-secondary" href="{{ app.preview.path }}">Open preview</a>
+                  {% endif %}
+                  {% if not app.live.published and not app.preview.available %}
+                    <span class="button button-secondary" aria-disabled="true">No public route</span>
+                  {% endif %}
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        </section>
+      {% else %}
+        <section class="empty-state">
+          No dashboards are visible for this viewer.
+        </section>
+      {% endif %}
+    </main>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="96" fill="#07111F"/>
+  <rect x="72" y="86" width="368" height="252" rx="28" fill="url(#screen)"/>
+  <path d="M116 292C145.333 266.667 174.667 241.333 204 216C223.333 231.333 242.667 246.667 262 262C293.333 231.333 324.667 200.667 356 170L396 202V310C396 321.046 387.046 330 376 330H136C124.954 330 116 321.046 116 310V292Z" fill="url(#chart)"/>
+  <circle cx="160" cy="176" r="16" fill="#B9FF66"/>
+  <circle cx="236" cy="230" r="14" fill="#12D6FF"/>
+  <circle cx="312" cy="186" r="14" fill="#7CF3A0"/>
+  <path d="M104 380H408" stroke="#12D6FF" stroke-width="22" stroke-linecap="round"/>
+  <path d="M186 418H326" stroke="#7CF3A0" stroke-width="22" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="screen" x1="72" y1="86" x2="440" y2="338" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D213B"/>
+      <stop offset="1" stop-color="#123765"/>
+    </linearGradient>
+    <linearGradient id="chart" x1="116" y1="170" x2="396" y2="312" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#12D6FF"/>
+      <stop offset="1" stop-color="#7CF3A0"/>
+    </linearGradient>
+  </defs>
+</svg>
