@@ -430,6 +430,115 @@ def test_hosted_mcp_coarse_gate_denies_anonymous_viewer_and_link_principals(tmp_
     assert link_mcp.get_json()["error"]["data"]["principal_type"] == "link"
 
 
+def test_hosted_app_owner_grant_allows_scoped_sharing_mcp_tools(tmp_path):
+    app = create_app(_hosted_mode_test_config(tmp_path))
+    app.extensions["runtime_service"].registry.grant_app_access(
+        "demo",
+        principal_type="user",
+        principal_id="trusted_proxy:user-123",
+        role="owner",
+        scope="all",
+        created_by_principal_id="test",
+    )
+    client = app.test_client()
+
+    share_get = client.post(
+        "/mcp",
+        headers=_trusted_proxy_headers(),
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "app_share_get", "arguments": {"name": "demo"}},
+        },
+    )
+    grant_peer = client.post(
+        "/mcp",
+        headers=_trusted_proxy_headers(),
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "app_share_grant",
+                "arguments": {
+                    "name": "demo",
+                    "principal_type": "user",
+                    "principal_id": "trusted_proxy:peer-123",
+                    "role": "viewer",
+                    "scope": "live",
+                },
+            },
+        },
+    )
+    tools_list = client.post(
+        "/mcp",
+        headers=_trusted_proxy_headers(),
+        json={"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+    )
+    peer_live = client.get("/apps/demo/_dash-layout", headers=_trusted_proxy_headers("peer-123"))
+
+    assert share_get.status_code == 200
+    assert share_get.get_json()["result"]["structuredContent"]["app"]["name"] == "demo"
+    assert grant_peer.status_code == 200
+    assert grant_peer.get_json()["result"]["structuredContent"]["grant"]["principal_id"] == "trusted_proxy:peer-123"
+    assert peer_live.status_code == 200
+    assert tools_list.status_code == 403
+    assert tools_list.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
+
+
+def test_hosted_app_viewer_grant_cannot_use_scoped_sharing_mcp_tools(tmp_path):
+    app = create_app(_hosted_mode_test_config(tmp_path))
+    app.extensions["runtime_service"].registry.grant_app_access(
+        "demo",
+        principal_type="user",
+        principal_id="trusted_proxy:user-123",
+        role="viewer",
+        scope="live",
+        created_by_principal_id="test",
+    )
+    client = app.test_client()
+
+    response = client.post(
+        "/mcp",
+        headers=_trusted_proxy_headers(),
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "app_share_get", "arguments": {"name": "demo"}},
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
+
+
+def test_hosted_public_dashboard_does_not_allow_scoped_sharing_mcp_tools(tmp_path):
+    config = _hosted_mode_test_config(tmp_path)
+    config["DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED"] = True
+    app = create_app(config)
+    app.extensions["runtime_service"].update_visibility("demo", "public")
+    client = app.test_client()
+    _call_mcp(client, "app_share_set_link_scope", {"name": "demo", "link_scope": "public"})
+
+    live = client.get("/apps/demo/_dash-layout")
+    response = client.post(
+        "/mcp",
+        headers=_trusted_proxy_headers(),
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "app_share_get", "arguments": {"name": "demo"}},
+        },
+    )
+
+    assert live.status_code == 200
+    assert response.status_code == 403
+    assert response.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
+
+
 def test_one_time_link_can_be_redeemed_once_and_grants_url_only_session(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()

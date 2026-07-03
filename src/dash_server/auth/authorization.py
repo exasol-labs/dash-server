@@ -199,9 +199,12 @@ class AuthorizationService:
             return self._deny(auth_context, target, status_code=404, reason="app_not_found")
         if not app.enabled:
             return self._deny(auth_context, target, status_code=404, reason="app_not_published")
+        capability = target.capability
+        if capability is None:
+            return self._deny(auth_context, target, status_code=403, reason="missing_capability")
         self._persist_authenticated_user(auth_context)
         public_policy = self._public_live_policy(app)
-        if public_policy is not None:
+        if public_policy is not None and capability in self._role_capabilities["viewer"]:
             return self._allow(
                 auth_context,
                 target,
@@ -211,9 +214,9 @@ class AuthorizationService:
             )
         if not auth_context.principal.is_authenticated:
             return self._deny(auth_context, target, status_code=401, reason="authentication_required")
-        if self._principal_has_global_capability(auth_context, "dashboard.view_live"):
+        if self._principal_has_global_capability(auth_context, capability):
             return self._allow(auth_context, target, reason="global_role")
-        matched_grant = self._matching_grant(auth_context.principal, app, "dashboard.view_live")
+        matched_grant = self._matching_grant(auth_context.principal, app, capability)
         if matched_grant is not None:
             return self._allow(
                 auth_context,

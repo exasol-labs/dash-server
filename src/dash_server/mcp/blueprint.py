@@ -9,6 +9,21 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from dash_server.auth import current_auth_context
 
 
+_APP_SCOPED_SHARING_TOOLS = frozenset(
+    {
+        "app_share_get",
+        "app_share_grant",
+        "app_share_revoke",
+        "app_share_set_link_scope",
+        "app_share_explain_access",
+        "app_share_create_one_time_link",
+        "app_share_revoke_one_time_link",
+        "app_invite_external_user",
+        "app_revoke_external_invitation",
+    }
+)
+
+
 def create_mcp_blueprint() -> Blueprint:
     """Create the `/mcp` blueprint."""
 
@@ -61,6 +76,8 @@ def _mcp_authorization_denial(payload: dict[str, Any] | None = None):
         and any(role in allowed_roles for role in principal.roles)
     ):
         return None
+    if _app_scoped_mcp_call_allowed(payload):
+        return None
 
     status_code = 401 if not principal.is_authenticated else 403
     request_id = payload.get("id") if isinstance(payload, dict) else None
@@ -79,3 +96,41 @@ def _mcp_authorization_denial(payload: dict[str, Any] | None = None):
         },
     }
     return jsonify(response_body), status_code
+
+
+def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
+    """Allow app owners to use sharing tools without global MCP access."""
+
+    auth_context = current_auth_context()
+    principal = auth_context.principal
+    if (
+        not principal.is_authenticated
+        or principal.principal_type != "user"
+        or not isinstance(payload, dict)
+        or payload.get("method") != "tools/call"
+    ):
+        return False
+
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return False
+    tool_name = params.get("name")
+    if tool_name not in _APP_SCOPED_SHARING_TOOLS:
+        return False
+    arguments = params.get("arguments")
+    if not isinstance(arguments, dict):
+        return False
+    app_name = arguments.get("name")
+    if not isinstance(app_name, str) or not app_name.strip():
+        return False
+
+    registry = current_app.extensions["registry"]
+    app = registry.get_app(app_name.strip())
+    if app is None:
+        return False
+    decision = current_app.extensions["authorization_service"].authorize_app(
+        auth_context,
+        app,
+        "dashboard.manage_sharing",
+    )
+    return decision.allowed
