@@ -16,19 +16,19 @@ server parses and binds names without fetching rows. Connection-level failures
 collapse to a single ``connection_failed`` outcome — there's no point reporting
 per-file when the profile itself can't open a session.
 
-Queries with pyexasol placeholders (``{name!s}``, ``{name!d}``, etc.) are skipped
-rather than executed, because we don't have meaningful test values. The persona-3
-report flagged this as a friction point but the alternative (substitute defaults)
-is too easy to get wrong; we report `skipped: parameterized` and an operator who
-cares can add per-query smoke inputs in a follow-up.
+Queries with pyexasol placeholders (``{name!s}``, ``{name!d}``, etc.) require
+per-query sample values in ``queries/sql_smoke.json``. Without sample values they
+fail preflight with an actionable message; with values they are executed through
+pyexasol's formatter so bad columns are caught before live promotion.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .connection_manager import ExasolConnectionManager
@@ -72,12 +72,10 @@ class SqlSmokeReport:
         return None
 
 
-# pyexasol's substitution markers: `{name!s}` (string), `{name!d}` (decimal),
-# `{name!f}` (float), `{name!q}` (quoted identifier), `{name!i}` (identifier),
-# `{name!r}` (raw SQL fragment). A literal `{` that's part of a JSON or a string
-# literal in SQL wouldn't have the `!letter` shape, so the false-positive surface
-# for this check is small.
-_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*![sdfqir]\}")
+# pyexasol's substitution markers: `{name}` / `{name!s}` (string),
+# `{name!d}` (decimal), `{name!f}` (float), `{name!q}` (quoted identifier),
+# `{name!i}` (identifier), `{name!r}` (raw SQL fragment).
+_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?:![sdfqir])?\}")
 
 
 def run_sql_smoke(
@@ -85,6 +83,7 @@ def run_sql_smoke(
     profile: ExasolProfile,
     sql_files: list[tuple[str, str]],
     connection_manager: ExasolConnectionManager,
+    smoke_params: dict[str, dict[str, Any]] | None = None,
 ) -> SqlSmokeReport:
     """Smoke-test each SQL file against the bound profile. See module docstring.
 
@@ -115,7 +114,14 @@ def run_sql_smoke(
     results: list[SqlSmokeFile] = []
     try:
         for relative_path, sql_text in sql_files:
-            results.append(_smoke_one(connection, relative_path, sql_text))
+            results.append(
+                _smoke_one(
+                    connection,
+                    relative_path,
+                    sql_text,
+                    params=(smoke_params or {}).get(relative_path, {}),
+                )
+            )
     finally:
         close = getattr(connection, "close", None)
         if callable(close):
@@ -137,7 +143,13 @@ def run_sql_smoke(
     return SqlSmokeReport(overall_status=overall, files=results)
 
 
-def _smoke_one(connection: object, relative_path: str, sql_text: str) -> SqlSmokeFile:
+def _smoke_one(
+    connection: object,
+    relative_path: str,
+    sql_text: str,
+    *,
+    params: dict[str, Any],
+) -> SqlSmokeFile:
     stripped = sql_text.strip()
     if not stripped:
         return SqlSmokeFile(
@@ -145,18 +157,27 @@ def _smoke_one(connection: object, relative_path: str, sql_text: str) -> SqlSmok
             outcome="skipped",
             skip_reason="empty file",
         )
-    if _PLACEHOLDER_RE.search(stripped):
-        return SqlSmokeFile(
-            relative_path=relative_path,
-            outcome="skipped",
-            skip_reason="parameterized (placeholders unfilled)",
-        )
+
+    placeholder_names = sorted({match.group(1) for match in _PLACEHOLDER_RE.finditer(stripped)})
+    if placeholder_names:
+        missing = [name for name in placeholder_names if name not in params]
+        if missing:
+            return SqlSmokeFile(
+                relative_path=relative_path,
+                outcome="failed",
+                error_text=(
+                    "Parameterized SQL requires smoke-test params before deployment. "
+                    f"Missing values for: {', '.join(missing)}. "
+                    "Add queries/sql_smoke.json with sample values for this SQL file, "
+                    "or run an explicit callback smoke test before live promotion."
+                ),
+            )
 
     # Wrap so the server parses and binds names without fetching rows. Strip a
     # trailing semicolon so the wrapped query parses cleanly.
     wrapped = f"SELECT * FROM (\n{stripped.rstrip(';')}\n) WHERE 1=0"
     try:
-        statement = connection.execute(wrapped)  # type: ignore[attr-defined]
+        statement = connection.execute(wrapped, params)  # type: ignore[attr-defined]
     except Exception as exc:
         return SqlSmokeFile(
             relative_path=relative_path,
@@ -195,9 +216,37 @@ def collect_sql_files(artifact_root: Path) -> list[tuple[str, str]]:
     return files
 
 
+def collect_sql_smoke_params(artifact_root: Path) -> dict[str, dict[str, Any]]:
+    """Read optional per-query smoke params from ``queries/sql_smoke.json``.
+
+    The file maps SQL relative paths to pyexasol parameter dictionaries:
+
+    ``{"queries/agent_latency.sql": {"agent_id": "agent-001"}}``
+    """
+
+    config_path = artifact_root / "queries" / "sql_smoke.json"
+    if not config_path.is_file():
+        return {}
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    params_by_file: dict[str, dict[str, Any]] = {}
+    for raw_path, raw_params in payload.items():
+        if not isinstance(raw_path, str) or not isinstance(raw_params, dict):
+            continue
+        relative_path = raw_path if raw_path.startswith("queries/") else f"queries/{raw_path}"
+        params_by_file[relative_path] = dict(raw_params)
+    return params_by_file
+
+
 __all__ = [
     "SqlSmokeFile",
     "SqlSmokeReport",
+    "collect_sql_smoke_params",
     "collect_sql_files",
     "run_sql_smoke",
 ]

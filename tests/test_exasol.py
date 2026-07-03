@@ -146,6 +146,33 @@ class _RoutingFakePyExasolModule:
         return connection
 
 
+class _SqlSmokeFakeConnection:
+    def __init__(self) -> None:
+        self.executions: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(self, sql_text: str, params: dict[str, Any] | None = None):
+        bound_params = dict(params or {})
+        self.executions.append((sql_text, bound_params))
+        if "MISSING_LATENCY_MS" in sql_text:
+            raise RuntimeError('object "MISSING_LATENCY_MS" not found')
+        return _RoutingFakeExasolStatement(["OK"], [])
+
+    def close(self) -> None:
+        return None
+
+
+class _SqlSmokeFakePyExasolModule:
+    def __init__(self) -> None:
+        self.connect_calls: list[dict[str, Any]] = []
+        self.connections: list[_SqlSmokeFakeConnection] = []
+
+    def connect(self, **kwargs: Any) -> _SqlSmokeFakeConnection:
+        self.connect_calls.append(kwargs)
+        connection = _SqlSmokeFakeConnection()
+        self.connections.append(connection)
+        return connection
+
+
 def test_exasol_profile_create_validate_and_resources(app, client) -> None:
     fake_module = _FakePyExasolModule()
     app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
@@ -883,6 +910,151 @@ def test_sql_placeholders_help_resource_is_reachable(app, client) -> None:
     assert "{name!d}" in syntaxes
     assert "{name!s}" in syntaxes or "{name} or {name!s}" in syntaxes
     assert any("Feature not supported: host parameter" in rule for rule in payload["rules"])
+    assert any("queries/sql_smoke.json" in rule for rule in payload["rules"])
+
+
+def _create_sql_smoke_profile(client, *, request_id: int) -> None:
+    response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "exasol_profile_create_local",
+            "arguments": {
+                "name": "analytics-prod",
+                "backend": "onprem",
+                "credential_mode": "password",
+                "dsn": "demodb.exasol.com:8563",
+                "user": "sys",
+                "secret_value": "super-secret",
+            },
+        },
+        request_id=request_id,
+    )
+    assert response.status_code == 200
+
+
+def _create_parameterized_sql_app(client, *, name: str, include_smoke_params: bool, request_id: int) -> None:
+    manifest = {
+        "name": name,
+        "title": name.replace("-", " ").title(),
+        "route": f"/apps/{name}",
+        "template": "exasol-analytics",
+        "data_sources": {
+            "primary": {
+                "kind": "exasol",
+                "profile": "analytics-prod",
+                "auth_mode": "local_direct",
+            }
+        },
+    }
+    files = [
+        {"path": "dash-app.json", "content": json.dumps(manifest) + "\n"},
+        {
+            "path": "app.py",
+            "content": (
+                "from dash import Dash, html\n\n"
+                "def create_dash_app(server, url_base_pathname, metadata):\n"
+                "    app = Dash(__name__, server=server, routes_pathname_prefix='/', "
+                "requests_pathname_prefix=url_base_pathname.rstrip('/') + '/')\n"
+                "    app.layout = html.Div('parameterized sql smoke')\n"
+                "    return app\n"
+            ),
+        },
+        {
+            "path": "queries/agent_latency.sql",
+            "content": (
+                "SELECT AGENT_ID, MISSING_LATENCY_MS\n"
+                "FROM AGENT_EVENTS\n"
+                "WHERE AGENT_ID = {agent_id!s}\n"
+            ),
+        },
+        {"path": "requirements.txt", "content": "dash>=4.0,<5.0\npyexasol>=2.2.2,<3.0\n"},
+    ]
+    if include_smoke_params:
+        files.append(
+            {
+                "path": "queries/sql_smoke.json",
+                "content": json.dumps({"queries/agent_latency.sql": {"agent_id": "agent-001"}}) + "\n",
+            }
+        )
+    response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create_from_files",
+            "arguments": {
+                "name": name,
+                "title": manifest["title"],
+                "template": "exasol-analytics",
+                "start_immediately": False,
+                "files": files,
+            },
+        },
+        request_id=request_id,
+    )
+    assert response.status_code == 200
+    assert response.get_json()["result"].get("isError") is False
+
+
+def _sql_smoke_probe(preflight: dict[str, Any]) -> dict[str, Any]:
+    return next(probe for probe in preflight["probes"] if probe.get("name") == "sql_smoke")
+
+
+def test_parameterized_sql_without_smoke_params_blocks_live_deploy(app, client) -> None:
+    fake_module = _SqlSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _create_sql_smoke_profile(client, request_id=930)
+    _create_parameterized_sql_app(
+        client,
+        name="param-sql-needs-smoke",
+        include_smoke_params=False,
+        request_id=931,
+    )
+
+    deploy_response = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_deploy_draft", "arguments": {"name": "param-sql-needs-smoke"}},
+        request_id=932,
+    )
+    deploy_result = deploy_response.get_json()["result"]
+    assert deploy_result["isError"] is True
+    preflight = deploy_result["structuredContent"]["build"]["preflight"]
+    probe = _sql_smoke_probe(preflight)
+    assert probe["status"] == "failed"
+    assert probe["details"]["first_failed_file"] == "queries/agent_latency.sql"
+    assert "Missing values for: agent_id" in probe["details"]["latest_error"]
+    assert "queries/sql_smoke.json" in probe["details"]["latest_error"]
+    assert not any(connection.executions for connection in fake_module.connections)
+
+
+def test_parameterized_sql_smoke_params_exercise_query_and_catch_bad_column(app, client) -> None:
+    fake_module = _SqlSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _create_sql_smoke_profile(client, request_id=940)
+    _create_parameterized_sql_app(
+        client,
+        name="param-sql-bad-column",
+        include_smoke_params=True,
+        request_id=941,
+    )
+
+    deploy_response = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_deploy_draft", "arguments": {"name": "param-sql-bad-column"}},
+        request_id=942,
+    )
+    deploy_result = deploy_response.get_json()["result"]
+    assert deploy_result["isError"] is True
+    preflight = deploy_result["structuredContent"]["build"]["preflight"]
+    probe = _sql_smoke_probe(preflight)
+    assert probe["status"] == "failed"
+    assert probe["details"]["first_failed_file"] == "queries/agent_latency.sql"
+    assert "MISSING_LATENCY_MS" in probe["details"]["latest_error"]
+    executions = [execution for connection in fake_module.connections for execution in connection.executions]
+    assert executions
+    assert executions[0][1] == {"agent_id": "agent-001"}
 
 
 def test_exasol_helper_auto_seeded_for_exasol_analytics_template(client) -> None:

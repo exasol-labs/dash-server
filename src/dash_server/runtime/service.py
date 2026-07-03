@@ -3457,7 +3457,7 @@ class AppRuntimeService:
         ``data_layer`` probe only inspected already-recorded errors.
         """
 
-        from ..exasol.sql_smoke import collect_sql_files, run_sql_smoke
+        from ..exasol.sql_smoke import collect_sql_files, collect_sql_smoke_params, run_sql_smoke
 
         exasol_service = self.runtime_extensions.get("exasol_dashboard_service")
         if exasol_service is None:
@@ -3496,6 +3496,7 @@ class AppRuntimeService:
             profile=profile,
             sql_files=sql_files,
             connection_manager=exasol_service.connection_manager,
+            smoke_params=collect_sql_smoke_params(Path(revision.artifact_path)),
         )
         if report.overall_status == "passed":
             return {

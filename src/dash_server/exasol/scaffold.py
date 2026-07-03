@@ -237,6 +237,7 @@ def exasol_sql_placeholders_help() -> dict[str, Any]:
         ],
         "rules": [
             "Never write :name placeholders. Exasol rejects them with 0A000 / 'Feature not supported: host parameter specification'.",
+            "Parameterized queries in queries/*.sql need sample values in queries/sql_smoke.json before live promotion can pass SQL smoke preflight.",
             (
                 "Reserved identifiers in AS clauses must be quoted. Common offenders include: "
                 "VALUE, COUNT, SUM, KEY, TYPE, NAME, STATUS, DAY, MONTH, YEAR, LEVEL, ORDER, "
