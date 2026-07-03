@@ -1077,6 +1077,61 @@ def test_hosted_catalog_shows_public_dashboard_only_with_public_policy(tmp_path)
     assert b"public_catalog" in visible.data
 
 
+def test_domain_share_policy_requires_allowed_domain(tmp_path):
+    app = create_app(_hosted_mode_test_config(tmp_path))
+    client = app.test_client()
+
+    response = _call_mcp(client, "app_share_set_link_scope", {"name": "demo", "link_scope": "domain"})
+    result = response.get_json()["result"]
+
+    assert response.status_code == 200
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["category"] == "tool_validation_error"
+    assert result["structuredContent"]["error"]["details"]["field"] == "allowed_domain"
+
+
+def test_hosted_catalog_domain_policy_matches_only_allowed_domain(tmp_path):
+    app = create_app(_hosted_mode_test_config(tmp_path))
+    client = app.test_client()
+    set_policy = _call_mcp(
+        client,
+        "app_share_set_link_scope",
+        {"name": "demo", "link_scope": "domain", "allowed_domain": "Example.Test"},
+    )
+
+    same_domain = client.get(
+        "/",
+        headers={
+            "X-Forwarded-User": "same-domain",
+            "X-Forwarded-Email": "same@example.test",
+            "X-Forwarded-Groups": "",
+        },
+    )
+    other_domain = client.get(
+        "/",
+        headers={
+            "X-Forwarded-User": "other-domain",
+            "X-Forwarded-Email": "other@other.test",
+            "X-Forwarded-Groups": "",
+        },
+    )
+    same_domain_live = client.get(
+        "/apps/demo/_dash-layout",
+        headers={
+            "X-Forwarded-User": "same-domain",
+            "X-Forwarded-Email": "same@example.test",
+            "X-Forwarded-Groups": "",
+        },
+    )
+
+    policy = set_policy.get_json()["result"]["structuredContent"]["share_policy"]
+    assert policy["allowed_domain"] == "example.test"
+    assert b"Demo Dashboard" in same_domain.data
+    assert b"matched_share_policy" in same_domain.data
+    assert b"Demo Dashboard" not in other_domain.data
+    assert same_domain_live.status_code == 403
+
+
 def test_hosted_catalog_shows_direct_and_group_grants_and_hides_after_revoke(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()

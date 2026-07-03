@@ -332,7 +332,15 @@ class AuthorizationService:
         policy = self.registry.get_share_policy(app.name)
         if policy["link_scope"] == "organization" and principal.tenant_id:
             return policy
-        if policy["link_scope"] == "domain" and principal.email and "@" in principal.email:
+        allowed_domain = policy.get("allowed_domain")
+        if (
+            policy["link_scope"] == "domain"
+            and isinstance(allowed_domain, str)
+            and allowed_domain
+            and principal.email
+            and "@" in principal.email
+            and principal.email.rsplit("@", 1)[1].lower() == allowed_domain.lower()
+        ):
             return policy
         return None
 

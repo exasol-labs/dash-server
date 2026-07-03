@@ -1492,10 +1492,23 @@ class MCPServer:
         ):
             if not isinstance(value, bool):
                 raise self._field_error("app_share_set_link_scope", field_name, "must be a boolean.")
+        allowed_domain = None
+        if link_scope == "domain":
+            allowed_domain = self._normalize_allowed_domain(
+                arguments.get("allowed_domain"),
+                tool_name="app_share_set_link_scope",
+            )
+        elif arguments.get("allowed_domain") is not None:
+            raise self._field_error(
+                "app_share_set_link_scope",
+                "allowed_domain",
+                "is only valid when link_scope is domain.",
+            )
         app = self._require_existing_app(name, tool_name="app_share_set_link_scope")
         policy = self.runtime_service.registry.upsert_share_policy(
             name,
             link_scope=link_scope,
+            allowed_domain=allowed_domain,
             default_link_role=default_link_role,
             allow_preview_link=allow_preview_link,
             public_catalog_visible=public_catalog_visible,
@@ -1507,6 +1520,7 @@ class MCPServer:
             "share_policy_updated",
             data={
                 "link_scope": link_scope,
+                "allowed_domain": allowed_domain,
                 "default_link_role": default_link_role,
                 "public_catalog_visible": public_catalog_visible,
                 "external_sharing_enabled": external_sharing_enabled,
@@ -2800,6 +2814,13 @@ class MCPServer:
                     "message": "The share policy is public, but auth_policy=required still blocks anonymous access.",
                 }
             )
+        if policy["link_scope"] == "domain" and not policy.get("allowed_domain"):
+            warnings.append(
+                {
+                    "code": "domain_policy_missing_allowed_domain",
+                    "message": "The share policy is domain-scoped, but no allowed_domain is configured.",
+                }
+            )
         return warnings
 
     def _principal_for_access_explanation(self, arguments: dict[str, Any]) -> Principal:
@@ -2885,6 +2906,21 @@ class MCPServer:
         if "@" not in email or email.startswith("@") or email.endswith("@"):
             raise self._field_error(tool_name, "recipient_email", "must be an email address.")
         return email.lower()
+
+    def _normalize_allowed_domain(self, value: Any, *, tool_name: str) -> str:
+        if not isinstance(value, str):
+            raise self._field_error(tool_name, "allowed_domain", "is required when link_scope is domain.")
+        domain = value.strip().lower()
+        if domain.startswith("@"):
+            domain = domain[1:]
+        if (
+            not domain
+            or "@" in domain
+            or "/" in domain
+            or any(character.isspace() for character in domain)
+        ):
+            raise self._field_error(tool_name, "allowed_domain", "must be a DNS domain such as example.com.")
+        return domain
 
     def _email_sender(self) -> InvitationEmailSender:
         if self.email_sender is not None:
@@ -3495,6 +3531,10 @@ class MCPServer:
                 "link_scope": {
                     "type": "string",
                     "enum": ["restricted", "organization", "domain", "anyone_with_link", "public"],
+                },
+                "allowed_domain": {
+                    "type": "string",
+                    "description": "Required when link_scope=domain. Only exact email-domain matches can discover the app through this policy.",
                 },
                 "default_link_role": {
                     "type": "string",

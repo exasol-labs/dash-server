@@ -156,6 +156,7 @@ class SQLiteAppRegistry:
                 CREATE TABLE IF NOT EXISTS app_share_policies (
                     app_name TEXT PRIMARY KEY,
                     link_scope TEXT NOT NULL DEFAULT 'restricted',
+                    allowed_domain TEXT,
                     default_link_role TEXT NOT NULL DEFAULT 'viewer',
                     allow_preview_link INTEGER NOT NULL DEFAULT 0,
                     public_catalog_visible INTEGER NOT NULL DEFAULT 0,
@@ -238,6 +239,7 @@ class SQLiteAppRegistry:
         self._ensure_column("apps", "auth_policy", "TEXT NOT NULL DEFAULT 'inherited'")
         self._ensure_column("apps", "enabled", "INTEGER NOT NULL DEFAULT 1")
         self._ensure_column("apps", "permissions_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column("app_share_policies", "allowed_domain", "TEXT")
 
         self._ensure_column("app_revisions", "lifecycle_state", "TEXT NOT NULL DEFAULT 'validated'")
         self._ensure_column("app_revisions", "artifact_path", "TEXT NOT NULL DEFAULT ''")
@@ -494,6 +496,7 @@ class SQLiteAppRegistry:
                 SELECT
                     app_name,
                     link_scope,
+                    allowed_domain,
                     default_link_role,
                     allow_preview_link,
                     public_catalog_visible,
@@ -510,6 +513,7 @@ class SQLiteAppRegistry:
         return {
             "app_name": app_name,
             "link_scope": "restricted",
+            "allowed_domain": None,
             "default_link_role": "viewer",
             "allow_preview_link": False,
             "public_catalog_visible": False,
@@ -523,6 +527,7 @@ class SQLiteAppRegistry:
         app_name: str,
         *,
         link_scope: str,
+        allowed_domain: str | None = None,
         default_link_role: str = "viewer",
         allow_preview_link: bool = False,
         public_catalog_visible: bool = False,
@@ -535,6 +540,7 @@ class SQLiteAppRegistry:
                 INSERT INTO app_share_policies (
                     app_name,
                     link_scope,
+                    allowed_domain,
                     default_link_role,
                     allow_preview_link,
                     public_catalog_visible,
@@ -542,9 +548,10 @@ class SQLiteAppRegistry:
                     updated_by_principal_id,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(app_name) DO UPDATE SET
                     link_scope = excluded.link_scope,
+                    allowed_domain = excluded.allowed_domain,
                     default_link_role = excluded.default_link_role,
                     allow_preview_link = excluded.allow_preview_link,
                     public_catalog_visible = excluded.public_catalog_visible,
@@ -555,6 +562,7 @@ class SQLiteAppRegistry:
                 (
                     app_name,
                     link_scope,
+                    allowed_domain,
                     default_link_role,
                     1 if allow_preview_link else 0,
                     1 if public_catalog_visible else 0,
@@ -1851,6 +1859,7 @@ class SQLiteAppRegistry:
         return {
             "app_name": row["app_name"],
             "link_scope": row["link_scope"],
+            "allowed_domain": row["allowed_domain"],
             "default_link_role": row["default_link_role"],
             "allow_preview_link": bool(row["allow_preview_link"]),
             "public_catalog_visible": bool(row["public_catalog_visible"]),
