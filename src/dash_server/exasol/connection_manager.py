@@ -141,13 +141,21 @@ class ExasolConnectionManager:
         cached = cache.get(profile.name)
         if cached is not None:
             return cached
-        secret_value = self.secret_store.resolve(profile.secret_ref)
-        connector = self.connector_loader()
-        connection: ExaConnectionLike = connector.connect(
-            **self._connect_kwargs(profile, secret_value)
-        )
+        connection = self.connect_uncached(profile)
         cache[profile.name] = connection
         return connection
+
+    def connect_uncached(self, profile: ExasolProfile) -> ExaConnectionLike:
+        """Open a caller-owned connection without storing it in the thread cache.
+
+        Use this for one-shot probes such as SQL smoke preflight where the caller
+        intentionally closes the connection. Runtime callbacks should keep using
+        `connect()` so they benefit from per-thread session reuse.
+        """
+
+        secret_value = self.secret_store.resolve(profile.secret_ref)
+        connector = self.connector_loader()
+        return connector.connect(**self._connect_kwargs(profile, secret_value))
 
     def invalidate(self, profile_name: str) -> None:
         """Discard the cached connection for ``profile_name`` on this thread.

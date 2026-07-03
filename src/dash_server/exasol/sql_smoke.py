@@ -94,10 +94,11 @@ def run_sql_smoke(
     if not sql_files:
         return SqlSmokeReport(overall_status="skipped", files=[])
 
-    # Open one connection for the whole batch; close in a finally even on the
-    # connection-failure path.
+    # Open a dedicated, uncached connection for the whole batch; close in a
+    # finally even on the connection-failure path. This must not use the runtime
+    # callback cache, because smoke preflight deliberately closes its connection.
     try:
-        connection = connection_manager.connect(profile)
+        connection = connection_manager.connect_uncached(profile)
     except Exception as exc:
         # Profile unreachable. Treat every file as `failed` with the connection
         # error attached so consumers can show a clear single message.

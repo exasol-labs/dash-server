@@ -668,6 +668,69 @@ def _profile(*, tls_verify: bool) -> ExasolProfile:
     )
 
 
+class _CacheProbeStatement:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _CacheProbeConnection:
+    def __init__(self) -> None:
+        self.closed = False
+        self.executed: list[tuple[str, dict[str, Any]]] = []
+        self.statements: list[_CacheProbeStatement] = []
+
+    def execute(self, sql_text: str, params: dict[str, Any] | None = None) -> _CacheProbeStatement:
+        if self.closed:
+            raise RuntimeError("Exasol connection was closed")
+        self.executed.append((sql_text, dict(params or {})))
+        statement = _CacheProbeStatement()
+        self.statements.append(statement)
+        return statement
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _CacheProbeConnector:
+    def __init__(self) -> None:
+        self.connections: list[_CacheProbeConnection] = []
+
+    def connect(self, **_kwargs: Any) -> _CacheProbeConnection:
+        connection = _CacheProbeConnection()
+        self.connections.append(connection)
+        return connection
+
+
+def test_study_bug003_sql_smoke_does_not_close_cached_runtime_connection(tmp_path, monkeypatch) -> None:
+    from dash_server.exasol.sql_smoke import run_sql_smoke
+
+    monkeypatch.setenv("EXA_PASSWORD", "test")
+    fake = _CacheProbeConnector()
+    cm = ExasolConnectionManager(
+        ExasolSecretStore(str(tmp_path)),
+        connector_loader=lambda: fake,
+    )
+    profile = _profile(tls_verify=False)
+
+    cached = cm.connect(profile)
+    report = run_sql_smoke(
+        profile=profile,
+        sql_files=[("queries/summary.sql", "SELECT 1 AS OK FROM DUAL")],
+        connection_manager=cm,
+    )
+
+    assert report.overall_status == "passed"
+    assert len(fake.connections) == 2
+    smoke_connection = fake.connections[1]
+    assert smoke_connection.closed is True
+    assert cached.closed is False
+    assert cm.connect(profile) is cached
+    cached.execute("SELECT 1 AS STILL_OPEN FROM DUAL")
+
+
 def test_bug001_tls_verify_false_keeps_encryption_on_and_disables_cert_check(tmp_path, monkeypatch) -> None:
     """BUG-001 regression: tls_verify=false must still negotiate TLS, only skip cert verify."""
     monkeypatch.setenv("EXA_PASSWORD", "test")

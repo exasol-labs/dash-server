@@ -1291,8 +1291,8 @@ class AppRuntimeService:
             )
             asset_probe = self._asset_probe(mount_path)
             probes.extend([homepage_probe, layout_probe, dependency_probe, asset_probe])
-            # BUG-003 fix: actively smoke-test the bound profile's queries so an agent
-            # can't ship broken SQL to live just because the layout happens to render.
+            # Actively smoke-test the bound profile's queries so an agent can't ship
+            # broken SQL to live just because the layout happens to render.
             # `_sql_smoke_probe` returns `not_applicable` when there's no bound profile
             # or no queries/*.sql files, so this doesn't affect non-Exasol apps.
             sql_smoke_probe = self._sql_smoke_probe(name, revision)
