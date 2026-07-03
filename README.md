@@ -260,24 +260,6 @@ For local Claude Desktop, you can bridge that HTTP endpoint with `mcp-remote`:
 }
 ```
 
-More setup detail:
-
-- [docs/getting-started.md](docs/getting-started.md)
-- [docs/mcp-clients.md](docs/mcp-clients.md)
-- [docs/exasol.md](docs/exasol.md)
-
-## Design Summary
-
-The current implementation combines:
-
-- a Flask control-plane host
-- an MCP-first operating surface
-- a multi-app Dash runtime
-- Git-backed draft workspaces, revision metadata, desired state, and deployment history
-- a rebuildable SQLite projection for fast local reads
-
-For the deeper design and code-level walkthrough, see [docs/architecture.md](docs/architecture.md).
-
 ## Documentation
 
 - Getting started: [docs/getting-started.md](docs/getting-started.md)
@@ -287,35 +269,6 @@ For the deeper design and code-level walkthrough, see [docs/architecture.md](doc
 - Exasol workflow: [docs/exasol.md](docs/exasol.md)
 - Architecture: [docs/architecture.md](docs/architecture.md)
 - Runtime modes (dependency + process isolation): [docs/runtime-modes.md](docs/runtime-modes.md)
-- Product plan: [plans/dash-server-spec.md](plans/dash-server-spec.md)
-- GitOps plan: [plans/gitops-storage-and-revision-spec.md](plans/gitops-storage-and-revision-spec.md)
-- Claude interactive connectors plan: [plans/claude-interactive-connectors-spec.md](plans/claude-interactive-connectors-spec.md)
-- Exasol optimization plan: [plans/exasol-dashboard-optimization-spec.md](plans/exasol-dashboard-optimization-spec.md)
-
-## Current Status
-
-The repository currently includes:
-
-- the staged Dash hosting/control-plane implementation through the Stage 4 line plus later usability and GitOps work
-- GitOps storage and revision tracking through Phase 4A
-- the Exasol dashboard optimization work through Phase 0
-- the **runtime-isolation work** through Phase 5: per-app dependency environments, out-of-process workers with forkserver baselines, idle-stop with hot restart, environment + wheel-cache GC, and the hosted-mode safety gate. See [docs/runtime-modes.md](docs/runtime-modes.md) for the operator-facing overview and [plans/app-runtime-isolation-and-dependency-environments-plan.md](plans/app-runtime-isolation-and-dependency-environments-plan.md) for the design history.
-
-What it already does well:
-
-- agent-operated Dash hosting
-- structured validation and diagnostics
-- revisioned deploy, preview, promote, and rollback
-- Git-backed app and deployment history
-- Exasol profile creation and dashboard scaffolding
-- per-app dependency environments + out-of-process workers (opt-in via `DASH_SERVER_APP_DEPENDENCY_ISOLATION=per_app` and `DASH_SERVER_APP_RUNTIME_MODE=isolated`)
-
-What it does not yet provide:
-
-- a real security sandbox (the runtime isolation is **operational**, not **security**; see [plans/runtime-sandboxing-adapter-plan.md](plans/runtime-sandboxing-adapter-plan.md))
-- remote Git sync workflows
-- a human admin console
-- the later Exasol phases around richer discovery, SaaS modes, and advanced dashboard generation
 
 ## Running Tests
 
