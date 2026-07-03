@@ -210,7 +210,7 @@ class ExasolDashboardService:
                 if callable(close_statement):
                     try:
                         close_statement()
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
                 return {
                     "status": "ok",
@@ -224,7 +224,7 @@ class ExasolDashboardService:
                         + (" Results were truncated to the configured row limit." if truncated else "")
                     ),
                 }
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if attempt == 0 and _looks_like_dead_session(exc):
                     # First attempt failed on what looks like a stale connection —
                     # drop it from the cache and retry once with a fresh handshake.

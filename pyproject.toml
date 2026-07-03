@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=82.0", "wheel>=0.47"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,19 +9,19 @@ description = "Stage 4 diagnostics slice for an agent-controlled Dash hosting se
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "Flask>=3.0,<4.0",
-  "dash>=4.0,<5.0",
-  "packaging>=24.0,<27.0",
-  "pyexasol>=2.2,<3.0",
-  "jsonschema>=4.0",
+  "Flask>=3.1,<4.0",
+  "dash>=4.3,<5.0",
+  "packaging>=26.2,<27.0",
+  "pyexasol>=2.2.2,<3.0",
+  "jsonschema>=4.26",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=9.0,<10.0",
-  "mypy>=1.11",
-  "types-jsonschema",
-  "ruff>=0.5",
+  "pytest>=9.1,<10.0",
+  "mypy>=2.1",
+  "types-jsonschema>=4.26.0.20260518",
+  "ruff>=0.15.20",
 ]
 
 [project.scripts]

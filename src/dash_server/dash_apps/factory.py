@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, cast
 
 from dash import Dash, Input, Output, dcc, html
 from flask import Flask
@@ -245,7 +245,7 @@ def build_dash_wsgi_app(
     resolved_mount_prefix = (mount_prefix or manifest.route).rstrip("/") or "/"
     dash_app = Dash(
         manifest.name,
-        server=server,
+        server=cast(Any, server),
         routes_pathname_prefix="/",
         requests_pathname_prefix=f"{resolved_mount_prefix}/",
         title=manifest.title,

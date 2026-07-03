@@ -164,7 +164,7 @@ class ExasolConnectionManager:
         if callable(close):
             try:
                 close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def close_all_for_thread(self) -> None:
