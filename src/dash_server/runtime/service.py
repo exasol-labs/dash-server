@@ -1085,15 +1085,16 @@ class AppRuntimeService:
                 },
                 {
                     "name": "process_alive",
-                    "status": "passed" if app.status == "running" and mounted else "failed",
+                    "status": "passed" if mounted else "failed",
                     "details": {
                         "app_status": app.status,
                         "mounted": mounted,
+                        "message": "Preview health is based on the preview mount, not the live app runtime status.",
                     },
                 },
             ]
 
-            if app.status != "running" or not mounted:
+            if not mounted:
                 homepage_probe = self._skipped_probe("http_ready", "Preview revision is not mounted.")
                 layout_probe = self._skipped_probe("dash_layout", "Preview revision is not mounted.")
                 dependency_probe = self._skipped_probe("dash_dependencies", "Preview revision is not mounted.")

@@ -1444,6 +1444,79 @@ def test_app_deploy_draft_can_mount_preview_revision(client):
     assert "App Callback Revision" in preview_layout_texts
 
 
+def test_preview_health_uses_preview_mount_when_live_app_is_stopped(client):
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create",
+            "arguments": {
+                "bundle": _bundle(
+                    "preview-stopped-live",
+                    "Preview Stopped Live v1",
+                    summary="Initial stopped revision.",
+                    revenue="$500K",
+                ),
+                "start_immediately": False,
+            },
+        },
+        request_id=163,
+    )
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_put_files",
+            "arguments": {
+                "name": "preview-stopped-live",
+                "files": [{"path": "app.py", "content": _app_callback_app_py("Preview Stopped Live v2")}],
+            },
+        },
+        request_id=164,
+    )
+
+    deploy_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_deploy_draft",
+            "arguments": {"name": "preview-stopped-live", "deployment_target": "preview"},
+        },
+        request_id=165,
+    )
+    assert deploy_response.status_code == 200
+    deploy_result = deploy_response.get_json()["result"]
+    assert deploy_result["isError"] is False
+    deploy_payload = deploy_result["structuredContent"]
+    assert deploy_payload["app"]["status"] == "stopped"
+    assert deploy_payload["app"]["preview_mounted"] is True
+    assert deploy_payload["health"]["health"]["status"] == "healthy"
+
+    health_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_run_healthcheck",
+            "arguments": {"name": "preview-stopped-live", "target": "preview"},
+        },
+        request_id=166,
+    )
+    assert health_response.status_code == 200
+    health_payload = health_response.get_json()["result"]["structuredContent"]
+    assert health_payload["target"] == "preview"
+    assert health_payload["app"]["status"] == "stopped"
+    assert health_payload["health"]["status"] == "healthy"
+    probes = {probe["name"]: probe for probe in health_payload["health"]["probes"]}
+    assert probes["process_alive"]["status"] == "passed"
+    assert probes["process_alive"]["details"]["mounted"] is True
+    assert probes["http_ready"]["status"] == "passed"
+    assert probes["dash_layout"]["status"] == "passed"
+    assert probes["dash_dependencies"]["status"] == "passed"
+    assert "Preview revision is not mounted." not in str(health_payload["health"]["probes"])
+    preview_layout_texts = _layout_texts(_dash_layout(client, "/preview/preview-stopped-live/2"))
+    assert "App Callback Revision" in preview_layout_texts
+
+
 def test_promote_and_deploy_guidance_can_suggest_start_for_stopped_apps(client):
     _call_mcp(
         client,
