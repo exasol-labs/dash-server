@@ -454,19 +454,21 @@
                 </div>
 
                 <div class="routes">
-                  <div class="route-row">
-                    <span class="route-label">Live route</span>
-                    <span class="route-path">{{ app.live.path }}</span>
-                    <span class="chip">
-                      {% if app.live.published %}
-                        Revision r{{ "%06d"|format(app.live.revision_number or 0) }}
-                      {% elif app.live.revision_number %}
-                        Revision r{{ "%06d"|format(app.live.revision_number) }}
-                      {% else %}
-                        Not published
-                      {% endif %}
-                    </span>
-                  </div>
+                  {% if app.live.visible and app.live.path %}
+                    <div class="route-row">
+                      <span class="route-label">Live route</span>
+                      <span class="route-path">{{ app.live.path }}</span>
+                      <span class="chip">
+                        {% if app.live.published %}
+                          Revision r{{ "%06d"|format(app.live.revision_number or 0) }}
+                        {% elif app.live.revision_number %}
+                          Revision r{{ "%06d"|format(app.live.revision_number) }}
+                        {% else %}
+                          Not published
+                        {% endif %}
+                      </span>
+                    </div>
+                  {% endif %}
                   {% if app.preview.visible and app.preview.path %}
                     <div class="route-row">
                       <span class="route-label">Preview route</span>
@@ -479,13 +481,13 @@
                 </div>
 
                 <div class="actions">
-                  {% if app.live.published %}
+                  {% if app.live.visible and app.live.path %}
                     <a class="button button-primary" href="{{ app.live.path }}">Open live</a>
                   {% endif %}
                   {% if app.preview.visible and app.preview.path %}
                     <a class="button button-secondary" href="{{ app.preview.path }}">Open preview</a>
                   {% endif %}
-                  {% if not app.live.published and not app.preview.available %}
+                  {% if not app.live.visible and not app.preview.visible %}
                     <span class="button button-secondary" aria-disabled="true">No public route</span>
                   {% endif %}
                 </div>

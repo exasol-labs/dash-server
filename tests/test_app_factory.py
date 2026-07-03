@@ -1128,6 +1128,8 @@ def test_hosted_catalog_domain_policy_matches_only_allowed_domain(tmp_path):
     assert policy["allowed_domain"] == "example.test"
     assert b"Demo Dashboard" in same_domain.data
     assert b"matched_share_policy" in same_domain.data
+    assert b"/apps/demo" not in same_domain.data
+    assert b"Open live" not in same_domain.data
     assert b"Demo Dashboard" not in other_domain.data
     assert same_domain_live.status_code == 403
 
@@ -1196,6 +1198,36 @@ def test_hosted_catalog_hides_preview_link_without_preview_access(tmp_path):
     assert b"/apps/demo" in viewer_homepage.data
     assert b"/preview/demo/2" not in viewer_homepage.data
     assert b"Open preview" not in viewer_homepage.data
+
+
+def test_hosted_catalog_hides_live_link_for_preview_only_access(tmp_path):
+    app = create_app(_hosted_mode_test_config(tmp_path))
+    client = app.test_client()
+    _start_demo_preview(client)
+    _call_mcp(
+        client,
+        "app_share_grant",
+        {
+            "name": "demo",
+            "principal_type": "user",
+            "principal_id": "trusted_proxy:user-123",
+            "role": "preview_viewer",
+            "scope": "preview",
+        },
+    )
+
+    viewer_homepage = client.get("/", headers=_trusted_proxy_headers())
+    live_response = client.get("/apps/demo/_dash-layout", headers=_trusted_proxy_headers())
+    preview_response = client.get("/preview/demo/2/_dash-layout", headers=_trusted_proxy_headers())
+
+    assert b"Demo Dashboard" in viewer_homepage.data
+    assert b"Preview Only" in viewer_homepage.data
+    assert b"/apps/demo" not in viewer_homepage.data
+    assert b"Open live" not in viewer_homepage.data
+    assert b"/preview/demo/2" in viewer_homepage.data
+    assert b"Open preview" in viewer_homepage.data
+    assert live_response.status_code == 403
+    assert preview_response.status_code == 200
 
 
 def test_hosted_dispatcher_blocks_preview_for_anonymous_and_viewer_principals(tmp_path):

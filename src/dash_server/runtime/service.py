@@ -802,6 +802,7 @@ class AppRuntimeService:
         entries = []
         for app in apps:
             discover_decision = None
+            live_decision = None
             preview_decision = None
             if auth_context is not None and authorization_service is not None:
                 discover_decision = authorization_service.authorize_app(
@@ -811,6 +812,11 @@ class AppRuntimeService:
                 )
                 if not discover_decision.allowed:
                     continue
+                live_decision = authorization_service.authorize_app(
+                    auth_context,
+                    app,
+                    "dashboard.view_live",
+                )
                 preview_decision = authorization_service.authorize_app(
                     auth_context,
                     app,
@@ -821,6 +827,7 @@ class AppRuntimeService:
                 self._serialize_dashboard_catalog_entry(
                     app,
                     discover_decision=discover_decision,
+                    live_decision=live_decision,
                     preview_decision=preview_decision,
                 )
             )
@@ -1832,18 +1839,25 @@ class AppRuntimeService:
         app: HostedApp,
         *,
         discover_decision: Any | None = None,
+        live_decision: Any | None = None,
         preview_decision: Any | None = None,
     ) -> dict[str, Any]:
         app_row = self._serialize_app_row(app)
         current_revision = self.registry.get_current_revision(app.name)
         preview_revision = self.registry.get_preview_revision(app.name)
         manifest = self._dashboard_catalog_manifest(current_revision, preview_revision)
+        live_published = bool(app_row["published"])
+        live_visible = live_published and (
+            live_decision is None or bool(live_decision.allowed)
+        )
         live = {
-            "path": app.route,
+            "path": app.route if live_visible else None,
             "enabled": app.enabled,
             "mounted": app_row["mounted"],
-            "published": app_row["published"],
+            "published": live_published,
+            "visible": live_visible,
             "revision_number": app.current_revision_number,
+            "access": live_decision.to_dict() if live_decision is not None else None,
         }
         preview_available = bool(app_row["preview_path"] and app_row["preview_mounted"])
         preview_visible = preview_available and (
@@ -1901,14 +1915,14 @@ class AppRuntimeService:
         live: dict[str, Any],
         preview: dict[str, Any],
     ) -> dict[str, Any]:
-        if live["published"] and preview["visible"]:
+        if live["visible"] and preview["visible"]:
             return {
                 "label": "Live + Preview",
                 "detail": "Published now, with a newer preview revision available for review.",
                 "tone": "success",
                 "priority": 0,
             }
-        if live["published"]:
+        if live["visible"]:
             return {
                 "label": "Live",
                 "detail": "Published and reachable on the primary app route.",
@@ -1916,24 +1930,36 @@ class AppRuntimeService:
                 "priority": 1,
             }
         if preview["visible"]:
+            detail = (
+                "A preview revision is available; the live route is not available to this viewer."
+                if live["published"]
+                else "A preview revision is available, but the live route is not currently published."
+            )
             return {
                 "label": "Preview Only",
-                "detail": "A preview revision is available, but the live route is not currently published.",
+                "detail": detail,
                 "tone": "warning",
                 "priority": 2,
+            }
+        if live["published"]:
+            return {
+                "label": "Restricted Live",
+                "detail": "Published, but this viewer does not have live route access.",
+                "tone": "warning",
+                "priority": 3,
             }
         if app.enabled and app.status == "running":
             return {
                 "label": "Needs Attention",
                 "detail": "Expected to be live, but the runtime is not mounted on the public route.",
                 "tone": "danger",
-                "priority": 3,
+                "priority": 4,
             }
         return {
             "label": "Offline",
             "detail": "Not currently published for outside users.",
             "tone": "muted",
-            "priority": 4,
+            "priority": 5,
         }
 
     def _serialize_revision_details(self, app: HostedApp, revision: AppRevision) -> dict[str, Any]:
