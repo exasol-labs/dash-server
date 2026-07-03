@@ -368,7 +368,7 @@ def test_exasol_authoring_guidance_and_validation_block_embedded_credentials(cli
                             "    return app\n"
                         ),
                     },
-                    {"path": "requirements.txt", "content": "dash>=4.0,<5.0\npyexasol>=1.0,<2.0\n"},
+                    {"path": "requirements.txt", "content": "dash>=4.0,<5.0\npyexasol>=2.2.2,<3.0\n"},
                 ],
             },
         },
@@ -447,6 +447,17 @@ def test_exasol_patterns_help_and_kpi_trend_scaffold(app, client) -> None:
     assert "load_row" in app_py_text
     assert "load_rows" in app_py_text
 
+    requirements_response = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_read_file", "arguments": {"name": "revenue-pulse", "path": "requirements.txt"}},
+        request_id=45,
+    )
+    assert requirements_response.status_code == 200
+    requirements_text = requirements_response.get_json()["result"]["structuredContent"]["content"]
+    assert "pyexasol>=2.2.2,<3.0" in requirements_text
+    assert "pyexasol>=1.0,<2.0" not in requirements_text
+
 
 def test_app_scaffold_from_schema_generates_schema_specific_bundle(app, client) -> None:
     fake_module = _RoutingFakePyExasolModule()
@@ -514,6 +525,17 @@ def test_app_scaffold_from_schema_generates_schema_specific_bundle(app, client) 
     notes_text = notes_response.get_json()["result"]["structuredContent"]["content"]
     assert "SALES.ORDERS" in notes_text
     assert "NET_REVENUE" in notes_text
+
+    requirements_response = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_read_file", "arguments": {"name": "sales-schema", "path": "requirements.txt"}},
+        request_id=65,
+    )
+    assert requirements_response.status_code == 200
+    requirements_text = requirements_response.get_json()["result"]["structuredContent"]["content"]
+    assert "pyexasol>=2.2.2,<3.0" in requirements_text
+    assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
 def test_exasol_validation_flags_import_time_queries_and_risky_sql(client) -> None:

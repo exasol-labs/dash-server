@@ -119,7 +119,7 @@ def test_environment_id_is_stable_for_identical_requirements(tmp_path):
         wheel_cache_root=str(tmp_path / "wheels_b"),
         pycache_root=str(tmp_path / "pyc_b"),
     )
-    reqs = ["dash>=4.0,<5.0", "plotly>=5.18", "pyexasol>=1.0,<2.0"]
+    reqs = ["dash>=4.0,<5.0", "plotly>=5.18", "pyexasol>=2.2.2,<3.0"]
     # Order doesn't matter — env ids are computed against the sorted+normalized list.
     assert svc_a.compute_environment_id(reqs) == svc_b.compute_environment_id(list(reversed(reqs)))
 

@@ -7,6 +7,7 @@ from textwrap import dedent
 from typing import Any
 
 EXASOL_DASHBOARD_PATTERNS = ("analytics-hub", "overview", "kpi-trend", "ops-monitor")
+EXASOL_SCAFFOLD_REQUIREMENTS = "dash>=4.0,<5.0\nplotly>=5.18\npyexasol>=2.2.2,<3.0\n"
 
 
 def build_exasol_dashboard_bundle(
@@ -47,7 +48,7 @@ def build_exasol_dashboard_bundle(
         ],
         {
             "path": "requirements.txt",
-            "content": "dash>=4.0,<5.0\nplotly>=5.18\npyexasol>=1.0,<2.0\n",
+            "content": EXASOL_SCAFFOLD_REQUIREMENTS,
         },
     ]
     return {
@@ -112,7 +113,7 @@ def build_schema_scaffold_bundle(
         {"path": "SCHEMA_NOTES.md", "content": _schema_notes_md(blueprint)},
         {
             "path": "requirements.txt",
-            "content": "dash>=4.0,<5.0\nplotly>=5.18\npyexasol>=1.0,<2.0\n",
+            "content": EXASOL_SCAFFOLD_REQUIREMENTS,
         },
     ]
     return {
