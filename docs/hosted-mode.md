@@ -9,8 +9,6 @@ Hosted mode changes the server behavior in four important ways:
 - sharing is enforced through ACLs, public policy, one-time links, and invitations
 - the `/mcp` control plane is restricted to authenticated `admin`, `owner`, or `editor` users
 
-For deeper design details and roadmap notes, see [public-hosted-auth-and-sharing-spec.md](/Users/alexander.stigsen/Dev/dash-server/plans/public-hosted-auth-and-sharing-spec.md).
-
 ## Choose The Right Deployment Mode
 
 `DASH_SERVER_MODE` supports:
