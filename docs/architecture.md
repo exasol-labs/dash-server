@@ -29,14 +29,20 @@ This document is implementation-oriented. Every section below is derived from th
 The current system should be read as a GitOps-first, agent-operated modular monolith with an Exasol-specialized application path:
 
 - one Flask process hosts the control plane
-- one in-process dispatcher mounts many Dash WSGI apps by URL prefix
+- one in-process dispatcher routes each app URL prefix either to a locally mounted Dash WSGI app or to a loopback proxy for an isolated app worker
 - MCP is the structured agent control surface
 - Git is the durable system of record for source, release history, desired state, and canonical deployment audit history
 - SQLite is a disposable projection rebuilt from Git on startup
 - Exasol profile metadata is treated as Git-tracked application configuration
 - Exasol secrets are resolved locally at runtime and never committed into the repo
 
-There is still no per-app process isolation. All Dash apps run in-process.
+Runtime placement is configurable and independent from dependency placement. Local development
+defaults to `shared` dependencies plus `in_process` execution. Hosted mode requires `per_app`
+dependencies plus `isolated` execution unless the explicit unsafe-development override is enabled.
+In isolated mode, app callbacks run in supervised subprocesses on loopback ports and the dispatcher
+mounts a WSGI proxy for each app. Artifacts without a usable `app.py` currently fall back to an
+in-process mount. Process isolation is operational fault isolation, not a security sandbox. See
+[Runtime Modes](runtime-modes.md) for the complete matrix, lifecycle, and limitations.
 
 ## Source Map
 
@@ -50,6 +56,9 @@ The current architecture is concentrated in these modules:
 | `src/dash_server/mcp/server.py` | MCP JSON-RPC server, tools, resources, payload shaping | `MCPServer` |
 | `src/dash_server/runtime/service.py` | Orchestration layer for creation, build, deploy, reconcile, diagnostics, and status | `AppRuntimeService` |
 | `src/dash_server/runtime/dispatcher.py` | Dynamic path-prefix WSGI router | `DynamicPrefixDispatcher` |
+| `src/dash_server/runtime/worker_manager.py` | Isolated worker lifecycle, adoption, idle-stop, restart limits, and runtime records | `AppWorkerManager` |
+| `src/dash_server/runtime/worker_proxy.py` | Loopback WSGI proxy from the dispatcher to isolated app workers | `WorkerProxyWSGIApp` |
+| `src/dash_server_runtime/worker/` | Minimal app-serving runtime installed in per-app environments | worker package |
 | `src/dash_server/registry/sqlite_registry.py` | Local projection store for apps, revisions, and events | `SQLiteAppRegistry` |
 | `src/dash_server/registry/models.py` | Domain models for app, revision, exposure, and event rows | `HostedApp`, `AppRevision`, `AppEvent`, `AppManifest` |
 | `src/dash_server/workspace/service.py` | Draft workspace file operations, validation, import smoke check, snapshotting | `WorkspaceService` |
@@ -57,6 +66,7 @@ The current architecture is concentrated in these modules:
 | `src/dash_server/gitops/worktree_service.py` | Per-app draft worktree management | `GitWorktreeService` |
 | `src/dash_server/diagnostics/service.py` | Logs, errors, tracebacks, health/build records | `DiagnosticsService` |
 | `src/dash_server/dependencies/service.py` | Lightweight dependency installation state for validation/build | `DependencyInstaller` |
+| `src/dash_server/dependencies/environment_service.py` | Content-addressed per-app environments, wheel cache, and garbage collection | `DependencyEnvironmentService` |
 | `src/dash_server/exasol/service.py` | Exasol profile orchestration, validation, scaffold generation, query execution | `ExasolDashboardService` |
 | `src/dash_server/exasol/profiles.py` | Git-backed Exasol profile metadata storage | `ExasolProfileStore` |
 | `src/dash_server/exasol/secrets.py` | Local non-Git secret resolution | `ExasolSecretStore` |
@@ -93,6 +103,8 @@ flowchart TB
         GitWorktrees["GitWorktreeService"]
         Diag["DiagnosticsService"]
         Deps["DependencyInstaller"]
+        EnvSvc["DependencyEnvironmentService"]
+        WorkerMgr["AppWorkerManager"]
         Exasol["ExasolDashboardService"]
     end
 
@@ -110,7 +122,14 @@ flowchart TB
         Artifacts["artifacts/{app}/rNNNNNN/"]
         Diagnostics["diagnostics/{app}/"]
         DepState["dependency_state/"]
+        Environments["app_envs/ + wheels/"]
+        WorkerState["workers/"]
         Secrets["exasol-secrets/{profile}.json\nor env vars"]
+    end
+
+    subgraph Isolated["Isolated Runtime Mode"]
+        WorkerProxy["WorkerProxyWSGIApp"]
+        AppWorkers["per-app Dash worker processes\n(loopback HTTP)"]
     end
 
     subgraph Mounted["Mounted Dash Apps"]
@@ -127,6 +146,8 @@ flowchart TB
     Runtime --> Dispatcher
     Runtime --> Diag
     Runtime --> Deps
+    Runtime --> EnvSvc
+    Runtime --> WorkerMgr
     Runtime --> Exasol
     Workspace --> GitWorktrees
     GitWorktrees --> GitRepo
@@ -143,10 +164,15 @@ flowchart TB
     Runtime --> Artifacts
     Diag --> Diagnostics
     Deps --> DepState
+    EnvSvc --> Environments
+    WorkerMgr --> WorkerState
     Exasol --> Secrets
 
     Dispatcher --> Live
     Dispatcher --> Preview
+    Dispatcher --> WorkerProxy
+    WorkerProxy --> AppWorkers
+    WorkerMgr --> AppWorkers
     User -->|GET /apps/...| Dispatcher
 ```
 
@@ -164,6 +190,8 @@ flowchart TB
 - `DynamicPrefixDispatcher`
 - `DiagnosticsService`
 - `DependencyInstaller`
+- `DependencyEnvironmentService` when dependency isolation is `per_app`
+- `AppWorkerManager` when runtime mode is `isolated`
 - `ExasolDashboardService`
 - `AppRuntimeService`
 - `MCPServer`
@@ -195,7 +223,7 @@ The startup sequence in code is:
 7. materialize draft worktrees/workspaces for known apps
 8. backfill revision Git metadata into legacy SQLite rows
 9. rebuild the SQLite projection from Git
-10. mount persisted live and preview apps from the rebuilt projection
+10. mount persisted live and preview apps from the rebuilt projection, either in-process or through isolated worker proxies according to runtime mode
 11. reconcile observed state to Git desired state
 12. register the MCP blueprint
 
@@ -385,14 +413,17 @@ This means the server remains the security and integration boundary for Exasol a
 
 ## Control Plane vs Data Plane
 
-The product has a logical control plane and data plane, but both live in one process.
+The product has a logical control plane and data plane. Their process placement depends on runtime mode.
 
 | Plane | Current implementation |
 | --- | --- |
 | Control plane | Flask app, MCP transport, Git operations, SQLite projection rebuild/query, draft editing, validation, diagnostics |
-| Data plane | Mounted Dash WSGI apps served under `/apps/...` and `/preview/...` through `DynamicPrefixDispatcher` |
+| Data plane | Dash apps served under `/apps/...` and `/preview/...` through `DynamicPrefixDispatcher`; callbacks execute in the control-plane process in `in_process` mode or in supervised loopback workers in `isolated` mode |
 
-There is no separate scheduler, worker pool, or per-app supervisor. The system is therefore best understood as a single-process application host with clear subsystem boundaries.
+`AppWorkerManager` provides per-mount worker supervision, persisted worker records, restart limits,
+idle-stop, and restart/adoption behavior in isolated mode. This is not a distributed scheduler or a
+container orchestrator: the control plane and workers still share one host, filesystem access, and
+network boundary.
 
 ## GitOps Repository Contract
 
@@ -603,7 +634,7 @@ This is the current authoritative-branch rule:
 
 ## Reconciliation Model
 
-`AppRuntimeService.reconcile_git_desired_state()` is the bridge between Git intent and in-process runtime state.
+`AppRuntimeService.reconcile_git_desired_state()` is the bridge between Git intent and observed runtime state, whether an app is mounted in-process or through an isolated worker proxy.
 
 ### What Reconcile Does
 
@@ -864,21 +895,21 @@ Health checks in `AppRuntimeService` probe mounted live and preview routes and v
 
 ## Dependency Handling
 
-`DependencyInstaller` is still a lightweight local helper, not a full per-app environment manager.
+Dependency placement has two modes:
 
-Current behavior:
+- `shared` uses `DependencyInstaller` and the server interpreter. This is the local-development default.
+- `per_app` uses `DependencyEnvironmentService` to create content-addressed environments from app requirements, reuse identical environments, maintain a wheel cache, and garbage-collect unused environments. This is required in hosted mode unless the unsafe-development override is enabled.
 
-- workspace validation can trigger a lightweight install plan
-- install state is cached under the dependency state root
-- the mounted runtime still runs in the main Python environment
+Dependency isolation and runtime isolation are orthogonal. A per-app environment can be used for
+subprocess validation while callbacks remain in-process, although hosted mode normally combines
+`per_app` with `isolated`. See [Runtime Modes](runtime-modes.md).
 
-This is still a limitation of the current in-process architecture.
+For Exasol-backed apps specifically:
 
-For Exasol-backed apps specifically, the practical dependency contract today is:
-
-- the server environment must have `pyexasol` available for profile validation and live query execution
-- generated Exasol apps declare `pyexasol` in `requirements.txt`
-- runtime query execution still happens in the server process, not in an isolated per-app environment
+- the control-plane environment must have `pyexasol` available for profile validation and in-process query execution
+- generated Exasol apps declare `pyexasol` in `requirements.txt`, which also makes it available in their per-app environments
+- in `in_process` mode, runtime queries execute through the control-plane service
+- in `isolated` mode, the worker constructs its own profile/query service from the GitOps repository and external secrets root, so query callbacks execute in the worker process
 
 ## Security and Isolation Boundary
 
@@ -890,7 +921,11 @@ The persisted exposure model includes:
 - enabled flag
 - permissions object
 
-Those settings are stored in desired state and mirrored into SQLite, but enforcement remains limited by the current in-process runtime model. There is no process sandbox, container boundary, or per-app OS-level isolation yet.
+Those settings are stored in desired state and mirrored into SQLite. Isolated runtime mode provides
+a per-app OS process and prevents an ordinary app crash from directly taking down the control plane
+or another worker. It does not provide a security sandbox: workers inherit the server user's
+filesystem and network access, and there is no container, seccomp, resource-limit, or egress-policy
+boundary yet.
 
 Architecturally, the permissions model is currently declarative state plus routing/publication behavior, not a hardened execution boundary.
 
@@ -906,10 +941,11 @@ Architecturally, the permissions model is currently declarative state plus routi
 
 ## Current Limitations
 
-- all hosted Dash apps still run in one Python process
+- isolated workers share the control-plane host and are not security sandboxes
+- artifacts without a usable `app.py` fall back to in-process serving even when isolated mode is selected
 - artifacts, not Git checkouts, are the runtime execution source
 - diagnostics are local only and not reconstructible from Git
-- dependency handling is lightweight and not isolated per app
+- per-app environments and worker state are local filesystem facilities rather than distributed services
 - Exasol is still Phase 0 in depth: no richer schema discovery, no hosted multi-user auth propagation, and no OS-keychain secret backend yet
 - there is no remote sync, webhook reconcile, branch protection integration, or signed-release flow yet
 
@@ -917,8 +953,8 @@ Architecturally, the permissions model is currently declarative state plus routi
 
 The current codebase is already set up for further evolution in a few clear places:
 
-- replace in-process runtime mounting with per-app processes behind `AppRuntimeService`
-- replace lightweight dependency handling with per-app environments
+- replace host-level process isolation with a pluggable sandbox/container launcher and enforce resource and network policy
+- move environment, artifact, and worker lifecycle coordination from local-only state to production-grade shared infrastructure where horizontal scaling requires it
 - extend `GitRepoService` for remote push/pull and sync policy
 - preserve MCP as a control surface while allowing Git to remain a first-class operator interface
 - keep SQLite as a disposable projection or replace it later with a different query index

@@ -25,6 +25,11 @@ DASH_SERVER_APP_RUNTIME_MODE         = in_process | isolated # default: in_proce
 Hosted mode refuses anything but `per_app` + `isolated` unless `DASH_SERVER_ALLOW_UNSAFE_INPROCESS=
 true` is set (development override, emits a warning on startup).
 
+One compatibility exception remains inside `isolated` mode: a revision whose artifact does not
+contain a usable `app.py` falls back to an in-process mount. Normal files-based hosted apps and the
+Exasol scaffold include `app.py` and use isolated workers. Operators should treat the fallback as a
+legacy/development path, not as an isolated production deployment.
+
 ## Operator-visible artifacts
 
 Each isolation feature has its own directory under `instance/`. None of them store secrets.
@@ -74,9 +79,10 @@ AirPlay Receiver is enabled.
 - **Local development, mixed-dependency apps:** `per_app` + `in_process`. Stops a `pip install
   pandas==2.1` in app B from clobbering `pandas==2.0` in app A. Still runs callbacks in-process so a
   crash kills the control plane — fine for local dev, not for production.
-- **Hosted single-tenant or pre-production:** `shared` + `isolated`. Process isolation without the
-  disk cost of per-app envs. Restart-on-idle keeps RAM bounded.
-- **Hosted multi-tenant (required setting):** `per_app` + `isolated`. Each app has its own python and
+- **Local or pre-production isolation testing:** `shared` + `isolated`. Process isolation without
+  the disk cost of per-app envs. Hosted mode accepts this combination only with the explicit
+  `DASH_SERVER_ALLOW_UNSAFE_INPROCESS=true` development override.
+- **Hosted production (required setting):** `per_app` + `isolated`. Each app has its own python and
   its own process. Forkserver baseline shares pre-imported Dash/Flask pages via copy-on-write so
   cold-start stays under 500 ms.
 
