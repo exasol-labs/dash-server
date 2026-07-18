@@ -13,6 +13,8 @@ _REFRESH_INTERVAL_ID = "__dash-server-refresh-interval"
 _REFRESH_META_ID = "__dash-server-refresh-meta"
 _REFRESH_NOOP_ID = "__dash-server-refresh-noop"
 _STATUS_ROUTE = "/__dash-server/status"
+_HOSTED_CHROME_ID = "__dash-server-hosted-chrome"
+_CATALOG_LINK_ID = "__dash-server-catalog-link"
 
 
 def apply_hosted_footer(
@@ -26,6 +28,11 @@ def apply_hosted_footer(
     if getattr(dash_app, "_dash_server_footer_applied", False):
         return
 
+    original_layout = dash_app.layout
+    if not callable(original_layout) and _contains_component_id(original_layout, _HOSTED_CHROME_ID):
+        dash_app._dash_server_footer_applied = True  # type: ignore[attr-defined]
+        return
+
     if mount_path and revision_number is not None:
         _register_refresh_status_route(
             dash_app,
@@ -33,8 +40,6 @@ def apply_hosted_footer(
             revision_number=revision_number,
         )
         _register_refresh_clientside_callback(dash_app)
-
-    original_layout = dash_app.layout
 
     if callable(original_layout):
         def wrapped_layout() -> Any:
@@ -63,7 +68,10 @@ def _with_footer(
     *,
     mount_path: str | None,
     revision_number: int | None,
-) -> html.Div:
+) -> Any:
+    if _contains_component_id(content, _HOSTED_CHROME_ID):
+        return content
+
     children: list[Any] = []
     if mount_path and revision_number is not None:
         children.extend(
@@ -96,7 +104,14 @@ def _with_footer(
             ),
             html.Footer(
                 [
-                    "Delivered by ",
+                    html.A(
+                        "Dashboards",
+                        id=_CATALOG_LINK_ID,
+                        href="/",
+                        title="Back to dashboard catalog",
+                        style={"color": "#2456e6", "textDecoration": "none"},
+                    ),
+                    " · Delivered by ",
                     html.A(
                         "Exasol",
                         href=_EXASOL_URL,
@@ -125,11 +140,27 @@ def _with_footer(
     )
     return html.Div(
         children,
+        id=_HOSTED_CHROME_ID,
         style={
             "minHeight": "100vh",
             "position": "relative",
         },
     )
+
+
+def _contains_component_id(component: Any, component_id: str) -> bool:
+    """Return whether a Dash component tree already contains platform chrome."""
+
+    if component is None:
+        return False
+    if isinstance(component, (list, tuple)):
+        return any(_contains_component_id(child, component_id) for child in component)
+    if getattr(component, "id", None) == component_id:
+        return True
+    children = getattr(component, "children", None)
+    if children is component:
+        return False
+    return _contains_component_id(children, component_id)
 
 
 def _register_refresh_status_route(

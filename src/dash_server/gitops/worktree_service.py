@@ -72,6 +72,31 @@ class GitWorktreeService:
                 target.write_text(source.read_text())
         return destination
 
+    def delete_worktree(self, app_name: str) -> dict[str, object]:
+        """Remove an app's draft worktree and branch, including dirty drafts."""
+
+        root = self.worktree_root(app_name)
+        branch = self.worktree_branch(app_name)
+        removed_worktree = False
+        removed_branch = False
+        if self.worktree_exists(app_name):
+            self._git("worktree", "remove", "--force", str(root))
+            removed_worktree = True
+        elif root.exists():
+            shutil.rmtree(root)
+            removed_worktree = True
+
+        if self.repo_service.branch_exists(branch):
+            self._git("branch", "-D", branch)
+            removed_branch = True
+        self._git("worktree", "prune")
+        return {
+            "worktree_path": str(root),
+            "branch": branch,
+            "removed_worktree": removed_worktree,
+            "removed_branch": removed_branch,
+        }
+
     def _ensure_worktree(self, app_name: str) -> Path:
         if not self.can_use_worktrees():
             raise RuntimeError("Git worktrees are unavailable until the repo has an initial commit.")

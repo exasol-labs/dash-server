@@ -293,6 +293,33 @@ class SQLiteAppRegistry:
             ).fetchone()
         return self._row_to_app(row) if row else None
 
+    def delete_app(self, name: str) -> bool:
+        """Delete one app and all app-scoped projection rows atomically.
+
+        Git remains the durable audit trail; this method only removes the local
+        SQLite projection and hosted-sharing state for the deleted app.
+        """
+
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM apps WHERE name = ?",
+                (name,),
+            ).fetchone()
+            if exists is None:
+                return False
+            for table in (
+                "app_invitations",
+                "share_links",
+                "app_acl_entries",
+                "app_share_policies",
+                "app_events",
+                "app_revisions",
+            ):
+                connection.execute(f"DELETE FROM {table} WHERE app_name = ?", (name,))
+            connection.execute("DELETE FROM apps WHERE name = ?", (name,))
+            connection.commit()
+        return True
+
     def get_current_revision(self, app_name: str) -> AppRevision | None:
         return self.get_revision_by_pointer(app_name, "current_revision_id")
 

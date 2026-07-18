@@ -88,6 +88,25 @@ class WorkspaceService:
             "workspace_path": str(workspace_dir),
         }
 
+    def delete_workspace(self, app_name: str) -> dict[str, Any]:
+        """Remove all draft workspace state for an app."""
+
+        location = self.workspace_location(app_name)
+        worktree_result: dict[str, object] | None = None
+        if self.git_worktree_service is not None:
+            worktree_result = self.git_worktree_service.delete_worktree(app_name)
+
+        legacy_path = self._legacy_workspace_dir(app_name)
+        removed_legacy_workspace = False
+        if legacy_path.exists():
+            shutil.rmtree(legacy_path)
+            removed_legacy_workspace = True
+        return {
+            **location,
+            "removed_legacy_workspace": removed_legacy_workspace,
+            "worktree": worktree_result,
+        }
+
     def ensure_workspace_backend(self, app_name: str) -> dict[str, Any]:
         """Ensure the workspace uses the configured backend, migrating legacy storage when needed."""
 

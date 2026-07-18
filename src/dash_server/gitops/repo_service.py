@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -250,6 +251,50 @@ class GitRepoService:
             removed_paths=[self.desired_preview_path(app_name)],
             commit_message=commit_message,
         )
+
+    def delete_app(self, app_name: str, *, commit_message: str) -> dict[str, Any]:
+        """Remove an app's active GitOps state while retaining its audit history.
+
+        Published source and release manifests disappear from the current branch,
+        but remain recoverable from Git history. Release tags are removed so the
+        same app name can later start a fresh revision sequence safely.
+        """
+
+        removed_paths = [
+            self.desired_live_path(app_name),
+            self.desired_preview_path(app_name),
+            *self._files_under(f"apps/{app_name}"),
+            *self._files_under(f"releases/{app_name}"),
+        ]
+        history_entries = self.read_history_events(app_name)
+        history_entries.append(
+            {
+                "timestamp": self._timestamp(),
+                "app": app_name,
+                "event_type": "app_deleted",
+                "revision_number": None,
+                "data": {"removed_paths": sorted(set(removed_paths))},
+            }
+        )
+        committed = self._commit_managed_update(
+            managed_files={
+                self.history_path(app_name): self._render_history_entries(history_entries)
+            },
+            removed_paths=sorted(set(removed_paths)),
+            commit_message=commit_message,
+        )
+        for relative_directory in (f"apps/{app_name}", f"releases/{app_name}"):
+            directory = self.repo_root / relative_directory
+            if directory.exists():
+                shutil.rmtree(directory)
+        removed_tags = self._delete_release_tags(app_name)
+        return {
+            "committed": committed,
+            "removed_paths": sorted(set(removed_paths)),
+            "removed_tags": removed_tags,
+            "history_path": self.history_path(app_name),
+            "head_commit": self.head_commit(),
+        }
 
     def commit_managed_update(
         self,
@@ -542,6 +587,23 @@ class GitRepoService:
         if not history_dir.exists():
             return []
         return sorted(path.stem for path in history_dir.iterdir() if path.is_file() and path.suffix == ".jsonl")
+
+    def _files_under(self, relative_directory: str) -> list[str]:
+        directory = self.repo_root / relative_directory
+        if not directory.exists():
+            return []
+        return sorted(
+            str(path.relative_to(self.repo_root))
+            for path in directory.rglob("*")
+            if path.is_file()
+        )
+
+    def _delete_release_tags(self, app_name: str) -> list[str]:
+        prefix = f"dash-server/{app_name}/"
+        tags = [tag for tag in self._release_tags() if tag.startswith(prefix)]
+        if tags:
+            self._git("tag", "-d", *tags)
+        return tags
 
     def _write_files(self, files: Mapping[str, str]) -> list[str]:
         return self._write_files_under(self.repo_root, files)

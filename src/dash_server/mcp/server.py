@@ -109,6 +109,7 @@ class MCPServer:
             "app_start": self._tool_app_start,
             "app_stop": self._tool_app_stop,
             "app_restart": self._tool_app_restart,
+            "app_delete": self._tool_app_delete,
             "app_get_status": self._tool_app_get_status,
             "app_build": self._tool_app_build,
             "app_deploy_draft": self._tool_app_deploy_draft,
@@ -116,6 +117,7 @@ class MCPServer:
             "app_promote_revision": self._tool_app_promote_revision,
             "app_rollback": self._tool_app_rollback,
             "app_put_files": self._tool_app_put_files,
+            "app_list_files": self._tool_app_list_files,
             "app_read_file": self._tool_app_read_file,
             "app_diff_draft_vs_artifact": self._tool_app_diff_draft_vs_artifact,
             "app_patch_file": self._tool_app_patch_file,
@@ -1223,6 +1225,42 @@ class MCPServer:
             structured_content=deleted,
         )
 
+    def _tool_app_list_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_name(arguments)
+        self._require_app_capability(
+            name,
+            "dashboard.edit_draft",
+            tool_name="app_list_files",
+        )
+        listed = self.runtime_service.list_workspace_files(name)
+        return self._tool_result(
+            "app_list_files",
+            text=f"Listed {len(listed['draft']['files'])} draft file(s) for app {listed['app']['name']}.",
+            structured_content=listed,
+        )
+
+    def _tool_app_delete(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_name(arguments)
+        confirmation = self._require_string(arguments.get("confirmation"), "confirmation")
+        if confirmation != name:
+            raise DashServerError(
+                category="app_delete_confirmation_error",
+                summary="App deletion confirmation must exactly match the app name.",
+                details={"app": name, "confirmation": confirmation},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        self._require_app_capability(name, "dashboard.delete", tool_name="app_delete")
+        deleted = self.runtime_service.delete_app(name)
+        return self._tool_result(
+            "app_delete",
+            text=(
+                f"Deleted app {name}. Published source remains recoverable from Git history at "
+                f"commit {deleted['recovery']['deletion_commit']}."
+            ),
+            structured_content=deleted,
+        )
+
     def _tool_app_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         validation = self.runtime_service.validate_workspace(self._require_name(arguments))
         report = validation["validation"]
@@ -2139,6 +2177,12 @@ class MCPServer:
                 },
             },
             {
+                "name": "app_list_files",
+                "title": "List draft files",
+                "description": "List every editable file in the app draft workspace.",
+                "inputSchema": self._name_schema(),
+            },
+            {
                 "name": "app_read_file",
                 "title": "Read a draft file",
                 "description": "Return the current content of one draft workspace file. Use this to inspect app.py, requirements.txt, or other uploaded files before patching.",
@@ -2368,6 +2412,27 @@ class MCPServer:
                 "title": "Restart an app runtime",
                 "description": "Remount the current live revision for a hosted app.",
                 "inputSchema": self._name_schema(),
+            },
+            {
+                "name": "app_delete",
+                "title": "Delete a hosted app",
+                "description": (
+                    "Permanently remove an app from the active runtime, catalog, draft workspace, "
+                    "local artifacts, sharing state, and current GitOps branch. Published source "
+                    "remains recoverable from Git history. confirmation must exactly equal name."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Hosted app name."},
+                        "confirmation": {
+                            "type": "string",
+                            "description": "Must exactly match name to confirm destructive deletion.",
+                        },
+                    },
+                    "required": ["name", "confirmation"],
+                    "additionalProperties": False,
+                },
             },
             {
                 "name": "app_get_status",
@@ -2898,6 +2963,34 @@ class MCPServer:
         if has_request_context():
             return current_auth_context().principal
         return Principal.local_admin()
+
+    def _require_app_capability(
+        self,
+        name: str,
+        capability: str,
+        *,
+        tool_name: str,
+    ) -> None:
+        if not has_request_context():
+            return
+        auth_context = current_auth_context()
+        if auth_context.mode == "local":
+            return
+        app = self._require_existing_app(name, tool_name=tool_name)
+        decision = current_app.extensions["authorization_service"].authorize_app(
+            auth_context,
+            app,
+            capability,
+        )
+        if decision.allowed:
+            return
+        raise DashServerError(
+            category="app_authorization_denied",
+            summary=f"Principal cannot perform {capability} on app {name}.",
+            details=decision.to_dict(),
+            jsonrpc_code=-32030,
+            http_status=decision.status_code,
+        )
 
     def _normalize_email_argument(self, value: Any, *, tool_name: str) -> str:
         if not isinstance(value, str):
@@ -4069,6 +4162,11 @@ class MCPServer:
                 "suggested_tools": ["app_read_file", "app_validate", "app_patch_file"],
                 "related_resources": ["dash://meta/app-authoring-guide"],
             },
+            "app_list_files": {
+                "next_step": "Read or patch one of the listed draft files.",
+                "suggested_tools": ["app_read_file", "app_patch_file", "app_validate"],
+                "related_resources": ["dash://meta/app-authoring-guide"],
+            },
             "app_read_file": {
                 "next_step": "Patch the file or validate the draft after inspecting its contents.",
                 "suggested_tools": ["app_patch_file", "app_put_files", "app_validate"],
@@ -4088,6 +4186,11 @@ class MCPServer:
                 "next_step": "Validate the updated draft workspace.",
                 "suggested_tools": ["app_validate", "app_put_files", "app_deploy_draft"],
                 "related_resources": ["dash://meta/app-authoring-guide"],
+            },
+            "app_delete": {
+                "next_step": "Confirm the app no longer appears in the catalog or app inventory.",
+                "suggested_tools": ["apps_list"],
+                "related_resources": ["dash://apps", "dash://repo/status"],
             },
             "app_build": {
                 "next_step": "Preview or promote the built revision.",

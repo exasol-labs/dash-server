@@ -9,19 +9,19 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from dash_server.auth import current_auth_context
 
 
-_APP_SCOPED_SHARING_TOOLS = frozenset(
-    {
-        "app_share_get",
-        "app_share_grant",
-        "app_share_revoke",
-        "app_share_set_link_scope",
-        "app_share_explain_access",
-        "app_share_create_one_time_link",
-        "app_share_revoke_one_time_link",
-        "app_invite_external_user",
-        "app_revoke_external_invitation",
-    }
-)
+_APP_SCOPED_TOOL_CAPABILITIES = {
+    "app_share_get": "dashboard.manage_sharing",
+    "app_share_grant": "dashboard.manage_sharing",
+    "app_share_revoke": "dashboard.manage_sharing",
+    "app_share_set_link_scope": "dashboard.manage_sharing",
+    "app_share_explain_access": "dashboard.manage_sharing",
+    "app_share_create_one_time_link": "dashboard.manage_sharing",
+    "app_share_revoke_one_time_link": "dashboard.manage_sharing",
+    "app_invite_external_user": "dashboard.manage_sharing",
+    "app_revoke_external_invitation": "dashboard.manage_sharing",
+    "app_list_files": "dashboard.edit_draft",
+    "app_delete": "dashboard.delete",
+}
 
 
 def create_mcp_blueprint() -> Blueprint:
@@ -115,7 +115,10 @@ def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
     if not isinstance(params, dict):
         return False
     tool_name = params.get("name")
-    if tool_name not in _APP_SCOPED_SHARING_TOOLS:
+    if not isinstance(tool_name, str):
+        return False
+    capability = _APP_SCOPED_TOOL_CAPABILITIES.get(tool_name)
+    if capability is None:
         return False
     arguments = params.get("arguments")
     if not isinstance(arguments, dict):
@@ -131,6 +134,6 @@ def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
     decision = current_app.extensions["authorization_service"].authorize_app(
         auth_context,
         app,
-        "dashboard.manage_sharing",
+        capability,
     )
     return decision.allowed

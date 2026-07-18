@@ -6,10 +6,12 @@ import json
 import subprocess
 from urllib.parse import parse_qs, urlparse
 
-from flask import abort, request
+from dash import Dash, html
+from flask import Flask, abort, request
 import pytest
 
 from dash_server.app_factory import create_app
+from dash_server.dash_apps.branding import apply_hosted_footer
 
 
 def test_create_app_builds_flask_app(app):
@@ -23,6 +25,19 @@ def test_create_app_builds_flask_app(app):
     assert "mcp_server" in app.extensions
     assert "auth_context" in app.extensions
     assert "authorization_service" in app.extensions
+
+
+def test_hosted_chrome_layout_marker_prevents_duplicate_wrapping():
+    dash_app = Dash(__name__, server=Flask("chrome-dedup"))
+    existing_layout = html.Div(
+        [html.Div("Existing platform chrome")],
+        id="__dash-server-hosted-chrome",
+    )
+    dash_app.layout = existing_layout
+
+    apply_hosted_footer(dash_app, mount_path="/apps/dedup", revision_number=1)
+
+    assert dash_app.layout is existing_layout
 
 
 def test_create_app_defaults_to_local_mode_without_login(app, client):
@@ -485,6 +500,55 @@ def test_hosted_app_owner_grant_allows_scoped_sharing_mcp_tools(tmp_path):
     assert peer_live.status_code == 200
     assert tools_list.status_code == 403
     assert tools_list.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
+
+
+def test_hosted_app_owner_can_list_files_and_delete_but_editor_cannot(tmp_path):
+    app = create_app(_hosted_mode_test_config(tmp_path))
+    registry = app.extensions["runtime_service"].registry
+    registry.grant_app_access(
+        "demo",
+        principal_type="user",
+        principal_id="trusted_proxy:user-123",
+        role="owner",
+        scope="all",
+        created_by_principal_id="test",
+    )
+    registry.grant_app_access(
+        "demo",
+        principal_type="user",
+        principal_id="trusted_proxy:editor-123",
+        role="editor",
+        scope="all",
+        created_by_principal_id="test",
+    )
+    client = app.test_client()
+
+    listed = _call_mcp(
+        client,
+        "app_list_files",
+        {"name": "demo"},
+        headers=_trusted_proxy_headers("user-123"),
+    )
+    editor_delete = _call_mcp(
+        client,
+        "app_delete",
+        {"name": "demo", "confirmation": "demo"},
+        headers=_trusted_proxy_headers("editor-123"),
+    )
+    owner_delete = _call_mcp(
+        client,
+        "app_delete",
+        {"name": "demo", "confirmation": "demo"},
+        headers=_trusted_proxy_headers("user-123"),
+    )
+
+    assert listed.status_code == 200
+    assert "app.py" in listed.get_json()["result"]["structuredContent"]["draft"]["files"]
+    assert editor_delete.status_code == 403
+    assert editor_delete.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
+    assert owner_delete.status_code == 200
+    assert owner_delete.get_json()["result"]["structuredContent"]["deleted"] is True
+    assert registry.get_app("demo") is None
 
 
 def test_hosted_app_viewer_grant_cannot_use_scoped_sharing_mcp_tools(tmp_path):
@@ -1410,6 +1474,10 @@ def test_demo_dash_route_is_reachable(client):
     assert "Delivered by" in layout_text
     assert "Exasol" in layout_text
     assert "https://www.exasol.com/" in layout_text
+    assert layout_text.count("__dash-server-hosted-chrome") == 1
+    assert "__dash-server-catalog-link" in layout_text
+    assert "Dashboards" in layout_text
+    assert '"href": "/"' in layout_text
 
 
 def test_root_dashboard_catalog_lists_live_and_preview_routes(tmp_path):

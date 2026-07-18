@@ -7,6 +7,7 @@ import difflib
 import importlib.util
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import traceback
@@ -569,6 +570,54 @@ class AppRuntimeService:
             revision_number=revision.revision_number,
         )
         return self._serialize_status(app.name)
+
+    def delete_app(self, name: str) -> dict[str, Any]:
+        """Delete one hosted app from active runtime, GitOps state, and local storage."""
+
+        app = self._require_app(name)
+        revisions = self.registry.list_revisions(name)
+        preview_mount = (
+            self.preview_path(name, app.preview_revision_number)
+            if app.preview_revision_number is not None
+            else None
+        )
+
+        if preview_mount is not None:
+            self.dispatcher.unmount(preview_mount)
+        self.dispatcher.unmount(app.route)
+
+        git_result = self.git_repo_service.delete_app(
+            name,
+            commit_message=f"app/{name}: delete app",
+        )
+        workspace_result = self.workspace_service.delete_workspace(name)
+        registry_deleted = self.registry.delete_app(name)
+
+        removed_local_paths: list[str] = []
+        for path in (self.artifacts_root / name, self.diagnostics_service.root / name):
+            if path.exists():
+                shutil.rmtree(path)
+                removed_local_paths.append(str(path))
+
+        return {
+            "deleted": True,
+            "app": {
+                "name": app.name,
+                "title": app.title,
+                "route": app.route,
+                "preview_path": preview_mount,
+            },
+            "revisions_deleted": [revision.revision_number for revision in revisions],
+            "registry_deleted": registry_deleted,
+            "git": git_result,
+            "workspace": workspace_result,
+            "removed_local_paths": removed_local_paths,
+            "recovery": {
+                "available_from_git_history": True,
+                "history_path": git_result["history_path"],
+                "deletion_commit": git_result["head_commit"],
+            },
+        }
 
     def build_revision(
         self,

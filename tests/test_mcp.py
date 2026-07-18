@@ -2145,6 +2145,113 @@ def test_mcp_can_edit_validate_build_preview_promote_and_rollback_from_workspace
     assert "notes.txt" not in deleted["draft"]["files"]
 
 
+def test_mcp_lists_files_and_deletes_app_with_exact_confirmation(app, client):
+    create_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create",
+            "arguments": {
+                "bundle": _bundle(
+                    "temporary",
+                    "Temporary Dashboard",
+                    summary="Safe deletion coverage.",
+                    revenue="$1",
+                )
+            },
+        },
+    )
+    assert create_response.status_code == 200
+
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_put_files",
+            "arguments": {
+                "name": "temporary",
+                "files": [{"path": "notes.txt", "content": "delete me"}],
+            },
+        },
+        request_id=2,
+    )
+    listed_response = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_list_files", "arguments": {"name": "temporary"}},
+        request_id=3,
+    )
+    listed = listed_response.get_json()["result"]["structuredContent"]
+    assert set(listed["draft"]["files"]) >= {
+        "app.py",
+        "dash-app.json",
+        "notes.txt",
+        "requirements.txt",
+    }
+
+    rejected_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_delete",
+            "arguments": {"name": "temporary", "confirmation": "wrong-name"},
+        },
+        request_id=4,
+    )
+    rejected = rejected_response.get_json()["result"]
+    assert rejected["isError"] is True
+    assert rejected["structuredContent"]["error"]["category"] == "app_delete_confirmation_error"
+    assert client.get("/apps/temporary").status_code == 200
+
+    runtime_service = app.extensions["runtime_service"]
+    repo_root = Path(app.extensions["git_repo_service"].repo_root)
+    workspace_root = Path(runtime_service.workspace_service.workspace_location("temporary")["workspace_path"])
+    artifact_root = Path(runtime_service.artifacts_root) / "temporary"
+
+    deleted_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_delete",
+            "arguments": {"name": "temporary", "confirmation": "temporary"},
+        },
+        request_id=5,
+    )
+    deleted = deleted_response.get_json()["result"]["structuredContent"]
+    assert deleted["deleted"] is True
+    assert deleted["app"]["name"] == "temporary"
+    assert deleted["registry_deleted"] is True
+    assert deleted["recovery"]["available_from_git_history"] is True
+    assert deleted["git"]["removed_tags"] == ["dash-server/temporary/r000001"]
+    assert client.get("/apps/temporary").status_code == 404
+    assert app.extensions["registry"].get_app("temporary") is None
+    assert not (repo_root / "apps" / "temporary").exists()
+    assert not (repo_root / "desired-state" / "live" / "temporary.yaml").exists()
+    assert not workspace_root.exists()
+    assert not artifact_root.exists()
+    history = (repo_root / "history" / "apps" / "temporary.jsonl").read_text()
+    assert '"event_type": "app_deleted"' in history
+
+    recreated_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create",
+            "arguments": {
+                "bundle": _bundle(
+                    "temporary",
+                    "Recreated Dashboard",
+                    summary="The deleted name can be reused.",
+                    revenue="$2",
+                )
+            },
+        },
+        request_id=6,
+    )
+    assert recreated_response.get_json()["result"]["isError"] is False
+    assert b"Recreated Dashboard" in client.get("/apps/temporary").data
+
+
 def test_mcp_validation_and_build_fail_for_invalid_python_draft(client):
     _call_mcp(
         client,
