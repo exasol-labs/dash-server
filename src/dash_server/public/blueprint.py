@@ -18,10 +18,18 @@ def create_public_blueprint() -> Blueprint:
     @blueprint.get("/")
     def dashboard_catalog():
         runtime_service = current_app.extensions["runtime_service"]
+        auth_context = current_auth_context()
         catalog = runtime_service.list_dashboard_catalog(
-            auth_context=current_auth_context(),
+            auth_context=auth_context,
             authorization_service=current_app.extensions["authorization_service"],
         )
+        consumption_policy = current_app.extensions["consumption_service"].policy
+        if (
+            not auth_context.principal.is_authenticated
+            and not consumption_policy.public_exports_enabled
+        ):
+            for app_entry in catalog["apps"]:
+                app_entry["consumption"]["visible"] = False
         return render_template("dashboard_catalog.html", catalog=catalog)
 
     @blueprint.get("/share/links/<token>")

@@ -101,6 +101,28 @@ class Config:
         os.environ.get("DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS", "15")
     )
     DASH_SERVER_EMAIL_SES_REGION: str | None = os.environ.get("DASH_SERVER_EMAIL_SES_REGION")
+    DASH_SERVER_CONSUMPTION_ENABLED: bool = _env_bool(
+        "DASH_SERVER_CONSUMPTION_ENABLED",
+        True,
+    )
+    DASH_SERVER_CONSUMPTION_ALLOWED_FORMATS: tuple[str, ...] = tuple(
+        item.strip().lower()
+        for item in os.environ.get(
+            "DASH_SERVER_CONSUMPTION_ALLOWED_FORMATS",
+            "csv,xlsx,pdf,png,pptx",
+        ).split(",")
+        if item.strip()
+    )
+    DASH_SERVER_CONSUMPTION_MAX_ROWS: int = int(
+        os.environ.get("DASH_SERVER_CONSUMPTION_MAX_ROWS", "100000")
+    )
+    DASH_SERVER_CONSUMPTION_MAX_BYTES: int = int(
+        os.environ.get("DASH_SERVER_CONSUMPTION_MAX_BYTES", str(50 * 1024 * 1024))
+    )
+    DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED: bool = _env_bool(
+        "DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED",
+        False,
+    )
     # Whole-instance override. When set (CLI `--instance-path`, env
     # `DASH_SERVER_INSTANCE_PATH`, or test_config["INSTANCE_PATH"]), every
     # un-overridden `*_ROOT` below derives from it via `Config.default_*`.

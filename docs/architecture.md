@@ -59,6 +59,7 @@ The current architecture is concentrated in these modules:
 | `src/dash_server/runtime/worker_manager.py` | Isolated worker lifecycle, adoption, idle-stop, restart limits, and runtime records | `AppWorkerManager` |
 | `src/dash_server/runtime/worker_proxy.py` | Loopback WSGI proxy from the dispatcher to isolated app workers | `WorkerProxyWSGIApp` |
 | `src/dash_server_runtime/worker/` | Minimal app-serving runtime installed in per-app environments | worker package |
+| `src/dash_server/consumption/` | Registered-output contract validation, policy, shared discovery service, and read-only web adapter | `ConsumptionService` |
 | `src/dash_server/registry/sqlite_registry.py` | Local projection store for apps, revisions, and events | `SQLiteAppRegistry` |
 | `src/dash_server/registry/models.py` | Domain models for app, revision, exposure, and event rows | `HostedApp`, `AppRevision`, `AppEvent`, `AppManifest` |
 | `src/dash_server/workspace/service.py` | Draft workspace file operations, validation, import smoke check, snapshotting | `WorkspaceService` |

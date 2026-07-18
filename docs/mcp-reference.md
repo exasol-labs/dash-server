@@ -10,7 +10,7 @@ This is the practical reference for the current `dash-server` MCP surface.
 ## Main Tools
 
 <!-- BEGIN: auto-tools -->
-_43 tools registered. Each `tools/call` request must pass the tool name and the arguments defined by its `inputSchema`._
+_45 tools registered. Each `tools/call` request must pass the tool name and the arguments defined by its `inputSchema`._
 
 - **`app_acknowledge_data_layer_errors`** — Reset the `data_layer` healthcheck probe by acknowledging all currently recorded Exasol query failures. Use after fixing SQL in-place without promoting a new revision; the underlying `dash://apps/{name}/errors` ledger is preserved, but the probe and `app_collect_diagnostics` both filter past the new watermark.
 - **`app_build`** — Validate the draft workspace and create a new immutable revision with a stored source artifact. Use app_start_preview or app_promote_revision after this. force_clean only bypasses cached dependency-install state; it does not change source snapshotting.
@@ -27,6 +27,8 @@ _43 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`app_inspect_traceback`** — Parse and classify a provided traceback, or inspect the app's latest captured traceback.
 - **`app_invite_external_user`** — [hosted-mode] Create a hashed-token email invitation for an external user. The raw accept token is returned only once; manual email delivery is used until a sender integration is configured.
 - **`app_list_files`** — List every editable file in the app draft workspace.
+- **`app_output_get`** — Inspect one governed output declared by the current live revision.
+- **`app_outputs_list`** — List governed dataset and view outputs declared by the current live revision, including parameter schemas, effective formats, limits, and policy decisions.
 - **`app_patch_file`** — Apply a search/replace patch to one file in the app draft workspace and return a compact line-context preview of the updated file.
 - **`app_promote_revision`** — Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route.
 - **`app_put_files`** — Create or replace one or more files in the app draft workspace. Use this before app_validate.
@@ -98,6 +100,7 @@ _17 server-wide resources plus the per-app pattern below ({{app}} matches any re
 - **`dash://apps/{app}/logs/latest`** — Recent log entries aggregated across runtime, build, and health channels.
 - **`dash://apps/{app}/logs/runtime`** — Recent runtime mount and lifecycle log entries.
 - **`dash://apps/{app}/manifest`** — Current manifest for the app's live revision.
+- **`dash://apps/{app}/outputs`** — Governed dataset and view outputs for the current live revision.
 - **`dash://apps/{app}/permissions`** — Declared filesystem, network, and env permissions for the app.
 - **`dash://apps/{app}/revisions`** — Immutable revisions for the app.
 - **`dash://apps/{app}/routes`** — Live and preview route bindings for the app.

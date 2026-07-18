@@ -15,6 +15,7 @@ import jsonschema
 from flask import current_app, has_request_context, request
 
 from dash_server.auth import AuthContext, Principal, current_auth_context
+from dash_server.consumption import ConsumptionService
 from dash_server.dash_apps.factory import (
     app_authoring_guide,
     app_create_example_bundle,
@@ -65,6 +66,7 @@ def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
         + _len(report.get("exasol"), "errors")
         + _len(report.get("credential_safety"), "errors")
         + _len(report.get("callbacks"), "errors")
+        + _len(report.get("consumption"), "issues")
     )
     warning_count = (
         _len(report.get("lint"), "warnings")
@@ -91,11 +93,13 @@ class MCPServer:
         git_repo_service: GitRepoService,
         exasol_dashboard_service: ExasolDashboardService | None = None,
         email_sender: InvitationEmailSender | None = None,
+        consumption_service: ConsumptionService | None = None,
     ) -> None:
         self.runtime_service = runtime_service
         self.git_repo_service = git_repo_service
         self.exasol_dashboard_service = exasol_dashboard_service
         self.email_sender = email_sender
+        self.consumption_service = consumption_service
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "apps_list": self._tool_apps_list,
             "repo_reconcile": self._tool_repo_reconcile,
@@ -118,6 +122,8 @@ class MCPServer:
             "app_rollback": self._tool_app_rollback,
             "app_put_files": self._tool_app_put_files,
             "app_list_files": self._tool_app_list_files,
+            "app_outputs_list": self._tool_app_outputs_list,
+            "app_output_get": self._tool_app_output_get,
             "app_read_file": self._tool_app_read_file,
             "app_diff_draft_vs_artifact": self._tool_app_diff_draft_vs_artifact,
             "app_patch_file": self._tool_app_patch_file,
@@ -449,6 +455,16 @@ class MCPServer:
         if match:
             return self._resource_contents(uri, self.runtime_service.get_manifest(match.group(1)))
 
+        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/outputs", str(uri))
+        if match:
+            return self._resource_contents(
+                uri,
+                self._consumption_service().list_outputs(
+                    match.group(1),
+                    self._consumption_auth_context(),
+                ),
+            )
+
         match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/revisions", str(uri))
         if match:
             return self._resource_contents(uri, self.runtime_service.list_revisions(match.group(1)))
@@ -775,6 +791,7 @@ class MCPServer:
             "summary",
             "metrics",
             "data_sources",
+            "consumption",
         ):
             if field_name in arguments:
                 bundle[field_name] = arguments[field_name]
@@ -1237,6 +1254,32 @@ class MCPServer:
             "app_list_files",
             text=f"Listed {len(listed['draft']['files'])} draft file(s) for app {listed['app']['name']}.",
             structured_content=listed,
+        )
+
+    def _tool_app_outputs_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_name(arguments)
+        payload = self._consumption_service().list_outputs(
+            name,
+            self._consumption_auth_context(),
+        )
+        return self._tool_result(
+            "app_outputs_list",
+            text=f"Listed {payload['output_count']} registered output(s) for app {name}.",
+            structured_content=payload,
+        )
+
+    def _tool_app_output_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_name(arguments)
+        output_id = self._require_string(arguments.get("output_id"), "output_id")
+        payload = self._consumption_service().get_output(
+            name,
+            output_id,
+            self._consumption_auth_context(),
+        )
+        return self._tool_result(
+            "app_output_get",
+            text=f"Read registered output {output_id} for app {name}.",
+            structured_content=payload,
         )
 
     def _tool_app_delete(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -2183,6 +2226,32 @@ class MCPServer:
                 "inputSchema": self._name_schema(),
             },
             {
+                "name": "app_outputs_list",
+                "title": "List registered outputs",
+                "description": (
+                    "List governed dataset and view outputs declared by the current live revision, "
+                    "including parameter schemas, effective formats, limits, and policy decisions."
+                ),
+                "inputSchema": self._name_schema(),
+            },
+            {
+                "name": "app_output_get",
+                "title": "Get a registered output",
+                "description": "Inspect one governed output declared by the current live revision.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Hosted app name."},
+                        "output_id": {
+                            "type": "string",
+                            "description": "Stable output id from app_outputs_list.",
+                        },
+                    },
+                    "required": ["name", "output_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "app_read_file",
                 "title": "Read a draft file",
                 "description": "Return the current content of one draft workspace file. Use this to inspect app.py, requirements.txt, or other uploaded files before patching.",
@@ -2694,6 +2763,13 @@ class MCPServer:
                         "mimeType": "application/json",
                     },
                     {
+                        "uri": f"dash://apps/{app_name}/outputs",
+                        "name": f"{app_name}-outputs",
+                        "title": f"{app_name} registered outputs",
+                        "description": "Governed dataset and view outputs for the current live revision.",
+                        "mimeType": "application/json",
+                    },
+                    {
                         "uri": f"dash://apps/{app_name}/revisions",
                         "name": f"{app_name}-revisions",
                         "title": f"{app_name} revisions",
@@ -2791,6 +2867,23 @@ class MCPServer:
                 http_status=500,
             )
         return self.exasol_dashboard_service
+
+    def _consumption_service(self) -> ConsumptionService:
+        if self.consumption_service is None:
+            raise DashServerError(
+                category="consumption_not_configured",
+                summary="Consumption output discovery is not configured on this server.",
+                details={},
+                jsonrpc_code=-32012,
+                http_status=500,
+            )
+        return self.consumption_service
+
+    @staticmethod
+    def _consumption_auth_context() -> AuthContext:
+        if has_request_context():
+            return current_auth_context()
+        return AuthContext.for_mode("local", auth_enabled=False)
 
     def _require_name(self, arguments: dict[str, Any]) -> str:
         name = arguments.get("name")
@@ -3273,6 +3366,10 @@ class MCPServer:
                     "type": "object",
                     "description": "Optional datasource bindings for shorthand creation.",
                 },
+                "consumption": {
+                    "type": "object",
+                    "description": "Optional registered-output contract for governed consumption.",
+                },
                 "headline": {"type": "string", "description": "Optional starter dashboard headline for shorthand creation."},
                 "summary": {"type": "string", "description": "Optional starter dashboard summary for shorthand creation."},
                 "metrics": {
@@ -3355,6 +3452,10 @@ class MCPServer:
                         }
                     },
                     "additionalProperties": True,
+                },
+                "consumption": {
+                    "type": "object",
+                    "description": "Optional registered-output contract for governed consumption.",
                 },
                 "headline": {"type": "string", "description": "Optional starter dashboard headline used for generated metadata defaults."},
                 "summary": {"type": "string", "description": "Optional starter dashboard summary used for generated metadata defaults."},
@@ -3450,6 +3551,10 @@ class MCPServer:
                 "data_sources": {
                     "type": "object",
                     "description": "Optional datasource bindings such as data_sources.primary.profile for Exasol-backed apps.",
+                },
+                "consumption": {
+                    "type": "object",
+                    "description": "Optional registered-output contract for governed datasets and views.",
                 },
             },
             "required": ["name", "title"],
@@ -4167,6 +4272,16 @@ class MCPServer:
                 "suggested_tools": ["app_read_file", "app_patch_file", "app_validate"],
                 "related_resources": ["dash://meta/app-authoring-guide"],
             },
+            "app_outputs_list": {
+                "next_step": "Inspect one registered output or open the read-only consumption page.",
+                "suggested_tools": ["app_output_get"],
+                "related_resources": ["dash://apps/{name}/outputs"],
+            },
+            "app_output_get": {
+                "next_step": "Use the normalized contract when Phase 1 export execution is available.",
+                "suggested_tools": ["app_outputs_list"],
+                "related_resources": ["dash://apps/{name}/outputs"],
+            },
             "app_read_file": {
                 "next_step": "Patch the file or validate the draft after inspecting its contents.",
                 "suggested_tools": ["app_patch_file", "app_put_files", "app_validate"],
@@ -4373,6 +4488,7 @@ class MCPServer:
             "description",
             "template",
             "data_sources",
+            "consumption",
             "headline",
             "summary",
             "metrics",

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ catalog.app.title }} outputs</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page: #f5efe3;
+        --panel: #fffaf2;
+        --border: rgba(73, 52, 33, 0.18);
+        --text: #211b17;
+        --muted: #6b5d52;
+        --accent: #0f766e;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--text);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+      main { width: min(1000px, calc(100vw - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      nav { display: flex; gap: 1rem; margin-bottom: 2rem; }
+      a { color: var(--accent); font-weight: 700; }
+      h1 { margin-bottom: 0.35rem; }
+      .intro, .empty { color: var(--muted); }
+      .meta { margin: 1.5rem 0; font-size: 0.9rem; color: var(--muted); }
+      .outputs { display: grid; gap: 1rem; }
+      article {
+        padding: 1.25rem;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: var(--panel);
+      }
+      article h2 { margin: 0 0 0.35rem; font-size: 1.15rem; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; margin: 1rem 0 0; }
+      dt { color: var(--muted); }
+      dd { margin: 0; }
+      code { overflow-wrap: anywhere; }
+      .notice {
+        margin-top: 1.5rem;
+        padding: 0.9rem 1rem;
+        border-left: 4px solid var(--accent);
+        background: rgba(15, 118, 110, 0.08);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav aria-label="Breadcrumb">
+        <a href="/">Dashboards</a>
+        <a href="{{ catalog.app.route }}">Open dashboard</a>
+      </nav>
+      <h1>{{ catalog.app.title }} outputs</h1>
+      <p class="intro">Governed datasets and views declared by the current live revision.</p>
+      <p class="meta">
+        Revision {{ catalog.revision.revision_number }} ·
+        contract <code>{{ catalog.contract_hash[:12] }}</code> ·
+        {{ catalog.output_count }} output{% if catalog.output_count != 1 %}s{% endif %}
+      </p>
+
+      {% if catalog.outputs %}
+        <section class="outputs" aria-label="Registered outputs">
+          {% for output in catalog.outputs %}
+            <article>
+              <h2>{{ output.title }}</h2>
+              {% if output.description %}<p>{{ output.description }}</p>{% endif %}
+              <dl>
+                <dt>ID</dt><dd><code>{{ output.id }}</code></dd>
+                <dt>Kind</dt><dd>{{ output.kind }}</dd>
+                <dt>Classification</dt><dd>{{ output.classification }}</dd>
+                <dt>Declared formats</dt><dd>{{ output.formats | join(', ') }}</dd>
+                <dt>Allowed formats</dt><dd>{{ output.policy.effective_formats | join(', ') or 'None' }}</dd>
+                <dt>Maximum rows</dt><dd>{{ output.policy.effective_limits.max_rows }}</dd>
+                <dt>Maximum bytes</dt><dd>{{ output.policy.effective_limits.max_bytes }}</dd>
+              </dl>
+            </article>
+          {% endfor %}
+        </section>
+      {% else %}
+        <p class="empty">This revision does not declare any consumption outputs.</p>
+      {% endif %}
+
+      <p class="notice">
+        Output discovery is available now. Download and scheduling actions arrive in the next phases.
+      </p>
+    </main>
+  </body>
+</html>

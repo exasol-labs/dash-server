@@ -31,6 +31,7 @@ from dash_server.dash_apps.factory import (
     validate_bundle,
     validate_manifest_payload,
 )
+from dash_server.consumption import validate_consumption_sources
 from dash_server.exceptions import DashServerError
 from dash_server.gitops import GitWorktreeService
 from dash_server.imports import isolated_local_imports
@@ -363,6 +364,10 @@ class WorkspaceService:
             manifest,
             python_files=python_files,
         )
+        consumption_validation = validate_consumption_sources(
+            manifest.consumption,
+            files=files,
+        )
         is_valid = (
             not syntax_errors
             and cross_module_symbols["status"] != "failed"
@@ -372,6 +377,7 @@ class WorkspaceService:
             and callback_report["status"] != "failed"
             and credential_safety["status"] != "failed"
             and exasol_validation["status"] != "failed"
+            and consumption_validation["status"] != "failed"
         )
         return {
             "app": app_name,
@@ -391,6 +397,7 @@ class WorkspaceService:
             "callbacks": callback_report,
             "credential_safety": credential_safety,
             "exasol": exasol_validation,
+            "consumption": consumption_validation,
             "dependency_install": dependency_install,
             "is_valid": is_valid,
         }

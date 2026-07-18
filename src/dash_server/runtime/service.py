@@ -853,6 +853,7 @@ class AppRuntimeService:
             discover_decision = None
             live_decision = None
             preview_decision = None
+            export_decision = None
             if auth_context is not None and authorization_service is not None:
                 discover_decision = authorization_service.authorize_app(
                     auth_context,
@@ -872,12 +873,18 @@ class AppRuntimeService:
                     "dashboard.view_preview",
                     target="preview",
                 )
+                export_decision = authorization_service.authorize_app(
+                    auth_context,
+                    app,
+                    "dashboard.export",
+                )
             entries.append(
                 self._serialize_dashboard_catalog_entry(
                     app,
                     discover_decision=discover_decision,
                     live_decision=live_decision,
                     preview_decision=preview_decision,
+                    export_decision=export_decision,
                 )
             )
         entries.sort(key=lambda entry: (entry["status"]["priority"], entry["title"].lower(), entry["name"]))
@@ -1890,11 +1897,15 @@ class AppRuntimeService:
         discover_decision: Any | None = None,
         live_decision: Any | None = None,
         preview_decision: Any | None = None,
+        export_decision: Any | None = None,
     ) -> dict[str, Any]:
         app_row = self._serialize_app_row(app)
         current_revision = self.registry.get_current_revision(app.name)
         preview_revision = self.registry.get_preview_revision(app.name)
         manifest = self._dashboard_catalog_manifest(current_revision, preview_revision)
+        raw_consumption = manifest.get("consumption")
+        raw_outputs = raw_consumption.get("outputs") if isinstance(raw_consumption, dict) else []
+        output_count = len(raw_outputs) if isinstance(raw_outputs, list) else 0
         live_published = bool(app_row["published"])
         live_visible = live_published and (
             live_decision is None or bool(live_decision.allowed)
@@ -1944,6 +1955,14 @@ class AppRuntimeService:
             "preview": preview,
             "draft_candidate_version": app_row["draft_candidate_version"],
             "access": access,
+            "consumption": {
+                "path": f"/manage/apps/{app.name}/consumption",
+                "output_count": output_count,
+                "visible": output_count > 0 and (
+                    export_decision is None or bool(export_decision.allowed)
+                ),
+                "access": export_decision.to_dict() if export_decision is not None else None,
+            },
         }
 
     def _dashboard_catalog_manifest(

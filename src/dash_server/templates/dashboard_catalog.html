@@ -487,6 +487,11 @@
                   {% if app.preview.visible and app.preview.path %}
                     <a class="button button-secondary" href="{{ app.preview.path }}">Open preview</a>
                   {% endif %}
+                  {% if app.consumption.visible %}
+                    <a class="button button-secondary" href="{{ app.consumption.path }}">
+                      Outputs ({{ app.consumption.output_count }})
+                    </a>
+                  {% endif %}
                   {% if not app.live.visible and not app.preview.visible %}
                     <span class="button button-secondary" aria-disabled="true">No public route</span>
                   {% endif %}

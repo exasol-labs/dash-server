@@ -16,6 +16,8 @@ class AppManifest:
     description: str
     template: str
     data_sources: dict[str, Any] | None = None
+    consumption: dict[str, Any] | None = None
+    consumption_contract_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

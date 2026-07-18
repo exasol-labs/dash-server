@@ -10,6 +10,7 @@ from flask import Flask
 
 from dash_server.dash_apps.branding import apply_hosted_footer
 from dash_server.exceptions import DashServerError
+from dash_server.consumption import consumption_contract_hash, normalize_consumption_contract
 from dash_server.registry.models import AppManifest
 
 _APP_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -62,6 +63,7 @@ def app_create_schema_help() -> dict[str, Any]:
                         "description": "string (optional)",
                         "template": "must be one of metric-cards or exasol-analytics if provided",
                         "data_sources": "optional datasource binding metadata",
+                        "consumption": "optional registered-output contract; see docs/consumption.md",
                     },
                     "dashboard": {
                         "headline": "non-empty string (optional)",
@@ -414,6 +416,11 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                     jsonrpc_code=-32602,
                 )
 
+    consumption = normalize_consumption_contract(
+        raw_manifest.get("consumption"),
+        data_sources=raw_data_sources,
+    )
+
     return AppManifest(
         name=name,
         title=title,
@@ -421,6 +428,8 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
         description=description,
         template=template,
         data_sources=raw_data_sources,
+        consumption=consumption,
+        consumption_contract_hash=consumption_contract_hash(consumption),
     )
 
 
@@ -527,7 +536,15 @@ def _normalize_bundle_shape(bundle: dict[str, Any]) -> dict[str, Any]:
 
     root_manifest_fields = {
         key: bundle[key]
-        for key in ("name", "title", "route", "description", "template", "data_sources")
+        for key in (
+            "name",
+            "title",
+            "route",
+            "description",
+            "template",
+            "data_sources",
+            "consumption",
+        )
         if key in bundle
     }
     root_dashboard_fields = {
@@ -589,6 +606,7 @@ def canonicalize_files_bundle(bundle: dict[str, Any]) -> tuple[dict[str, Any], l
             "description": description,
             "template": template,
             "data_sources": data_sources,
+            "consumption": bundle.get("consumption"),
         },
         "dashboard": {
             "headline": headline,

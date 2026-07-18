@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from flask import Blueprint, Response, current_app, jsonify, request
@@ -21,6 +22,8 @@ _APP_SCOPED_TOOL_CAPABILITIES = {
     "app_revoke_external_invitation": "dashboard.manage_sharing",
     "app_list_files": "dashboard.edit_draft",
     "app_delete": "dashboard.delete",
+    "app_outputs_list": "dashboard.export",
+    "app_output_get": "dashboard.export",
 }
 
 
@@ -99,7 +102,7 @@ def _mcp_authorization_denial(payload: dict[str, Any] | None = None):
 
 
 def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
-    """Allow app owners to use sharing tools without global MCP access."""
+    """Allow app-scoped MCP operations without granting global control-plane access."""
 
     auth_context = current_auth_context()
     principal = auth_context.principal
@@ -107,23 +110,37 @@ def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
         not principal.is_authenticated
         or principal.principal_type != "user"
         or not isinstance(payload, dict)
-        or payload.get("method") != "tools/call"
     ):
         return False
 
     params = payload.get("params")
     if not isinstance(params, dict):
         return False
-    tool_name = params.get("name")
-    if not isinstance(tool_name, str):
+    method = payload.get("method")
+    capability: str | None = None
+    app_name: Any = None
+    if method == "tools/call":
+        tool_name = params.get("name")
+        if not isinstance(tool_name, str):
+            return False
+        capability = _APP_SCOPED_TOOL_CAPABILITIES.get(tool_name)
+        arguments = params.get("arguments")
+        if not isinstance(arguments, dict):
+            return False
+        app_name = arguments.get("name")
+    elif method == "resources/read":
+        uri = params.get("uri")
+        if not isinstance(uri, str):
+            return False
+        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/outputs", uri)
+        if match is None:
+            return False
+        capability = "dashboard.export"
+        app_name = match.group(1)
+    else:
         return False
-    capability = _APP_SCOPED_TOOL_CAPABILITIES.get(tool_name)
     if capability is None:
         return False
-    arguments = params.get("arguments")
-    if not isinstance(arguments, dict):
-        return False
-    app_name = arguments.get("name")
     if not isinstance(app_name, str) or not app_name.strip():
         return False
 

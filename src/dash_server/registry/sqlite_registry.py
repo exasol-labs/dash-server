@@ -230,6 +230,134 @@ class SQLiteAppRegistry:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS consumption_jobs (
+                    id TEXT PRIMARY KEY,
+                    app_name TEXT NOT NULL,
+                    output_id TEXT NOT NULL,
+                    job_type TEXT NOT NULL DEFAULT 'export',
+                    requested_by_principal_id TEXT NOT NULL,
+                    run_as_principal_id TEXT NOT NULL,
+                    revision_number INTEGER NOT NULL,
+                    output_contract_hash TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL DEFAULT '{}',
+                    parameters_hash TEXT NOT NULL DEFAULT '',
+                    requested_format TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    progress_json TEXT NOT NULL DEFAULT '{}',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    idempotency_key TEXT,
+                    error_json TEXT,
+                    subscription_id TEXT,
+                    alert_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    started_at TEXT,
+                    finished_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS consumption_jobs_idempotency
+                ON consumption_jobs(requested_by_principal_id, idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS consumption_artifacts (
+                    id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    app_name TEXT NOT NULL,
+                    format TEXT NOT NULL,
+                    storage_key TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    byte_size INTEGER NOT NULL DEFAULT 0,
+                    row_count INTEGER,
+                    page_count INTEGER,
+                    classification TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT NOT NULL,
+                    deleted_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS consumption_subscriptions (
+                    id TEXT PRIMARY KEY,
+                    app_name TEXT NOT NULL,
+                    output_id TEXT NOT NULL,
+                    owner_principal_id TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL DEFAULT '{}',
+                    requested_format TEXT NOT NULL,
+                    schedule_expression TEXT NOT NULL,
+                    timezone TEXT NOT NULL,
+                    revision_policy TEXT NOT NULL DEFAULT 'follow_live',
+                    delivery_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'enabled',
+                    pause_reason TEXT,
+                    misfire_policy TEXT NOT NULL DEFAULT 'coalesce_one',
+                    next_run_at TEXT,
+                    last_success_at TEXT,
+                    last_failure_at TEXT,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS consumption_alerts (
+                    id TEXT PRIMARY KEY,
+                    app_name TEXT NOT NULL,
+                    output_id TEXT NOT NULL,
+                    owner_principal_id TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL DEFAULT '{}',
+                    schedule_expression TEXT NOT NULL,
+                    timezone TEXT NOT NULL,
+                    condition_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'enabled',
+                    state TEXT NOT NULL DEFAULT 'unknown',
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    next_run_at TEXT,
+                    last_evaluated_at TEXT,
+                    last_notified_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS consumption_delivery_attempts (
+                    id TEXT PRIMARY KEY,
+                    app_name TEXT NOT NULL,
+                    job_id TEXT,
+                    artifact_id TEXT,
+                    subscription_id TEXT,
+                    alert_id TEXT,
+                    recipient_principal_id TEXT,
+                    recipient_email_normalized TEXT,
+                    provider TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    provider_message_id TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    sent_at TEXT,
+                    delivered_at TEXT,
+                    failed_at TEXT
+                )
+                """
+            )
             connection.commit()
 
         self._ensure_column("apps", "current_revision_id", "INTEGER")
@@ -308,6 +436,11 @@ class SQLiteAppRegistry:
             if exists is None:
                 return False
             for table in (
+                "consumption_delivery_attempts",
+                "consumption_artifacts",
+                "consumption_jobs",
+                "consumption_subscriptions",
+                "consumption_alerts",
                 "app_invitations",
                 "share_links",
                 "app_acl_entries",

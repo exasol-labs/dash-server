@@ -11,6 +11,8 @@ from flask import Flask, g
 from .auth import AuthContext, AuthorizationService, IdentityService
 from .auth.blueprint import create_auth_blueprint
 from .config import Config
+from .consumption import ConsumptionService
+from .consumption.blueprint import create_consumption_blueprint
 from .dependencies import DependencyEnvironmentService, DependencyInstaller
 from .diagnostics import DiagnosticsService
 from .exasol import ExasolDashboardService
@@ -454,13 +456,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.extensions["email_sender"] = email_sender
     identity_service = IdentityService(app.config)
     authorization_service = AuthorizationService(registry, app.config)
+    consumption_service = ConsumptionService(registry, authorization_service, app.config)
     app.extensions["identity_service"] = identity_service
     app.extensions["authorization_service"] = authorization_service
+    app.extensions["consumption_service"] = consumption_service
     app.extensions["mcp_server"] = MCPServer(
         runtime_service,
         git_repo_service,
         exasol_dashboard_service=exasol_dashboard_service,
         email_sender=email_sender,
+        consumption_service=consumption_service,
     )
 
     def _authorize_mounted_dashboard(
@@ -487,5 +492,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.register_blueprint(create_auth_blueprint())
     app.register_blueprint(create_mcp_blueprint())
     app.register_blueprint(create_public_blueprint())
+    app.register_blueprint(create_consumption_blueprint())
 
     return app

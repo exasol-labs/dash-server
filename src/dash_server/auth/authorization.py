@@ -57,13 +57,19 @@ class AuthorizationService:
     """Evaluate dashboard capabilities for the current request principal."""
 
     _role_capabilities: dict[str, set[str]] = {
-        "viewer": {"dashboard.discover", "dashboard.view_live", "dashboard.view_metadata"},
+        "viewer": {
+            "dashboard.discover",
+            "dashboard.view_live",
+            "dashboard.view_metadata",
+            "dashboard.export",
+        },
         "preview_viewer": {"dashboard.discover", "dashboard.view_preview", "dashboard.view_metadata"},
         "editor": {
             "dashboard.discover",
             "dashboard.view_live",
             "dashboard.view_preview",
             "dashboard.view_metadata",
+            "dashboard.export",
             "dashboard.edit_draft",
             "dashboard.build_preview",
             "diagnostics.view",
@@ -73,6 +79,7 @@ class AuthorizationService:
             "dashboard.view_live",
             "dashboard.view_preview",
             "dashboard.view_metadata",
+            "dashboard.export",
             "dashboard.edit_draft",
             "dashboard.build_preview",
             "dashboard.promote",
@@ -85,6 +92,7 @@ class AuthorizationService:
             "dashboard.view_live",
             "dashboard.view_preview",
             "dashboard.view_metadata",
+            "dashboard.export",
             "dashboard.edit_draft",
             "dashboard.build_preview",
             "dashboard.promote",
