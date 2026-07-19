@@ -30,7 +30,7 @@
           <dt>Bytes</dt><dd>{{ export.job.progress.bytes or 0 }}</dd>
         </dl>
         {% if export.job.error %}<p role="alert">{{ export.job.error.summary }}</p>{% endif %}
-        {% if download %}<a class="download" href="{{ download.download_url }}">Download CSV</a>{% endif %}
+        {% if download %}<a class="download" href="{{ download.download_url }}">Download {{ export.job.requested_format | upper }}</a>{% endif %}
         {% if export.job.status in ('queued', 'running', 'cancel_requested') %}
           <form method="post" action="/manage/exports/{{ export.job.id }}/cancel">
             <input type="hidden" name="_csrf" value="{{ cancel_token }}">

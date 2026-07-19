@@ -126,6 +126,7 @@ class MCPServer:
             "app_output_get": self._tool_app_output_get,
             "app_export_create": self._tool_app_export_create,
             "app_exports_list": self._tool_app_exports_list,
+            "app_exports_admin_list": self._tool_app_exports_admin_list,
             "export_get": self._tool_export_get,
             "export_cancel": self._tool_export_cancel,
             "export_download_link_create": self._tool_export_download_link_create,
@@ -593,7 +594,7 @@ class MCPServer:
         return payload
 
     def _runtime_status_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "resource": "dash://runtime/status",
             "summary": (
                 "Runtime isolation settings for hosted app dependency installs and serving. "
@@ -601,6 +602,9 @@ class MCPServer:
             ),
             **self._runtime_isolation_snapshot(),
         }
+        if self.consumption_service is not None:
+            payload["consumption_coordinator"] = self.consumption_service.coordinator_status()
+        return payload
 
     def _tool_apps_list(self, _: dict[str, Any]) -> dict[str, Any]:
         apps = self.runtime_service.list_apps()
@@ -1341,6 +1345,17 @@ class MCPServer:
         return self._tool_result(
             "app_exports_list",
             text=f"Listed {payload['job_count']} export job(s) for app {name}.",
+            structured_content=payload,
+        )
+
+    def _tool_app_exports_admin_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_name(arguments)
+        payload = self._consumption_service().list_app_jobs(
+            name, self._consumption_auth_context()
+        )
+        return self._tool_result(
+            "app_exports_admin_list",
+            text=f"Listed {payload['job_count']} app-wide export job(s) for app {name}.",
             structured_content=payload,
         )
 
@@ -2348,14 +2363,14 @@ class MCPServer:
             },
             {
                 "name": "app_export_create",
-                "title": "Create CSV export",
-                "description": "Queue a governed CSV export from a registered output on the current live revision.",
+                "title": "Create dataset export",
+                "description": "Queue a governed CSV or XLSX export from a registered output on the current live revision.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "name": {"type": "string", "description": "Hosted app name."},
                         "output_id": {"type": "string", "description": "Registered dataset output id."},
-                        "format": {"type": "string", "enum": ["csv"]},
+                        "format": {"type": "string", "enum": ["csv", "xlsx"]},
                         "parameters": {"type": "object", "description": "Values allowed by the output parameter schema."},
                         "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
                     },
@@ -2367,6 +2382,15 @@ class MCPServer:
                 "name": "app_exports_list",
                 "title": "List personal exports",
                 "description": "List the caller's recent export jobs for one app.",
+                "inputSchema": self._name_schema(),
+            },
+            {
+                "name": "app_exports_admin_list",
+                "title": "List app-wide exports (owner/admin)",
+                "description": (
+                    "List every principal's export jobs for one app with redacted parameter "
+                    "summaries. Requires the dashboard.manage_consumption capability."
+                ),
                 "inputSchema": self._name_schema(),
             },
             {
@@ -4456,6 +4480,11 @@ class MCPServer:
             "app_exports_list": {
                 "next_step": "Inspect a job or create a download link for a completed export.",
                 "suggested_tools": ["export_get", "export_download_link_create"],
+                "related_resources": ["dash://exports/{job_id}"],
+            },
+            "app_exports_admin_list": {
+                "next_step": "Inspect or cancel a problem job surfaced by the app-wide view.",
+                "suggested_tools": ["export_get", "export_cancel"],
                 "related_resources": ["dash://exports/{job_id}"],
             },
             "export_get": {

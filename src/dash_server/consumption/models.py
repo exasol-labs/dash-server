@@ -23,6 +23,11 @@ class ConsumptionPolicy:
     download_token_ttl_seconds: int
     fetch_batch_size: int
     max_concurrent_jobs: int
+    max_attempts: int
+    job_retention_seconds: int
+    audit_retention_seconds: int
+    max_active_jobs_per_principal: int
+    max_active_jobs_per_app: int
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> ConsumptionPolicy:
@@ -46,6 +51,11 @@ class ConsumptionPolicy:
         download_token_ttl_seconds = int(config.get("DASH_SERVER_CONSUMPTION_DOWNLOAD_TOKEN_TTL_SECONDS", 300))
         fetch_batch_size = int(config.get("DASH_SERVER_CONSUMPTION_FETCH_BATCH_SIZE", 1000))
         max_concurrent_jobs = int(config.get("DASH_SERVER_CONSUMPTION_MAX_CONCURRENT_JOBS", 2))
+        max_attempts = int(config.get("DASH_SERVER_CONSUMPTION_MAX_ATTEMPTS", 2))
+        job_retention_seconds = int(config.get("DASH_SERVER_CONSUMPTION_JOB_RETENTION_SECONDS", 7 * 86400))
+        audit_retention_seconds = int(config.get("DASH_SERVER_CONSUMPTION_AUDIT_RETENTION_SECONDS", 90 * 86400))
+        max_active_jobs_per_principal = int(config.get("DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_PRINCIPAL", 5))
+        max_active_jobs_per_app = int(config.get("DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_APP", 20))
         if (
             min(
                 max_rows,
@@ -55,11 +65,22 @@ class ConsumptionPolicy:
                 download_token_ttl_seconds,
                 fetch_batch_size,
                 max_concurrent_jobs,
+                max_attempts,
+                job_retention_seconds,
+                audit_retention_seconds,
+                max_active_jobs_per_principal,
+                max_active_jobs_per_app,
             )
             <= 0
         ):
             raise RuntimeError(
-                "Consumption row, byte, runtime, retention, batch, and concurrency limits must be positive integers."
+                "Consumption row, byte, runtime, retention, batch, concurrency, attempt, and quota "
+                "limits must be positive integers."
+            )
+        if job_retention_seconds < artifact_ttl_seconds:
+            raise RuntimeError(
+                "DASH_SERVER_CONSUMPTION_JOB_RETENTION_SECONDS must be at least the artifact TTL so "
+                "job pruning never outruns artifact expiry."
             )
         return cls(
             enabled=bool(config.get("DASH_SERVER_CONSUMPTION_ENABLED", True)),
@@ -73,6 +94,11 @@ class ConsumptionPolicy:
             download_token_ttl_seconds=download_token_ttl_seconds,
             fetch_batch_size=fetch_batch_size,
             max_concurrent_jobs=max_concurrent_jobs,
+            max_attempts=max_attempts,
+            job_retention_seconds=job_retention_seconds,
+            audit_retention_seconds=audit_retention_seconds,
+            max_active_jobs_per_principal=max_active_jobs_per_principal,
+            max_active_jobs_per_app=max_active_jobs_per_app,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +153,9 @@ class ConsumptionJob:
     started_at: str | None
     finished_at: str | None
     cancel_requested_at: str | None
+    attempt_count: int = 0
+    lease_owner: str | None = None
+    lease_expires_at: str | None = None
 
     def to_dict(self, *, include_parameters: bool = False) -> dict[str, Any]:
         payload = asdict(self)

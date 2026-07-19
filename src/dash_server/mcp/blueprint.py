@@ -26,6 +26,7 @@ _APP_SCOPED_TOOL_CAPABILITIES = {
     "app_output_get": "dashboard.export",
     "app_export_create": "dashboard.export",
     "app_exports_list": "dashboard.export",
+    "app_exports_admin_list": "dashboard.manage_consumption",
 }
 
 _JOB_SCOPED_TOOLS = {

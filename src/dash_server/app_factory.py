@@ -463,6 +463,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         exasol_service=exasol_dashboard_service,
         artifacts_root=artifacts_root,
     )
+    consumption_service.start()
     app.extensions["identity_service"] = identity_service
     app.extensions["authorization_service"] = authorization_service
     app.extensions["consumption_service"] = consumption_service

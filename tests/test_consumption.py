@@ -772,3 +772,613 @@ def test_exasol_export_executor_uses_bounded_fetch_and_closes_resources(tmp_path
     assert connection_options == {"query_timeout_seconds": 30}
     assert statement.closed is True
     assert connection.closed is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — XLSX, durable job center, quotas, reconciliation
+# ---------------------------------------------------------------------------
+
+
+class _FlakyDatasetExecutor(_FakeDatasetExecutor):
+    """Fails the first stream call with an unexpected error, then succeeds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_calls = 0
+
+    def stream(self, revision, output, parameters, *, cancelled) -> DatasetStream:
+        self.stream_calls += 1
+        if self.stream_calls == 1:
+            raise RuntimeError("transient connection failure")
+        return super().stream(revision, output, parameters, cancelled=cancelled)
+
+
+def _wait_store_status(store, job_id: str, expected: set[str], timeout: float = 5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = store.get_job(job_id)
+        if job is not None and job.status in expected:
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"Job {job_id} did not reach {expected}")
+
+
+def test_phase2_csv_and_xlsx_writers_pass_golden_files(tmp_path: Path):
+    from dash_server.consumption.csv_format import write_csv
+    from dash_server.consumption.xlsx_format import write_xlsx
+    from openpyxl import load_workbook
+
+    columns = ["PERIOD", "COUNT", "RATIO", "NOTE", "FORMULA", "NEGATIVE", "EMPTY"]
+    rows = [
+        ["2026-07", 42, 0.125, "plain text", "=SUM(A1:A2)", "-lead", None],
+        ["2026-08", 7, 2.5, "comma, text", "@cmd", "+1+1", None],
+    ]
+
+    csv_path = tmp_path / "export.csv"
+    csv_result = write_csv(
+        csv_path,
+        columns=columns,
+        batches=iter([rows]),
+        max_rows=100,
+        max_bytes=100_000,
+        cancelled=lambda: False,
+    )
+    golden = Path(__file__).parent / "golden" / "consumption_export.csv"
+    assert csv_path.read_bytes() == golden.read_bytes()
+    assert csv_result["row_count"] == 2
+
+    xlsx_path = tmp_path / "export.xlsx"
+    xlsx_result = write_xlsx(
+        xlsx_path,
+        columns=columns,
+        batches=iter([rows]),
+        max_rows=100,
+        max_bytes=1_000_000,
+        cancelled=lambda: False,
+        provenance={"app": "finance-outputs", "output_id": "monthly-close-detail"},
+    )
+    assert xlsx_result["row_count"] == 2
+    workbook = load_workbook(xlsx_path)
+    assert workbook.sheetnames == ["monthly-close-detail", "Provenance"]
+    sheet = workbook["monthly-close-detail"]
+    assert sheet.freeze_panes == "A2"
+    typed = [[(cell.value, cell.data_type) for cell in row] for row in sheet.iter_rows(min_row=2)]
+    assert typed == [
+        [
+            ("2026-07", "s"),
+            (42, "n"),
+            (0.125, "n"),
+            ("plain text", "s"),
+            ("=SUM(A1:A2)", "s"),  # a formula from source data must stay a string
+            ("-lead", "s"),
+            (None, "n"),
+        ],
+        [
+            ("2026-08", "s"),
+            (7, "n"),
+            (2.5, "n"),
+            ("comma, text", "s"),
+            ("@cmd", "s"),
+            ("+1+1", "s"),
+            (None, "n"),
+        ],
+    ]
+
+
+def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    _create_output_app(client)
+    _enable_phase1(app)
+
+    outputs = _call_tool(client, "app_outputs_list", {"name": "finance-outputs"}).get_json()["result"][
+        "structuredContent"
+    ]
+    policy = outputs["outputs"][0]["policy"]
+    assert policy["phase"] == "on_demand_exports"
+    assert policy["format_availability"] == {
+        "csv": {"executable": True, "reason": "available"},
+        "xlsx": {"executable": True, "reason": "available"},
+    }
+    assert policy["executable"] is True
+    assert policy["reason"] == "available"
+
+    page = client.get("/manage/apps/finance-outputs/consumption")
+    assert page.status_code == 200
+    assert b'<option value="csv">CSV</option>' in page.data
+    assert b'<option value="xlsx">XLSX</option>' in page.data
+
+    created = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "xlsx",
+            "parameters": {"period": "2026-07"},
+        },
+    ).get_json()["result"]["structuredContent"]
+    payload = _wait_for_job(client, created["job"]["id"])
+    assert payload["job"]["status"] == "succeeded"
+    assert payload["artifact"]["filename"].endswith(".xlsx")
+    assert payload["artifact"]["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    link = _call_tool(client, "export_download_link_create", {"job_id": created["job"]["id"]}).get_json()["result"][
+        "structuredContent"
+    ]
+    downloaded = client.get(link["download_url"])
+    assert downloaded.status_code == 200
+    workbook = load_workbook(BytesIO(downloaded.data))
+    sheet = workbook["monthly-close-detail"]
+    cells = {(cell.row, cell.column): cell for row in sheet.iter_rows() for cell in row}
+    assert cells[(2, 2)].value == "=SUM(A1:A2)"
+    assert cells[(2, 2)].data_type == "s"
+    provenance = {row[0].value: row[1].value for row in workbook["Provenance"].iter_rows()}
+    assert provenance["app"] == "finance-outputs"
+    assert provenance["output_id"] == "monthly-close-detail"
+    assert provenance["parameters"] == '{"period": "<provided>"}'
+    assert provenance["limit_outcome"] == "within_limits"
+    assert "2026-07" not in provenance["parameters"]
+
+
+def test_phase2_retry_recovers_from_transient_failure(app, client):
+    _create_output_app(client)
+    executor = _FlakyDatasetExecutor()
+    _enable_phase1(app, executor)
+
+    created = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "2026-07"},
+        },
+    ).get_json()["result"]["structuredContent"]
+    payload = _wait_for_job(client, created["job"]["id"])
+
+    assert payload["job"]["status"] == "succeeded"
+    assert payload["job"]["attempt_count"] == 2
+    assert executor.stream_calls == 2
+    db_path = app.config["REGISTRY_DB_PATH"]
+    with sqlite3.connect(db_path) as connection:
+        events = {
+            row[0]
+            for row in connection.execute(
+                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?",
+                (created["job"]["id"],),
+            ).fetchall()
+        }
+    assert {"export.created", "export.retried", "export.succeeded"} <= events
+
+
+def test_phase2_restart_reconciliation_strands_nothing(app, client):
+    from dash_server.consumption.service import ConsumptionService
+
+    _create_output_app(client)
+    _enable_phase1(app)
+    job_ids = []
+    for index in range(3):
+        created = _call_tool(
+            client,
+            "app_export_create",
+            {
+                "name": "finance-outputs",
+                "output_id": "monthly-close-detail",
+                "format": "csv",
+                "parameters": {"period": "2026-07"},
+                "idempotency_key": f"restart-{index}",
+            },
+        ).get_json()["result"]["structuredContent"]
+        job_ids.append(created["job"]["id"])
+        _wait_for_job(client, created["job"]["id"])
+
+    queued_id, retryable_id, exhausted_id = job_ids
+    db_path = app.config["REGISTRY_DB_PATH"]
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE consumption_jobs SET status='queued', finished_at=NULL, error_json=NULL, "
+            "lease_owner=NULL, lease_expires_at=NULL, attempt_count=0 WHERE id=?",
+            (queued_id,),
+        )
+        connection.execute(
+            "UPDATE consumption_jobs SET status='running', finished_at=NULL, error_json=NULL, "
+            "lease_owner='dead-process', lease_expires_at='2020-01-01T00:00:00Z', attempt_count=1 WHERE id=?",
+            (retryable_id,),
+        )
+        connection.execute(
+            "UPDATE consumption_jobs SET status='running', finished_at=NULL, error_json=NULL, "
+            "lease_owner='dead-process', lease_expires_at='2020-01-01T00:00:00Z', attempt_count=2 WHERE id=?",
+            (exhausted_id,),
+        )
+        connection.commit()
+
+    restarted = ConsumptionService(
+        app.extensions["registry"],
+        app.extensions["authorization_service"],
+        dict(app.config),
+        exasol_service=None,
+        artifacts_root=app.config["ARTIFACTS_ROOT"],
+    )
+    restarted.executor = _FakeDatasetExecutor()
+    restarted.policy = replace(restarted.policy, exports_enabled=True)
+    restarted.start()
+
+    requeued = _wait_store_status(restarted.store, queued_id, {"succeeded"})
+    retried = _wait_store_status(restarted.store, retryable_id, {"succeeded"})
+    stranded = _wait_store_status(restarted.store, exhausted_id, {"failed"})
+    assert requeued.status == "succeeded"
+    assert retried.status == "succeeded"
+    assert stranded.error is not None and stranded.error["category"] == "consumption_job_stranded"
+    assert restarted.store.list_incomplete_jobs() == []
+    with sqlite3.connect(db_path) as connection:
+        events = {
+            row[0]
+            for row in connection.execute(
+                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?",
+                (retryable_id,),
+            ).fetchall()
+        }
+    assert "export.requeued" in events
+
+
+def test_phase2_policy_tightening_narrows_pinned_job_limits(app, client):
+    _create_output_app(client)
+    service = _enable_phase1(app)
+    held_jobs: list[str] = []
+    service.coordinator.submit = held_jobs.append
+
+    created = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "2026-07"},
+        },
+    ).get_json()["result"]["structuredContent"]
+    job_id = created["job"]["id"]
+    assert held_jobs == [job_id]
+    assert created["job"]["effective_limits"]["max_rows"] == 5000
+
+    service.policy = replace(service.policy, max_rows=1)
+    service._run_job(job_id)
+
+    job = service.store.get_job(job_id)
+    assert job is not None and job.status == "failed"
+    assert job.error is not None and job.error["category"] == "consumption_export_limit_exceeded"
+    assert job.effective_limits["max_rows"] == 5000  # pinned limits stayed pinned; the applied cap narrowed
+    assert service.store.get_artifact_for_job(job_id) is None
+
+
+def test_phase2_quotas_bound_active_jobs(app, client):
+    _create_output_app(client)
+    service = _enable_phase1(app)
+    service.coordinator.submit = lambda job_id: None
+    service.policy = replace(service.policy, max_active_jobs_per_principal=2, max_active_jobs_per_app=10)
+
+    for index in range(2):
+        response = _call_tool(
+            client,
+            "app_export_create",
+            {
+                "name": "finance-outputs",
+                "output_id": "monthly-close-detail",
+                "format": "csv",
+                "parameters": {"period": "2026-07"},
+                "idempotency_key": f"quota-{index}",
+            },
+        )
+        assert response.status_code == 200
+
+    principal_blocked = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "2026-07"},
+            "idempotency_key": "quota-overflow",
+        },
+    )
+    principal_result = principal_blocked.get_json()["result"]
+    assert principal_result["isError"] is True
+    assert principal_result["structuredContent"]["error"]["category"] == "consumption_quota_exceeded"
+    assert principal_result["structuredContent"]["error"]["details"]["scope"] == "principal"
+
+    service.policy = replace(service.policy, max_active_jobs_per_principal=10, max_active_jobs_per_app=2)
+    app_blocked = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "2026-07"},
+            "idempotency_key": "quota-overflow",
+        },
+    )
+    app_result = app_blocked.get_json()["result"]
+    assert app_result["isError"] is True
+    assert app_result["structuredContent"]["error"]["category"] == "consumption_quota_exceeded"
+    assert app_result["structuredContent"]["error"]["details"]["scope"] == "app"
+
+    # Finishing the held jobs releases quota.
+    for job in service.store.list_incomplete_jobs():
+        service._run_job(job.id)
+    released = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "2026-07"},
+            "idempotency_key": "quota-after-release",
+        },
+    )
+    assert released.status_code == 200
+    assert released.get_json()["result"]["isError"] is False
+
+
+def test_phase2_retention_prunes_jobs_and_releases_idempotency_keys(app, client):
+    _create_output_app(client)
+    service = _enable_phase1(app)
+
+    created = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "2026-07"},
+            "idempotency_key": "retained-key",
+        },
+    ).get_json()["result"]["structuredContent"]
+    job_id = created["job"]["id"]
+    _wait_for_job(client, job_id)
+    artifact = service.store.get_artifact_for_job(job_id)
+    assert artifact is not None
+    artifact_path = service.artifact_store.resolve(artifact.storage_key)
+
+    db_path = app.config["REGISTRY_DB_PATH"]
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE consumption_jobs SET finished_at='2020-01-01T00:00:00Z' WHERE id=?",
+            (job_id,),
+        )
+        connection.execute(
+            "INSERT INTO consumption_audit_events "
+            "(event_type, actor_principal_id, app_name, decision, details_json, created_at) "
+            "VALUES ('export.created', 'p', 'finance-outputs', 'allowed', '{}', '2019-01-01T00:00:00Z')"
+        )
+        connection.commit()
+
+    summary = service.run_maintenance()
+
+    assert summary["pruned_jobs"] == 1
+    assert service.store.get_job(job_id) is None
+    assert not artifact_path.exists()
+    with sqlite3.connect(db_path) as connection:
+        stale_audit = connection.execute(
+            "SELECT COUNT(*) FROM consumption_audit_events WHERE created_at <= '2019-12-31'"
+        ).fetchone()[0]
+    assert stale_audit == 0
+
+    reused = _call_tool(
+        client,
+        "app_export_create",
+        {
+            "name": "finance-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "2026-07"},
+            "idempotency_key": "retained-key",
+        },
+    )
+    assert reused.status_code == 200
+    assert reused.get_json()["result"]["structuredContent"]["job"]["id"] != job_id
+
+
+def test_phase2_schema_ledger_records_versions_and_refuses_downgrade(app):
+    service = app.extensions["consumption_service"]
+    db_path = app.config["REGISTRY_DB_PATH"]
+    with sqlite3.connect(db_path) as connection:
+        versions = {
+            row[0] for row in connection.execute("SELECT version FROM consumption_schema_migrations").fetchall()
+        }
+    assert versions == {1, 2}
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO consumption_schema_migrations (version, applied_at) VALUES (99, '2099-01-01T00:00:00Z')"
+        )
+        connection.commit()
+    with pytest.raises(RuntimeError, match="newer than this server supports"):
+        service.store.initialize()
+
+
+def test_phase2_multi_process_coordinator_refusal_and_status(app, client):
+    service = app.extensions["consumption_service"]
+
+    with pytest.raises(RuntimeError, match="single-process only"):
+        service.store.claim_coordinator(
+            owner="other-process",
+            pid=999_999,
+            stale_after_seconds=300,
+            is_pid_alive=lambda pid: True,
+        )
+
+    status = service.coordinator_status()
+    assert status["mode"] == "local-single-process"
+    assert status["multi_process_supported"] is False
+    assert status["claim"]["owner"] == service.instance_id
+
+    runtime_status = _read_resource(client, "dash://runtime/status")
+    assert runtime_status["consumption_coordinator"]["mode"] == "local-single-process"
+    assert runtime_status["consumption_coordinator"]["multi_process_supported"] is False
+
+    # A dead previous owner can be taken over.
+    service.store.claim_coordinator(
+        owner="successor",
+        pid=999_999,
+        stale_after_seconds=300,
+        is_pid_alive=lambda pid: False,
+    )
+    assert service.store.coordinator_snapshot()["owner"] == "successor"
+    # Restore the fixture's claim for any later maintenance calls.
+    service.store.claim_coordinator(
+        owner=service.instance_id,
+        pid=999_999,
+        stale_after_seconds=300,
+        is_pid_alive=lambda pid: False,
+    )
+
+
+def test_phase2_admin_job_view_requires_capability_and_redacts(tmp_path: Path):
+    hosted_app = create_app(
+        {
+            "TESTING": True,
+            "REGISTRY_DB_PATH": str(tmp_path / "registry.sqlite3"),
+            "ARTIFACTS_ROOT": str(tmp_path / "artifacts"),
+            "WORKSPACES_ROOT": str(tmp_path / "workspaces"),
+            "DIAGNOSTICS_ROOT": str(tmp_path / "diagnostics"),
+            "DEPENDENCY_STATE_ROOT": str(tmp_path / "dependency_state"),
+            "GITOPS_REPO_PATH": str(tmp_path / "gitops-repo"),
+            "EXASOL_SECRETS_ROOT": str(tmp_path / "exasol-secrets"),
+            "AUTO_INSTALL_DEPENDENCIES": False,
+            "PYTHON_EXECUTABLE": sys.executable,
+            "DASH_SERVER_MODE": "hosted",
+            "SECRET_KEY": "test-secret-key",
+            "SESSION_COOKIE_SECURE": True,
+            "SESSION_COOKIE_HTTPONLY": True,
+            "SESSION_COOKIE_SAMESITE": "Lax",
+            "DASH_SERVER_PUBLIC_BASE_URL": "https://dash.example.test",
+            "DASH_SERVER_AUTH_PROVIDER": "trusted_proxy",
+            "DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED": True,
+            "DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS": ("127.0.0.1/32",),
+            "DASH_SERVER_BOOTSTRAP_ADMIN_PRINCIPAL_IDS": ("trusted_proxy:admin-1",),
+            "DASH_SERVER_ALLOW_UNSAFE_INPROCESS": True,
+        }
+    )
+    hosted_client = hosted_app.test_client()
+    admin_headers = {"X-Forwarded-User": "admin-1", "X-Forwarded-Email": "admin@example.test"}
+    viewer_headers = {"X-Forwarded-User": "viewer-1", "X-Forwarded-Email": "viewer@example.test"}
+    created = _call_tool(
+        hosted_client,
+        "app_create_from_files",
+        {
+            "name": "hosted-outputs",
+            "data_sources": {"primary": {"kind": "exasol", "profile": "analytics-prod"}},
+            "consumption": _consumption_contract(),
+            "files": [
+                {"path": "app.py", "content": _APP_PY},
+                {"path": "queries/export.sql", "content": "SELECT {period!s} AS PERIOD FROM DUAL\n"},
+            ],
+        },
+        headers=admin_headers,
+    )
+    assert created.get_json()["result"]["isError"] is False
+    hosted_app.extensions["registry"].grant_app_access(
+        "hosted-outputs",
+        principal_type="user",
+        principal_id="trusted_proxy:viewer-1",
+        role="viewer",
+        scope="all",
+        created_by_principal_id="trusted_proxy:admin-1",
+    )
+    _enable_phase1(hosted_app)
+
+    export_created = _call_tool(
+        hosted_client,
+        "app_export_create",
+        {
+            "name": "hosted-outputs",
+            "output_id": "monthly-close-detail",
+            "format": "csv",
+            "parameters": {"period": "1999-12"},
+        },
+        headers=viewer_headers,
+    ).get_json()["result"]["structuredContent"]
+    job_id = export_created["job"]["id"]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        status = _call_tool(hosted_client, "export_get", {"job_id": job_id}, headers=viewer_headers).get_json()[
+            "result"
+        ]["structuredContent"]
+        if status["job"]["status"] == "succeeded":
+            break
+        time.sleep(0.02)
+    assert status["job"]["status"] == "succeeded"
+
+    viewer_denied = _call_tool(
+        hosted_client,
+        "app_exports_admin_list",
+        {"name": "hosted-outputs"},
+        headers=viewer_headers,
+    )
+    assert viewer_denied.status_code == 403
+    assert viewer_denied.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
+    viewer_denied_ui = hosted_client.get(
+        "/manage/apps/hosted-outputs/consumption/jobs",
+        headers=viewer_headers,
+    )
+    assert viewer_denied_ui.status_code == 403
+
+    admin_payload = _call_tool(
+        hosted_client,
+        "app_exports_admin_list",
+        {"name": "hosted-outputs"},
+        headers=admin_headers,
+    ).get_json()["result"]["structuredContent"]
+    assert admin_payload["job_count"] == 1
+    assert admin_payload["jobs"][0]["job"]["id"] == job_id
+    assert admin_payload["jobs"][0]["job"]["requested_by_principal_id"] == "trusted_proxy:viewer-1"
+    assert admin_payload["jobs"][0]["parameters_redacted"] == {"period": "<provided>"}
+    assert "1999-12" not in json.dumps(admin_payload)
+    assert admin_payload["coordinator"]["mode"] == "local-single-process"
+
+    admin_ui = hosted_client.get(
+        "/manage/apps/hosted-outputs/consumption/jobs",
+        headers=admin_headers,
+    )
+    assert admin_ui.status_code == 200
+    assert b"monthly-close-detail" in admin_ui.data
+    assert b"1999-12" not in admin_ui.data
+    assert "provided" in admin_ui.get_data(as_text=True)
+
+
+def test_phase2_artifact_store_interface_round_trip(tmp_path: Path):
+    from dash_server.consumption.artifacts import (
+        InMemoryObjectClient,
+        LocalArtifactStore,
+        ObjectStoreArtifactStore,
+    )
+
+    job_id = "0a1b2c3d-4e5f-6789-abcd-ef0123456789"
+    stores = [
+        LocalArtifactStore(tmp_path / "local"),
+        ObjectStoreArtifactStore(InMemoryObjectClient(), tmp_path / "object-cache"),
+    ]
+    for store in stores:
+        staged = store.temporary_path(job_id)
+        staged.write_bytes(b"PERIOD\n2026-07\n")
+        key = store.publish(job_id, staged, "export.csv")
+        resolved = store.resolve(key)
+        assert resolved.read_bytes() == b"PERIOD\n2026-07\n"
+        store.delete(key)
+        with pytest.raises(DashServerError):
+            store.resolve(key)
+
+        discarded = store.temporary_path(job_id)
+        discarded.write_bytes(b"partial")
+        store.discard(discarded)
+        assert not discarded.exists()

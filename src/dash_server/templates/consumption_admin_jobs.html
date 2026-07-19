@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ admin.app }} export jobs</title>
+    <style>
+      body { margin: 0; background: #f5efe3; color: #211b17; font-family: "Avenir Next", "Segoe UI", sans-serif; }
+      main { width: min(960px, calc(100vw - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      a { color: #0f766e; font-weight: 700; }
+      table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; background: #fffaf2; border: 1px solid rgba(73,52,33,.18); border-radius: 16px; }
+      th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid rgba(73,52,33,.12); overflow-wrap: anywhere; }
+      caption { text-align: left; padding: .4rem 0; color: #6b5d52; }
+      .empty { color: #6b5d52; }
+      code { overflow-wrap: anywhere; }
+      .meta { color: #6b5d52; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav>
+        <a href="/manage/apps/{{ admin.app }}/consumption">Back to outputs</a>
+      </nav>
+      <h1>{{ admin.app }} export jobs</h1>
+      <p class="meta">
+        All principals · {{ admin.job_count }} job{% if admin.job_count != 1 %}s{% endif %} ·
+        coordinator {{ admin.coordinator.mode }} (single process, pid {{ admin.coordinator.pid }})
+      </p>
+      {% if admin.jobs %}
+        <table>
+          <caption>Parameters are shown as redacted summaries; raw values never leave the job store.</caption>
+          <thead>
+            <tr>
+              <th>Job</th><th>Output</th><th>Principal</th><th>Format</th>
+              <th>Status</th><th>Attempts</th><th>Parameters</th><th>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in admin.jobs %}
+              <tr>
+                <td><a href="/manage/exports/{{ item.job.id }}"><code>{{ item.job.id[:8] }}</code></a></td>
+                <td>{{ item.job.output_id }}</td>
+                <td>{{ item.job.requested_by_principal_id }}</td>
+                <td>{{ item.job.requested_format }}</td>
+                <td>{{ item.job.status }}{% if item.job.error %} · {{ item.job.error.category }}{% endif %}</td>
+                <td>{{ item.job.attempt_count | default(0) }}</td>
+                <td><code>{{ item.parameters_redacted | tojson }}</code></td>
+                <td>{{ item.job.created_at }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="empty">No export jobs recorded for this app.</p>
+      {% endif %}
+    </main>
+  </body>
+</html>

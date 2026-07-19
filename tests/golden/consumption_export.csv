@@ -1,0 +1,3 @@
+PERIOD,COUNT,RATIO,NOTE,FORMULA,NEGATIVE,EMPTY
+2026-07,42,0.125,plain text,'=SUM(A1:A2),'-lead,
+2026-08,7,2.5,"comma, text",'@cmd,'+1+1,

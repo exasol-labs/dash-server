@@ -22,7 +22,10 @@ def write_csv(
     max_rows: int,
     max_bytes: int,
     cancelled: Callable[[], bool],
+    provenance: dict[str, Any] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
+    del provenance  # CSV has no side channel for provenance; the job record carries it.
     row_count = 0
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
@@ -38,15 +41,17 @@ def write_csv(
                 )
             for row in batch:
                 if row_count >= max_rows:
-                    raise _limit_error("rows", max_rows)
+                    raise limit_error("rows", max_rows)
                 writer.writerow([_safe_cell(value) for value in row])
                 row_count += 1
             handle.flush()
             if path.stat().st_size > max_bytes:
-                raise _limit_error("bytes", max_bytes)
+                raise limit_error("bytes", max_bytes)
+            if on_progress is not None:
+                on_progress(row_count, path.stat().st_size)
     byte_size = path.stat().st_size
     if byte_size > max_bytes:
-        raise _limit_error("bytes", max_bytes)
+        raise limit_error("bytes", max_bytes)
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
@@ -62,7 +67,7 @@ def _safe_cell(value: Any) -> Any:
     return value
 
 
-def _limit_error(kind: str, limit: int) -> DashServerError:
+def limit_error(kind: str, limit: int) -> DashServerError:
     return DashServerError(
         category="consumption_export_limit_exceeded",
         summary=f"Export exceeded the configured {kind} limit.",
@@ -72,4 +77,4 @@ def _limit_error(kind: str, limit: int) -> DashServerError:
     )
 
 
-__all__ = ["write_csv"]
+__all__ = ["limit_error", "write_csv"]

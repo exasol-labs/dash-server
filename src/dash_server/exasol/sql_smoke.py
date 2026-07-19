@@ -247,7 +247,7 @@ def collect_sql_smoke_params(artifact_root: Path) -> dict[str, dict[str, Any]]:
 __all__ = [
     "SqlSmokeFile",
     "SqlSmokeReport",
-    "collect_sql_smoke_params",
     "collect_sql_files",
+    "collect_sql_smoke_params",
     "run_sql_smoke",
 ]

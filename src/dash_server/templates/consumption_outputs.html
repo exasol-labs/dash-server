@@ -58,6 +58,9 @@
       <nav aria-label="Breadcrumb">
         <a href="/">Dashboards</a>
         <a href="{{ catalog.app.route }}">Open dashboard</a>
+        {% if can_manage %}
+          <a href="/manage/apps/{{ catalog.app.name }}/consumption/jobs">App-wide jobs</a>
+        {% endif %}
       </nav>
       <h1>{{ catalog.app.title }} outputs</h1>
       <p class="intro">Governed datasets and views declared by the current live revision.</p>
@@ -82,12 +85,20 @@
                 <dt>Maximum rows</dt><dd>{{ output.policy.effective_limits.max_rows }}</dd>
                 <dt>Maximum bytes</dt><dd>{{ output.policy.effective_limits.max_bytes }}</dd>
               </dl>
-              {% if can_export and output.policy.format_availability.csv and output.policy.format_availability.csv.executable %}
+              {% set executable_formats = output.policy.format_availability.items() | selectattr('1.executable') | map(attribute='0') | list %}
+              {% if can_export and executable_formats %}
                 <form method="post" action="/manage/apps/{{ catalog.app.name }}/exports">
                   <input type="hidden" name="_csrf" value="{{ csrf_token }}">
                   <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}-{{ output.id }}">
                   <input type="hidden" name="output_id" value="{{ output.id }}">
-                  <input type="hidden" name="format" value="csv">
+                  <label>
+                    Format
+                    <select name="format">
+                      {% for format_name in executable_formats %}
+                        <option value="{{ format_name }}">{{ format_name | upper }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
                   {% for parameter_name, parameter in output.parameters.properties.items() %}
                     <input type="hidden" name="type__{{ parameter_name }}" value="{{ parameter.type }}">
                     <label>
@@ -114,7 +125,7 @@
                       {% endif %}
                     </label>
                   {% endfor %}
-                  <button type="submit">Create CSV export</button>
+                  <button type="submit">Create export</button>
                 </form>
               {% endif %}
             </article>

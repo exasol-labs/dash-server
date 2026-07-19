@@ -46,7 +46,18 @@ def create_consumption_blueprint() -> Blueprint:
             csrf_token=csrf_token,
             idempotency_key=secrets.token_urlsafe(24),
             can_export=auth_context.principal.is_authenticated,
+            can_manage=service.can_manage_consumption(name, auth_context),
         )
+
+    @blueprint.get("/manage/apps/<name>/consumption/jobs")
+    def admin_jobs(name: str):
+        service = current_app.extensions["consumption_service"]
+        auth_context = current_auth_context()
+        try:
+            payload = service.list_app_jobs(name, auth_context)
+        except DashServerError as exc:
+            return _error_response(exc)
+        return render_template("consumption_admin_jobs.html", admin=payload)
 
     @blueprint.post("/manage/apps/<name>/exports")
     def create_export(name: str):
