@@ -28,9 +28,7 @@ _SCALAR_SCHEMA_KEYS = {
     "minimum",
     "maximum",
 }
-_PYEXASOL_PLACEHOLDER_PATTERN = re.compile(
-    r"\{([A-Za-z_][A-Za-z0-9_]*)(?:![sdfqir])?\}"
-)
+_PYEXASOL_PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?:![sdfqir])?\}")
 
 
 def normalize_consumption_contract(
@@ -93,9 +91,7 @@ def validate_consumption_sources(
             )
             continue
         sql_text = files[path]
-        placeholders = {
-            match.group(1) for match in _PYEXASOL_PLACEHOLDER_PATTERN.finditer(sql_text)
-        }
+        placeholders = {match.group(1) for match in _PYEXASOL_PLACEHOLDER_PATTERN.finditer(sql_text)}
         declared_parameters = set(output.get("parameters", {}).get("properties", {}))
         undeclared = sorted(placeholders - declared_parameters)
         unused = sorted(declared_parameters - placeholders)
@@ -105,11 +101,7 @@ def validate_consumption_sources(
                     "level": "error",
                     "output_id": output.get("id"),
                     "path": path,
-                    "message": (
-                        "SQL uses undeclared consumption parameter(s): "
-                        + ", ".join(undeclared)
-                        + "."
-                    ),
+                    "message": ("SQL uses undeclared consumption parameter(s): " + ", ".join(undeclared) + "."),
                 }
             )
         if unused:
@@ -118,11 +110,7 @@ def validate_consumption_sources(
                     "level": "error",
                     "output_id": output.get("id"),
                     "path": path,
-                    "message": (
-                        "Consumption parameter(s) are not used by the SQL source: "
-                        + ", ".join(unused)
-                        + "."
-                    ),
+                    "message": ("Consumption parameter(s) are not used by the SQL source: " + ", ".join(unused) + "."),
                 }
             )
     return {

@@ -15,6 +15,7 @@ _REFRESH_NOOP_ID = "__dash-server-refresh-noop"
 _STATUS_ROUTE = "/__dash-server/status"
 _HOSTED_CHROME_ID = "__dash-server-hosted-chrome"
 _CATALOG_LINK_ID = "__dash-server-catalog-link"
+_EXPORTS_LINK_ID = "__dash-server-exports-link"
 
 
 def apply_hosted_footer(
@@ -22,6 +23,8 @@ def apply_hosted_footer(
     *,
     mount_path: str | None = None,
     revision_number: int | None = None,
+    app_name: str | None = None,
+    has_consumption_outputs: bool = False,
 ) -> None:
     """Wrap a Dash app layout with the standard hosted-app footer once."""
 
@@ -42,11 +45,14 @@ def apply_hosted_footer(
         _register_refresh_clientside_callback(dash_app)
 
     if callable(original_layout):
+
         def wrapped_layout() -> Any:
             return _with_footer(
                 original_layout(),
                 mount_path=mount_path,
                 revision_number=revision_number,
+                app_name=app_name,
+                has_consumption_outputs=has_consumption_outputs,
             )
 
         dash_app.layout = wrapped_layout
@@ -55,6 +61,8 @@ def apply_hosted_footer(
             original_layout,
             mount_path=mount_path,
             revision_number=revision_number,
+            app_name=app_name,
+            has_consumption_outputs=has_consumption_outputs,
         )
 
     # Idempotency marker — stashed on the Dash app so re-wrapping is a no-op. Dash's
@@ -68,6 +76,8 @@ def _with_footer(
     *,
     mount_path: str | None,
     revision_number: int | None,
+    app_name: str | None,
+    has_consumption_outputs: bool,
 ) -> Any:
     if _contains_component_id(content, _HOSTED_CHROME_ID):
         return content
@@ -91,6 +101,41 @@ def _with_footer(
                 html.Div(id=_REFRESH_NOOP_ID, style={"display": "none"}),
             ]
         )
+    footer_children: list[Any] = [
+        html.A(
+            "Dashboards",
+            id=_CATALOG_LINK_ID,
+            href="/",
+            title="Back to dashboard catalog",
+            style={"color": "#2456e6", "textDecoration": "none"},
+        )
+    ]
+    if has_consumption_outputs and app_name:
+        footer_children.extend(
+            [
+                " · ",
+                html.A(
+                    "Export",
+                    id=_EXPORTS_LINK_ID,
+                    href=f"/manage/apps/{app_name}/consumption",
+                    title="Export a governed dashboard output",
+                    style={"color": "#2456e6", "textDecoration": "none"},
+                ),
+            ]
+        )
+    footer_children.extend(
+        [
+            " · ",
+            "Delivered by ",
+            html.A(
+                "Exasol",
+                href=_EXASOL_URL,
+                target="_blank",
+                rel="noopener noreferrer",
+                style={"color": "#2456e6", "textDecoration": "none"},
+            ),
+        ]
+    )
     children.extend(
         [
             html.Div(
@@ -103,23 +148,7 @@ def _with_footer(
                 },
             ),
             html.Footer(
-                [
-                    html.A(
-                        "Dashboards",
-                        id=_CATALOG_LINK_ID,
-                        href="/",
-                        title="Back to dashboard catalog",
-                        style={"color": "#2456e6", "textDecoration": "none"},
-                    ),
-                    " · Delivered by ",
-                    html.A(
-                        "Exasol",
-                        href=_EXASOL_URL,
-                        target="_blank",
-                        rel="noopener noreferrer",
-                        style={"color": "#2456e6", "textDecoration": "none"},
-                    ),
-                ],
+                footer_children,
                 style={
                     "backgroundColor": "rgba(255, 255, 255, 0.96)",
                     "borderTop": "1px solid rgba(15, 23, 42, 0.12)",

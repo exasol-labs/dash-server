@@ -456,7 +456,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.extensions["email_sender"] = email_sender
     identity_service = IdentityService(app.config)
     authorization_service = AuthorizationService(registry, app.config)
-    consumption_service = ConsumptionService(registry, authorization_service, app.config)
+    consumption_service = ConsumptionService(
+        registry,
+        authorization_service,
+        app.config,
+        exasol_service=exasol_dashboard_service,
+        artifacts_root=artifacts_root,
+    )
     app.extensions["identity_service"] = identity_service
     app.extensions["authorization_service"] = authorization_service
     app.extensions["consumption_service"] = consumption_service

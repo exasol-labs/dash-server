@@ -124,6 +124,11 @@ class MCPServer:
             "app_list_files": self._tool_app_list_files,
             "app_outputs_list": self._tool_app_outputs_list,
             "app_output_get": self._tool_app_output_get,
+            "app_export_create": self._tool_app_export_create,
+            "app_exports_list": self._tool_app_exports_list,
+            "export_get": self._tool_export_get,
+            "export_cancel": self._tool_export_cancel,
+            "export_download_link_create": self._tool_export_download_link_create,
             "app_read_file": self._tool_app_read_file,
             "app_diff_draft_vs_artifact": self._tool_app_diff_draft_vs_artifact,
             "app_patch_file": self._tool_app_patch_file,
@@ -460,6 +465,16 @@ class MCPServer:
             return self._resource_contents(
                 uri,
                 self._consumption_service().list_outputs(
+                    match.group(1),
+                    self._consumption_auth_context(),
+                ),
+            )
+
+        match = re.fullmatch(r"dash://exports/([0-9a-f-]+)", str(uri))
+        if match:
+            return self._resource_contents(
+                uri,
+                self._consumption_service().get_export(
                     match.group(1),
                     self._consumption_auth_context(),
                 ),
@@ -1279,6 +1294,86 @@ class MCPServer:
         return self._tool_result(
             "app_output_get",
             text=f"Read registered output {output_id} for app {name}.",
+            structured_content=payload,
+        )
+
+    def _tool_app_export_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_name(arguments)
+        output_id = self._require_string(arguments.get("output_id"), "output_id")
+        requested_format = self._require_string(arguments.get("format"), "format")
+        parameters = arguments.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise DashServerError(
+                category="consumption_parameter_validation_error",
+                summary="Export parameters must be an object.",
+                details={"field": "parameters"},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        idempotency_key = arguments.get("idempotency_key")
+        if idempotency_key is not None and not isinstance(idempotency_key, str):
+            raise DashServerError(
+                category="consumption_idempotency_key_invalid",
+                summary="idempotency_key must be a string.",
+                details={"field": "idempotency_key"},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        payload = self._consumption_service().create_export(
+            name,
+            output_id,
+            requested_format,
+            parameters,
+            self._consumption_auth_context(),
+            idempotency_key=idempotency_key,
+        )
+        return self._tool_result(
+            "app_export_create",
+            text=f"Queued export {payload['job']['id']} for app {name}.",
+            structured_content=payload,
+        )
+
+    def _tool_app_exports_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_name(arguments)
+        payload = self._consumption_service().list_exports(
+            self._consumption_auth_context(), app_name=name
+        )
+        return self._tool_result(
+            "app_exports_list",
+            text=f"Listed {payload['job_count']} export job(s) for app {name}.",
+            structured_content=payload,
+        )
+
+    def _tool_export_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        job_id = self._require_string(arguments.get("job_id"), "job_id")
+        payload = self._consumption_service().get_export(
+            job_id, self._consumption_auth_context()
+        )
+        return self._tool_result(
+            "export_get",
+            text=f"Export {job_id} is {payload['job']['status']}.",
+            structured_content=payload,
+        )
+
+    def _tool_export_cancel(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        job_id = self._require_string(arguments.get("job_id"), "job_id")
+        payload = self._consumption_service().cancel_export(
+            job_id, self._consumption_auth_context()
+        )
+        return self._tool_result(
+            "export_cancel",
+            text=f"Export {job_id} cancellation state is {payload['job']['status']}.",
+            structured_content=payload,
+        )
+
+    def _tool_export_download_link_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        job_id = self._require_string(arguments.get("job_id"), "job_id")
+        payload = self._consumption_service().create_download_link(
+            job_id, self._consumption_auth_context()
+        )
+        return self._tool_result(
+            "export_download_link_create",
+            text=f"Created a principal-bound download link for export {job_id}.",
             structured_content=payload,
         )
 
@@ -2252,6 +2347,47 @@ class MCPServer:
                 },
             },
             {
+                "name": "app_export_create",
+                "title": "Create CSV export",
+                "description": "Queue a governed CSV export from a registered output on the current live revision.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Hosted app name."},
+                        "output_id": {"type": "string", "description": "Registered dataset output id."},
+                        "format": {"type": "string", "enum": ["csv"]},
+                        "parameters": {"type": "object", "description": "Values allowed by the output parameter schema."},
+                        "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    "required": ["name", "output_id", "format", "parameters"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "app_exports_list",
+                "title": "List personal exports",
+                "description": "List the caller's recent export jobs for one app.",
+                "inputSchema": self._name_schema(),
+            },
+            {
+                "name": "export_get",
+                "title": "Get export job",
+                "description": "Read principal-bound export status and bounded artifact metadata.",
+                "inputSchema": self._job_id_schema(),
+            },
+            {
+                "name": "export_cancel",
+                "title": "Cancel export job",
+                "description": "Request cancellation of the caller's queued or running export.",
+                "inputSchema": self._job_id_schema(),
+            },
+            {
+                "name": "export_download_link_create",
+                "title": "Create export download link",
+                "description": "Create a short-lived authenticated URL for a completed export artifact.",
+                "inputSchema": self._job_id_schema(),
+            },
+            {
                 "name": "app_read_file",
                 "title": "Read a draft file",
                 "description": "Return the current content of one draft workspace file. Use this to inspect app.py, requirements.txt, or other uploaded files before patching.",
@@ -2855,6 +2991,23 @@ class MCPServer:
                     },
                 ]
             )
+        try:
+            exports = self._consumption_service().list_exports(
+                self._consumption_auth_context()
+            )
+        except DashServerError:
+            exports = {"jobs": []}
+        for export in exports["jobs"]:
+            job = export["job"]
+            resources.append(
+                {
+                    "uri": f"dash://exports/{job['id']}",
+                    "name": f"export-{job['id']}",
+                    "title": f"Export {job['id']}",
+                    "description": f"Principal-bound {job['status']} export for {job['app_name']}.",
+                    "mimeType": "application/json",
+                }
+            )
         return resources
 
     def _exasol_service(self) -> ExasolDashboardService:
@@ -3177,6 +3330,19 @@ class MCPServer:
                 }
             },
             "required": ["name"],
+            "additionalProperties": False,
+        }
+
+    def _job_id_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": "Consumption export job id.",
+                }
+            },
+            "required": ["job_id"],
             "additionalProperties": False,
         }
 
@@ -4273,14 +4439,39 @@ class MCPServer:
                 "related_resources": ["dash://meta/app-authoring-guide"],
             },
             "app_outputs_list": {
-                "next_step": "Inspect one registered output or open the read-only consumption page.",
-                "suggested_tools": ["app_output_get"],
+                "next_step": "Inspect one registered output or queue an available CSV export.",
+                "suggested_tools": ["app_output_get", "app_export_create", "app_exports_list"],
                 "related_resources": ["dash://apps/{name}/outputs"],
             },
             "app_output_get": {
-                "next_step": "Use the normalized contract when Phase 1 export execution is available.",
-                "suggested_tools": ["app_outputs_list"],
+                "next_step": "Queue a CSV export when its format availability is executable.",
+                "suggested_tools": ["app_export_create", "app_outputs_list"],
                 "related_resources": ["dash://apps/{name}/outputs"],
+            },
+            "app_export_create": {
+                "next_step": "Poll the queued job until it succeeds, fails, or is cancelled.",
+                "suggested_tools": ["export_get", "export_cancel"],
+                "related_resources": ["dash://exports/{job_id}"],
+            },
+            "app_exports_list": {
+                "next_step": "Inspect a job or create a download link for a completed export.",
+                "suggested_tools": ["export_get", "export_download_link_create"],
+                "related_resources": ["dash://exports/{job_id}"],
+            },
+            "export_get": {
+                "next_step": "Create a download link after success, or inspect the structured failure.",
+                "suggested_tools": ["export_get", "export_cancel", "export_download_link_create"],
+                "related_resources": ["dash://exports/{job_id}"],
+            },
+            "export_cancel": {
+                "next_step": "Poll the job until cancellation reaches a terminal state.",
+                "suggested_tools": ["export_get"],
+                "related_resources": ["dash://exports/{job_id}"],
+            },
+            "export_download_link_create": {
+                "next_step": "Open the authenticated, expiring URL to download the CSV artifact.",
+                "suggested_tools": ["export_get"],
+                "related_resources": ["dash://exports/{job_id}"],
             },
             "app_read_file": {
                 "next_step": "Patch the file or validate the draft after inspecting its contents.",

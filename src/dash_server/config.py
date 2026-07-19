@@ -105,6 +105,10 @@ class Config:
         "DASH_SERVER_CONSUMPTION_ENABLED",
         True,
     )
+    DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED: bool = _env_bool(
+        "DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED",
+        False,
+    )
     DASH_SERVER_CONSUMPTION_ALLOWED_FORMATS: tuple[str, ...] = tuple(
         item.strip().lower()
         for item in os.environ.get(
@@ -118,6 +122,24 @@ class Config:
     )
     DASH_SERVER_CONSUMPTION_MAX_BYTES: int = int(
         os.environ.get("DASH_SERVER_CONSUMPTION_MAX_BYTES", str(50 * 1024 * 1024))
+    )
+    DASH_SERVER_CONSUMPTION_MAX_RUNTIME_SECONDS: int = int(
+        os.environ.get("DASH_SERVER_CONSUMPTION_MAX_RUNTIME_SECONDS", "300")
+    )
+    DASH_SERVER_CONSUMPTION_ARTIFACT_TTL_SECONDS: int = int(
+        os.environ.get("DASH_SERVER_CONSUMPTION_ARTIFACT_TTL_SECONDS", "86400")
+    )
+    DASH_SERVER_CONSUMPTION_DOWNLOAD_TOKEN_TTL_SECONDS: int = int(
+        os.environ.get("DASH_SERVER_CONSUMPTION_DOWNLOAD_TOKEN_TTL_SECONDS", "300")
+    )
+    DASH_SERVER_CONSUMPTION_FETCH_BATCH_SIZE: int = int(
+        os.environ.get("DASH_SERVER_CONSUMPTION_FETCH_BATCH_SIZE", "1000")
+    )
+    DASH_SERVER_CONSUMPTION_MAX_CONCURRENT_JOBS: int = int(
+        os.environ.get("DASH_SERVER_CONSUMPTION_MAX_CONCURRENT_JOBS", "2")
+    )
+    DASH_SERVER_CONSUMPTION_PARAMETER_KEY: str | None = os.environ.get(
+        "DASH_SERVER_CONSUMPTION_PARAMETER_KEY"
     )
     DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED: bool = _env_bool(
         "DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED",

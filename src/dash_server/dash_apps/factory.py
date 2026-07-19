@@ -302,6 +302,8 @@ def build_dash_wsgi_app(
         dash_app,
         mount_path=resolved_mount_prefix,
         revision_number=revision_number,
+        app_name=manifest.name,
+        has_consumption_outputs=bool((manifest.consumption or {}).get("outputs")),
     )
     return server
 

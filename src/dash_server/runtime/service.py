@@ -2752,6 +2752,10 @@ class AppRuntimeService:
                         created,
                         mount_path=mount_path,
                         revision_number=revision_number,
+                        app_name=manifest.name,
+                        has_consumption_outputs=bool(
+                            (manifest.consumption or {}).get("outputs")
+                        ),
                     )
                     finalize_dash_app_callbacks(created)
             except Exception as exc:

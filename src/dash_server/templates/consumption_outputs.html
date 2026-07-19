@@ -45,6 +45,12 @@
         border-left: 4px solid var(--accent);
         background: rgba(15, 118, 110, 0.08);
       }
+      form { margin-top: 1rem; display: grid; gap: .75rem; }
+      label { display: grid; gap: .25rem; font-weight: 700; }
+      input, select { width: min(100%, 32rem); padding: .6rem; border: 1px solid var(--border); border-radius: 8px; background: white; }
+      button { width: fit-content; padding: .65rem 1rem; border: 0; border-radius: 999px; background: var(--accent); color: white; font-weight: 700; }
+      table { width: 100%; margin-top: 1rem; border-collapse: collapse; }
+      th, td { padding: .65rem; border-bottom: 1px solid var(--border); text-align: left; }
     </style>
   </head>
   <body>
@@ -76,6 +82,41 @@
                 <dt>Maximum rows</dt><dd>{{ output.policy.effective_limits.max_rows }}</dd>
                 <dt>Maximum bytes</dt><dd>{{ output.policy.effective_limits.max_bytes }}</dd>
               </dl>
+              {% if can_export and output.policy.format_availability.csv and output.policy.format_availability.csv.executable %}
+                <form method="post" action="/manage/apps/{{ catalog.app.name }}/exports">
+                  <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                  <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}-{{ output.id }}">
+                  <input type="hidden" name="output_id" value="{{ output.id }}">
+                  <input type="hidden" name="format" value="csv">
+                  {% for parameter_name, parameter in output.parameters.properties.items() %}
+                    <input type="hidden" name="type__{{ parameter_name }}" value="{{ parameter.type }}">
+                    <label>
+                      {{ parameter.title or parameter_name }}{% if parameter_name in output.parameters.required %} (required){% endif %}
+                      {% if parameter.enum %}
+                        <select name="param__{{ parameter_name }}" {% if parameter_name in output.parameters.required %}required{% endif %}>
+                          <option value="">Select…</option>
+                          {% for value in parameter.enum %}<option value="{{ value }}">{{ value }}</option>{% endfor %}
+                        </select>
+                      {% elif parameter.type == 'boolean' %}
+                        <select name="param__{{ parameter_name }}" {% if parameter_name in output.parameters.required %}required{% endif %}>
+                          <option value="">Select…</option>
+                          <option value="true">True</option>
+                          <option value="false">False</option>
+                        </select>
+                      {% else %}
+                        <input
+                          name="param__{{ parameter_name }}"
+                          type="{% if parameter.type in ('integer', 'number') %}number{% else %}text{% endif %}"
+                          {% if parameter.type == 'number' %}step="any"{% endif %}
+                          {% if parameter.default is defined %}value="{{ parameter.default }}"{% endif %}
+                          {% if parameter_name in output.parameters.required %}required{% endif %}
+                        >
+                      {% endif %}
+                    </label>
+                  {% endfor %}
+                  <button type="submit">Create CSV export</button>
+                </form>
+              {% endif %}
             </article>
           {% endfor %}
         </section>
@@ -83,9 +124,34 @@
         <p class="empty">This revision does not declare any consumption outputs.</p>
       {% endif %}
 
-      <p class="notice">
-        Output discovery is available now. Download and scheduling actions arrive in the next phases.
-      </p>
+      {% if catalog.policy.exports_enabled and can_export %}
+        <section aria-labelledby="recent-exports">
+          <h2 id="recent-exports">My recent exports</h2>
+          {% if exports.jobs %}
+            <table>
+              <thead><tr><th>Output</th><th>Status</th><th>Created</th><th></th></tr></thead>
+              <tbody>
+                {% for item in exports.jobs %}
+                  <tr>
+                    <td>{{ item.job.output_id }}</td>
+                    <td>{{ item.job.status }}</td>
+                    <td>{{ item.job.created_at }}</td>
+                    <td><a href="/manage/exports/{{ item.job.id }}">View</a></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}<p class="empty">You have not created an export for this app.</p>{% endif %}
+        </section>
+      {% else %}
+        <p class="notice">
+          {% if not can_export %}
+            Output discovery is available. Sign in with dashboard access to create or download exports.
+          {% else %}
+            Output discovery is available now. On-demand export execution is disabled by server policy.
+          {% endif %}
+        </p>
+      {% endif %}
     </main>
   </body>
 </html>

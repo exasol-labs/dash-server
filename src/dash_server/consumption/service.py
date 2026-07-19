@@ -1,57 +1,88 @@
-"""Shared authorization-aware consumption discovery service."""
+"""Shared authorization-aware consumption discovery and export service."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import secrets
+import sqlite3
+from threading import Lock
 from typing import Any
+from uuid import uuid4
 
-from dash_server.auth import AuthContext, AuthorizationService
+from jsonschema import Draft202012Validator
+
+from dash_server.auth import AuthContext, AuthorizationService, Principal
 from dash_server.exceptions import DashServerError
+from dash_server.exasol.service import ExasolDashboardService
+from dash_server.registry.models import AppRevision
 from dash_server.registry.sqlite_registry import SQLiteAppRegistry
+from dash_server.timestamps import parse_iso8601
 
+from .artifacts import LocalArtifactStore
 from .contract import consumption_contract_hash, normalize_consumption_contract
-from .models import ConsumptionExecutionContext, ConsumptionPolicy
+from .coordinator import LocalJobCoordinator
+from .csv_format import write_csv
+from .execution import ExasolDatasetExecutor
+from .models import (
+    ConsumptionArtifact,
+    ConsumptionExecutionContext,
+    ConsumptionJob,
+    ConsumptionPolicy,
+)
+from .security import (
+    ConsumptionTokenSigner,
+    ParameterCodec,
+    parameter_hash,
+    redact_parameters,
+)
+from .store import ConsumptionStore, now_iso
 
 
 class ConsumptionService:
-    """Serve one normalized output catalog to MCP and web adapters."""
+    """Expose one governed consumption domain to MCP and web adapters."""
 
     def __init__(
         self,
         registry: SQLiteAppRegistry,
         authorization_service: AuthorizationService,
         config: dict[str, Any],
+        *,
+        exasol_service: ExasolDashboardService | None = None,
+        artifacts_root: str | Path | None = None,
     ) -> None:
         self.registry = registry
         self.authorization_service = authorization_service
         self.policy = ConsumptionPolicy.from_config(config)
         self.policy_version = self.policy.version
+        root = Path(artifacts_root or config.get("ARTIFACTS_ROOT") or "instance/artifacts")
+        self.store = ConsumptionStore(registry.db_path)
+        self.store.initialize()
+        self.artifact_store = LocalArtifactStore(root)
+        self.parameter_codec = ParameterCodec.from_config(config, root)
+        token_secret = self._token_secret(config, root)
+        self.token_signer = ConsumptionTokenSigner(token_secret)
+        self.executor = (
+            ExasolDatasetExecutor(
+                exasol_service,
+                batch_size=self.policy.fetch_batch_size,
+                max_runtime_seconds=self.policy.max_runtime_seconds,
+            )
+            if exasol_service is not None
+            else None
+        )
+        self._preflighted: set[tuple[str, int, str, str]] = set()
+        self._preflight_lock = Lock()
+        self.coordinator = LocalJobCoordinator(
+            self._run_job,
+            max_workers=self.policy.max_concurrent_jobs,
+        )
 
     def list_outputs(self, name: str, auth_context: AuthContext) -> dict[str, Any]:
         app, revision, decision = self._authorized_revision(name, auth_context)
-        consumption = normalize_consumption_contract(
-            revision.manifest.get("consumption"),
-            data_sources=revision.manifest.get("data_sources"),
-        )
-        contract_hash = consumption_contract_hash(consumption)
-        stored_hash = revision.manifest.get("consumption_contract_hash")
-        if isinstance(stored_hash, str) and stored_hash and stored_hash != contract_hash:
-            raise DashServerError(
-                category="consumption_contract_hash_mismatch",
-                summary=f"Stored consumption contract hash does not match app {name} revision content.",
-                details={
-                    "app": name,
-                    "revision_number": revision.revision_number,
-                    "stored_hash": stored_hash,
-                    "computed_hash": contract_hash,
-                },
-                jsonrpc_code=-32012,
-                http_status=500,
-            )
+        consumption, contract_hash = self._revision_contract(revision)
         outputs = [
-            self._output_payload(
-                output,
-                contract_hash=contract_hash,
-            )
+            self._output_payload(output, contract_hash=contract_hash)
             for output in (consumption or {}).get("outputs", [])
         ]
         return {
@@ -68,23 +99,12 @@ class ConsumptionService:
             "authorization": decision.to_dict(),
         }
 
-    def get_output(
-        self,
-        name: str,
-        output_id: str,
-        auth_context: AuthContext,
-    ) -> dict[str, Any]:
+    def get_output(self, name: str, output_id: str, auth_context: AuthContext) -> dict[str, Any]:
         payload = self.list_outputs(name, auth_context)
         for output in payload["outputs"]:
             if output["id"] == output_id:
                 return {**payload, "output": output}
-        raise DashServerError(
-            category="consumption_output_not_found",
-            summary=f"Consumption output {output_id} was not found for app {name}.",
-            details={"app": name, "output_id": output_id},
-            jsonrpc_code=-32004,
-            http_status=404,
-        )
+        raise self._output_not_found(name, output_id)
 
     def execution_context(
         self,
@@ -103,6 +123,433 @@ class ConsumptionService:
             policy_version=self.policy_version,
         )
 
+    def create_export(
+        self,
+        name: str,
+        output_id: str,
+        requested_format: str,
+        parameters: dict[str, Any] | None,
+        auth_context: AuthContext,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        self._require_authenticated(auth_context)
+        self.cleanup_expired_artifacts()
+        if not self.policy.enabled or not self.policy.exports_enabled:
+            raise DashServerError(
+                category="consumption_exports_disabled",
+                summary="On-demand exports are disabled by server policy.",
+                details={},
+                jsonrpc_code=-32030,
+                http_status=403,
+            )
+        payload = self.get_output(name, output_id, auth_context)
+        output = payload["output"]
+        format_name = requested_format.strip().lower()
+        availability = output["policy"]["format_availability"].get(format_name)
+        if not availability or not availability["executable"]:
+            raise DashServerError(
+                category="consumption_format_unavailable",
+                summary=f"Format {format_name!r} is not executable for this output.",
+                details={"format": format_name, "reason": (availability or {}).get("reason")},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        normalized_parameters = self._normalize_parameters(output["parameters"], parameters or {})
+        params_hash = parameter_hash(normalized_parameters)
+        normalized_key = self._normalize_idempotency_key(idempotency_key)
+        principal_id = auth_context.principal.principal_id
+        if normalized_key is not None:
+            existing = self.store.find_by_idempotency(principal_id, normalized_key)
+            if existing is not None:
+                if (
+                    existing.app_name != name
+                    or existing.output_id != output_id
+                    or existing.requested_format != format_name
+                    or existing.parameters_hash != params_hash
+                ):
+                    raise DashServerError(
+                        category="consumption_idempotency_conflict",
+                        summary="The idempotency key was already used for a different export request.",
+                        details={"idempotency_key": normalized_key},
+                        jsonrpc_code=-32037,
+                        http_status=409,
+                    )
+                return self._job_payload(existing)
+        revision_number = int(payload["revision"]["revision_number"])
+        revision = self.registry.get_revision_by_number(name, revision_number)
+        if revision is None:
+            raise DashServerError(
+                category="app_revision_not_found",
+                summary="The live revision disappeared before the export could be pinned.",
+                details={"app": name, "revision_number": revision_number},
+                jsonrpc_code=-32004,
+                http_status=404,
+            )
+        self._preflight(revision, output)
+        effective_limits = dict(output["policy"]["effective_limits"])
+        job = ConsumptionJob(
+            id=str(uuid4()),
+            app_name=name,
+            output_id=output_id,
+            requested_by_principal_id=principal_id,
+            run_as_principal_id=principal_id,
+            revision_number=revision_number,
+            output_contract_hash=str(payload["contract_hash"]),
+            requested_format=format_name,
+            status="queued",
+            policy_version=self.policy_version,
+            parameters=normalized_parameters,
+            parameters_hash=params_hash,
+            effective_limits=effective_limits,
+            output=self._strip_runtime_policy(output),
+            progress={"phase": "queued", "rows": 0, "bytes": 0},
+            error=None,
+            idempotency_key=normalized_key,
+            created_at=now_iso(),
+            started_at=None,
+            finished_at=None,
+            cancel_requested_at=None,
+        )
+        try:
+            self.store.create_job(
+                job=job,
+                encoded_parameters=self.parameter_codec.encode(normalized_parameters),
+                context=auth_context.to_dict(),
+                redacted_parameters=redact_parameters(normalized_parameters),
+            )
+        except sqlite3.IntegrityError as exc:
+            existing = (
+                self.store.find_by_idempotency(principal_id, normalized_key) if normalized_key is not None else None
+            )
+            if existing is not None and (
+                existing.app_name == name
+                and existing.output_id == output_id
+                and existing.requested_format == format_name
+                and existing.parameters_hash == params_hash
+            ):
+                return self._job_payload(existing)
+            raise DashServerError(
+                category="consumption_idempotency_conflict",
+                summary="A concurrent export request used the same idempotency key.",
+                details={"idempotency_key": normalized_key},
+                jsonrpc_code=-32037,
+                http_status=409,
+            ) from exc
+        self.store.record_audit(
+            "export.created",
+            actor_principal_id=principal_id,
+            app_name=name,
+            job_id=job.id,
+            decision="allowed",
+            details={
+                "output_id": output_id,
+                "format": format_name,
+                "parameters_hash": params_hash,
+                "revision_number": revision_number,
+                "contract_hash": job.output_contract_hash,
+                "policy_version": job.policy_version,
+            },
+        )
+        self.coordinator.submit(job.id)
+        return self._job_payload(job)
+
+    def get_export(self, job_id: str, auth_context: AuthContext) -> dict[str, Any]:
+        job = self._authorized_job(job_id, auth_context)
+        return self._job_payload(job)
+
+    def list_exports(self, auth_context: AuthContext, *, app_name: str | None = None) -> dict[str, Any]:
+        self._require_authenticated(auth_context)
+        self.cleanup_expired_artifacts()
+        if app_name is not None:
+            self._authorized_revision(app_name, auth_context)
+        jobs = self.store.list_jobs(auth_context.principal.principal_id, app_name=app_name)
+        return {"jobs": [self._job_payload(job) for job in jobs], "job_count": len(jobs)}
+
+    def cancel_export(self, job_id: str, auth_context: AuthContext) -> dict[str, Any]:
+        job = self._authorized_job(job_id, auth_context)
+        changed = self.store.request_cancel(job_id)
+        current = self.store.get_job(job_id)
+        assert current is not None
+        self.store.record_audit(
+            "export.cancel_requested",
+            actor_principal_id=auth_context.principal.principal_id,
+            app_name=job.app_name,
+            job_id=job.id,
+            decision="allowed",
+            details={"changed": changed},
+        )
+        return self._job_payload(current)
+
+    def create_download_link(self, job_id: str, auth_context: AuthContext) -> dict[str, Any]:
+        job = self._authorized_job(job_id, auth_context)
+        artifact = self._available_artifact(job)
+        token = self.token_signer.issue(
+            "download",
+            {
+                "job_id": job.id,
+                "artifact_id": artifact.id,
+                "principal_id": auth_context.principal.principal_id,
+            },
+        )
+        token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.policy.download_token_ttl_seconds)
+        artifact_expires_at = parse_iso8601(artifact.expires_at)
+        if artifact_expires_at is not None:
+            token_expires_at = min(token_expires_at, artifact_expires_at)
+        return {
+            "job_id": job.id,
+            "artifact": artifact.to_dict(),
+            "download_url": f"/downloads/{token}",
+            "expires_at": token_expires_at.isoformat().replace("+00:00", "Z"),
+        }
+
+    def resolve_download(self, token: str, auth_context: AuthContext) -> tuple[Path, ConsumptionArtifact]:
+        self._require_authenticated(auth_context)
+        self.cleanup_expired_artifacts()
+        payload = self.token_signer.verify(
+            token,
+            "download",
+            max_age=self.policy.download_token_ttl_seconds,
+        )
+        if payload.get("principal_id") != auth_context.principal.principal_id:
+            raise DashServerError(
+                category="consumption_authorization_denied",
+                summary="The download link belongs to a different principal.",
+                details={},
+                jsonrpc_code=-32030,
+                http_status=403,
+            )
+        job = self._authorized_job(str(payload.get("job_id")), auth_context)
+        artifact = self._available_artifact(job)
+        if payload.get("artifact_id") != artifact.id:
+            raise DashServerError(
+                category="consumption_artifact_not_found",
+                summary="The download link no longer identifies the current artifact.",
+                details={},
+                jsonrpc_code=-32004,
+                http_status=404,
+            )
+        path = self.artifact_store.resolve(artifact.storage_key)
+        self.store.record_audit(
+            "artifact.downloaded",
+            actor_principal_id=auth_context.principal.principal_id,
+            app_name=job.app_name,
+            job_id=job.id,
+            artifact_id=artifact.id,
+            decision="allowed",
+        )
+        return path, artifact
+
+    def cleanup_expired_artifacts(self) -> int:
+        expired = self.store.list_expired_artifacts(now=now_iso())
+        for artifact in expired:
+            job = self.store.get_job(artifact.job_id)
+            self.artifact_store.delete(artifact.storage_key)
+            self.store.mark_artifact_deleted(artifact.id)
+            self.store.transition_job(
+                artifact.job_id,
+                expected=("succeeded",),
+                status="expired",
+                progress={"phase": "expired"},
+            )
+            if job is not None:
+                self.store.record_audit(
+                    "artifact.expired",
+                    actor_principal_id=job.run_as_principal_id,
+                    app_name=job.app_name,
+                    job_id=job.id,
+                    artifact_id=artifact.id,
+                    decision="allowed",
+                )
+        return len(expired)
+
+    def issue_csrf_token(self, auth_context: AuthContext, action: str) -> str:
+        self._require_authenticated(auth_context)
+        return self.token_signer.issue(
+            "csrf",
+            {"principal_id": auth_context.principal.principal_id, "action": action},
+        )
+
+    def verify_csrf_token(self, token: str, auth_context: AuthContext, action: str) -> None:
+        payload = self.token_signer.verify(token, "csrf", max_age=3600)
+        if payload.get("principal_id") != auth_context.principal.principal_id or payload.get("action") != action:
+            raise DashServerError(
+                category="consumption_csrf_invalid",
+                summary="The form security token is invalid for this action.",
+                details={},
+                jsonrpc_code=-32030,
+                http_status=403,
+            )
+
+    def peek_job_app(self, job_id: str) -> str | None:
+        job = self.store.get_job(job_id)
+        return job.app_name if job is not None else None
+
+    def _run_job(self, job_id: str) -> None:
+        if not self.store.transition_job(
+            job_id,
+            expected=("queued",),
+            status="running",
+            progress={"phase": "querying", "rows": 0, "bytes": 0},
+        ):
+            return
+        temporary_path: Path | None = None
+        job = self.store.get_job(job_id)
+        if job is None:
+            return
+        audit_job = job
+        try:
+            encoded = self.store.get_encoded_parameters(job_id)
+            if encoded is None:
+                raise RuntimeError("Stored export parameters are missing.")
+            parameters = self.parameter_codec.decode(encoded)
+            job = self.store.get_job(job_id, decoded_parameters=parameters)
+            assert job is not None
+            revision = self.registry.get_revision_by_number(job.app_name, job.revision_number)
+            if revision is None:
+                raise DashServerError(
+                    category="app_revision_not_found",
+                    summary="The pinned app revision is unavailable.",
+                    details={"app": job.app_name, "revision_number": job.revision_number},
+                    jsonrpc_code=-32004,
+                    http_status=404,
+                )
+            self._verify_job_contract(job, revision)
+            auth_context = self._context_for_job(job_id)
+            self._authorize_execution(job, auth_context)
+            if self.executor is None:
+                raise DashServerError(
+                    category="consumption_executor_unavailable",
+                    summary="The Exasol export executor is not configured.",
+                    details={},
+                    jsonrpc_code=-32012,
+                    http_status=500,
+                )
+            stream = self.executor.stream(
+                revision,
+                job.output,
+                parameters,
+                cancelled=lambda: self.store.is_cancel_requested(job_id),
+            )
+            temporary_path = self.artifact_store.temporary_path(job_id)
+            current_limits = self._effective_limits(job.output)
+            limits = {
+                "max_rows": min(job.effective_limits["max_rows"], current_limits["max_rows"]),
+                "max_bytes": min(job.effective_limits["max_bytes"], current_limits["max_bytes"]),
+            }
+            result = write_csv(
+                temporary_path,
+                columns=stream.columns,
+                batches=stream.batches,
+                max_rows=limits["max_rows"],
+                max_bytes=limits["max_bytes"],
+                cancelled=lambda: self.store.is_cancel_requested(job_id),
+            )
+            if self.store.is_cancel_requested(job_id):
+                raise DashServerError(
+                    category="consumption_job_cancelled",
+                    summary="Export cancellation was requested.",
+                    details={},
+                    jsonrpc_code=-32032,
+                    http_status=409,
+                )
+            filename = f"{job.app_name}-{job.output_id}.csv"
+            storage_key = self.artifact_store.publish(job.id, temporary_path, filename)
+            temporary_path = None
+            created_at = datetime.now(timezone.utc)
+            artifact = ConsumptionArtifact(
+                id=str(uuid4()),
+                job_id=job.id,
+                storage_key=storage_key,
+                content_type="text/csv; charset=utf-8",
+                filename=filename,
+                sha256=result["sha256"],
+                byte_size=result["byte_size"],
+                row_count=result["row_count"],
+                classification=str(job.output.get("classification", "internal")),
+                created_at=created_at.isoformat().replace("+00:00", "Z"),
+                expires_at=(created_at + timedelta(seconds=self.policy.artifact_ttl_seconds))
+                .isoformat()
+                .replace("+00:00", "Z"),
+            )
+            self.store.create_artifact(artifact)
+            completed = self.store.transition_job(
+                job_id,
+                expected=("running",),
+                status="succeeded",
+                progress={
+                    "phase": "complete",
+                    "rows": artifact.row_count,
+                    "bytes": artifact.byte_size,
+                },
+            )
+            if not completed:
+                self.artifact_store.delete(artifact.storage_key)
+                self.store.mark_artifact_deleted(artifact.id)
+                self.store.transition_job(
+                    job_id,
+                    expected=("cancel_requested",),
+                    status="cancelled",
+                    progress={"phase": "cancelled"},
+                )
+                self.store.record_audit(
+                    "export.cancelled",
+                    actor_principal_id=audit_job.run_as_principal_id,
+                    app_name=audit_job.app_name,
+                    job_id=audit_job.id,
+                    decision="allowed",
+                )
+                return
+            self.store.record_audit(
+                "export.succeeded",
+                actor_principal_id=audit_job.run_as_principal_id,
+                app_name=audit_job.app_name,
+                job_id=audit_job.id,
+                artifact_id=artifact.id,
+                decision="allowed",
+                details={"rows": artifact.row_count, "bytes": artifact.byte_size},
+            )
+        except DashServerError as exc:
+            cancelled = exc.category == "consumption_job_cancelled"
+            self.store.transition_job(
+                job_id,
+                expected=("running", "cancel_requested"),
+                status="cancelled" if cancelled else "failed",
+                progress={"phase": "cancelled" if cancelled else "failed"},
+                error={"category": exc.category, "summary": exc.summary, "details": exc.details},
+            )
+            self.store.record_audit(
+                "export.cancelled" if cancelled else "export.failed",
+                actor_principal_id=audit_job.run_as_principal_id,
+                app_name=audit_job.app_name,
+                job_id=audit_job.id,
+                decision="allowed" if cancelled else "failed",
+                details={"category": exc.category},
+            )
+        except Exception as exc:
+            self.store.transition_job(
+                job_id,
+                expected=("running", "cancel_requested"),
+                status="failed",
+                progress={"phase": "failed"},
+                error={
+                    "category": "consumption_internal_error",
+                    "summary": "The export failed unexpectedly.",
+                    "details": {"reason": type(exc).__name__},
+                },
+            )
+            self.store.record_audit(
+                "export.failed",
+                actor_principal_id=audit_job.run_as_principal_id,
+                app_name=audit_job.app_name,
+                job_id=audit_job.id,
+                decision="failed",
+                details={"category": "consumption_internal_error", "reason": type(exc).__name__},
+            )
+        finally:
+            if temporary_path is not None:
+                self.artifact_store.discard(temporary_path)
+
     def _authorized_revision(self, name: str, auth_context: AuthContext):
         app = self.registry.get_app(name)
         if app is None:
@@ -113,30 +560,20 @@ class ConsumptionService:
                 jsonrpc_code=-32004,
                 http_status=404,
             )
-        decision = self.authorization_service.authorize_app(
-            auth_context,
-            app,
-            "dashboard.export",
-        )
+        decision = self.authorization_service.authorize_app(auth_context, app, "dashboard.export")
         if not decision.allowed:
             raise DashServerError(
                 category="consumption_authorization_denied",
-                summary=f"Principal cannot discover consumption outputs for app {name}.",
+                summary=f"Principal cannot access consumption outputs for app {name}.",
                 details=decision.to_dict(),
                 jsonrpc_code=-32030,
                 http_status=decision.status_code,
             )
-        if (
-            not auth_context.principal.is_authenticated
-            and not self.policy.public_exports_enabled
-        ):
+        if not auth_context.principal.is_authenticated and not self.policy.public_exports_enabled:
             raise DashServerError(
                 category="consumption_authorization_denied",
                 summary="Public consumption output discovery is disabled by server policy.",
-                details={
-                    **decision.to_dict(),
-                    "reason": "public_exports_disabled",
-                },
+                details={**decision.to_dict(), "reason": "public_exports_disabled"},
                 jsonrpc_code=-32030,
                 http_status=403,
             )
@@ -151,21 +588,46 @@ class ConsumptionService:
             )
         return app, revision, decision
 
-    def _output_payload(
-        self,
-        output: dict[str, Any],
-        *,
-        contract_hash: str,
-    ) -> dict[str, Any]:
+    def _revision_contract(self, revision: AppRevision) -> tuple[dict[str, Any] | None, str]:
+        consumption = normalize_consumption_contract(
+            revision.manifest.get("consumption"),
+            data_sources=revision.manifest.get("data_sources"),
+        )
+        contract_hash = consumption_contract_hash(consumption)
+        stored_hash = revision.manifest.get("consumption_contract_hash")
+        if isinstance(stored_hash, str) and stored_hash and stored_hash != contract_hash:
+            raise DashServerError(
+                category="consumption_contract_hash_mismatch",
+                summary=(f"Stored consumption contract hash does not match app {revision.app_name} revision content."),
+                details={
+                    "app": revision.app_name,
+                    "revision_number": revision.revision_number,
+                    "stored_hash": stored_hash,
+                    "computed_hash": contract_hash,
+                },
+                jsonrpc_code=-32012,
+                http_status=500,
+            )
+        return consumption, contract_hash
+
+    def _output_payload(self, output: dict[str, Any], *, contract_hash: str) -> dict[str, Any]:
         declared_formats = list(output["formats"])
-        effective_formats = [
-            item for item in declared_formats if item in self.policy.allowed_formats
-        ] if self.policy.enabled else []
-        declared_limits = output.get("limits", {})
-        effective_limits = {
-            "max_rows": min(int(declared_limits.get("max_rows", self.policy.max_rows)), self.policy.max_rows),
-            "max_bytes": min(int(declared_limits.get("max_bytes", self.policy.max_bytes)), self.policy.max_bytes),
-        }
+        effective_formats = (
+            [item for item in declared_formats if item in self.policy.allowed_formats] if self.policy.enabled else []
+        )
+        availability: dict[str, dict[str, Any]] = {}
+        for format_name in declared_formats:
+            if format_name not in effective_formats:
+                availability[format_name] = {"executable": False, "reason": "blocked_by_policy"}
+            elif not self.policy.exports_enabled:
+                availability[format_name] = {"executable": False, "reason": "exports_disabled"}
+            elif output.get("kind") != "dataset":
+                availability[format_name] = {"executable": False, "reason": "renderer_not_available"}
+            elif format_name != "csv":
+                availability[format_name] = {"executable": False, "reason": "format_not_implemented"}
+            else:
+                availability[format_name] = {"executable": True, "reason": "available"}
+        executable = any(item["executable"] for item in availability.values())
         return {
             **output,
             "contract_hash": contract_hash,
@@ -173,9 +635,242 @@ class ConsumptionService:
                 "enabled": self.policy.enabled and bool(effective_formats),
                 "effective_formats": effective_formats,
                 "blocked_formats": sorted(set(declared_formats) - set(effective_formats)),
-                "effective_limits": effective_limits,
-                "phase": "discovery_only",
-                "executable": False,
-                "reason": "phase_0_discovery_only",
+                "effective_limits": self._effective_limits(output),
+                "format_availability": availability,
+                "phase": "on_demand_csv" if self.policy.exports_enabled else "discovery_only",
+                "executable": executable,
+                "reason": "available" if executable else "no_executable_format",
             },
         }
+
+    def _effective_limits(self, output: dict[str, Any]) -> dict[str, int]:
+        declared = output.get("limits", {})
+        return {
+            "max_rows": min(int(declared.get("max_rows", self.policy.max_rows)), self.policy.max_rows),
+            "max_bytes": min(int(declared.get("max_bytes", self.policy.max_bytes)), self.policy.max_bytes),
+        }
+
+    def _normalize_parameters(self, schema: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(parameters, dict):
+            raise DashServerError(
+                category="consumption_parameter_validation_error",
+                summary="Export parameters must be an object.",
+                details={},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        normalized = dict(parameters)
+        properties = schema.get("properties", {})
+        for key, definition in properties.items():
+            if key not in normalized and "default" in definition:
+                normalized[key] = definition["default"]
+        errors = sorted(Draft202012Validator(schema).iter_errors(normalized), key=lambda item: list(item.path))
+        if errors:
+            first = errors[0]
+            raise DashServerError(
+                category="consumption_parameter_validation_error",
+                summary="Export parameters do not match the registered schema.",
+                details={"path": [str(item) for item in first.path], "reason": first.message},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        secret_like = sorted(
+            key
+            for key in normalized
+            if any(token in key.lower() for token in ("password", "secret", "token", "credential"))
+        )
+        if secret_like:
+            raise DashServerError(
+                category="consumption_parameter_validation_error",
+                summary="Secret-like values are not accepted as export parameters.",
+                details={"parameters": secret_like},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        return normalized
+
+    def _preflight(self, revision: AppRevision, output: dict[str, Any]) -> None:
+        if self.executor is None:
+            raise DashServerError(
+                category="consumption_executor_unavailable",
+                summary="The Exasol export executor is not configured.",
+                details={},
+                jsonrpc_code=-32012,
+                http_status=500,
+            )
+        key = (
+            revision.app_name,
+            revision.revision_number,
+            str(output["id"]),
+            str(revision.manifest.get("consumption_contract_hash", "")),
+        )
+        with self._preflight_lock:
+            if key in self._preflighted:
+                return
+            self.executor.preflight(revision, output)
+            self._preflighted.add(key)
+
+    def _authorized_job(self, job_id: str, auth_context: AuthContext) -> ConsumptionJob:
+        self._require_authenticated(auth_context)
+        job = self.store.get_job(job_id)
+        if job is None:
+            raise DashServerError(
+                category="consumption_job_not_found",
+                summary="The export job was not found.",
+                details={"job_id": job_id},
+                jsonrpc_code=-32004,
+                http_status=404,
+            )
+        if job.requested_by_principal_id != auth_context.principal.principal_id:
+            raise DashServerError(
+                category="consumption_authorization_denied",
+                summary="The export job belongs to a different principal.",
+                details={"job_id": job_id},
+                jsonrpc_code=-32030,
+                http_status=403,
+            )
+        app = self.registry.get_app(job.app_name)
+        if app is None:
+            raise DashServerError(
+                category="app_not_found",
+                summary=f"App {job.app_name} was not found.",
+                details={"app": job.app_name},
+                jsonrpc_code=-32004,
+                http_status=404,
+            )
+        decision = self.authorization_service.authorize_app(auth_context, app, "dashboard.export")
+        if not decision.allowed:
+            raise DashServerError(
+                category="consumption_authorization_denied",
+                summary="The principal no longer has export access to this app.",
+                details=decision.to_dict(),
+                jsonrpc_code=-32030,
+                http_status=decision.status_code,
+            )
+        return job
+
+    def _authorize_execution(self, job: ConsumptionJob, auth_context: AuthContext) -> None:
+        authorized = self._authorized_job(job.id, auth_context)
+        if authorized.run_as_principal_id != auth_context.principal.principal_id:
+            raise DashServerError(
+                category="consumption_authorization_denied",
+                summary="The export execution principal no longer matches the queued job.",
+                details={},
+                jsonrpc_code=-32030,
+                http_status=403,
+            )
+
+    def _context_for_job(self, job_id: str) -> AuthContext:
+        payload = self.store.get_context(job_id)
+        if payload is None:
+            raise RuntimeError("Consumption job context is missing.")
+        return AuthContext(
+            mode=str(payload.get("mode", "hosted")),
+            auth_enabled=bool(payload.get("auth_enabled", True)),
+            provider=str(payload.get("provider", "disabled")),
+            principal=Principal.from_dict(payload.get("principal", {})),
+        )
+
+    def _verify_job_contract(self, job: ConsumptionJob, revision: AppRevision) -> None:
+        consumption, contract_hash = self._revision_contract(revision)
+        if contract_hash != job.output_contract_hash:
+            raise DashServerError(
+                category="consumption_contract_hash_mismatch",
+                summary="The pinned job contract no longer matches its immutable revision.",
+                details={"job_id": job.id},
+                jsonrpc_code=-32012,
+                http_status=500,
+            )
+        declared = next(
+            (item for item in (consumption or {}).get("outputs", []) if item["id"] == job.output_id),
+            None,
+        )
+        if declared is None or declared != job.output:
+            raise DashServerError(
+                category="consumption_contract_hash_mismatch",
+                summary="The pinned output declaration no longer matches the job snapshot.",
+                details={"job_id": job.id, "output_id": job.output_id},
+                jsonrpc_code=-32012,
+                http_status=500,
+            )
+
+    def _job_payload(self, job: ConsumptionJob) -> dict[str, Any]:
+        current = self.store.get_job(job.id) or job
+        artifact = self.store.get_artifact_for_job(job.id)
+        return {
+            "job": current.to_dict(),
+            "artifact": artifact.to_dict() if artifact is not None else None,
+        }
+
+    def _available_artifact(self, job: ConsumptionJob) -> ConsumptionArtifact:
+        if job.status != "succeeded":
+            raise DashServerError(
+                category="consumption_artifact_not_ready",
+                summary="The export artifact is not ready for download.",
+                details={"job_id": job.id, "status": job.status},
+                jsonrpc_code=-32038,
+                http_status=409,
+            )
+        artifact = self.store.get_artifact_for_job(job.id)
+        expires_at = parse_iso8601(artifact.expires_at) if artifact is not None else None
+        if artifact is None or expires_at is None or expires_at <= datetime.now(timezone.utc):
+            raise DashServerError(
+                category="consumption_artifact_expired",
+                summary="The export artifact has expired or is unavailable.",
+                details={"job_id": job.id},
+                jsonrpc_code=-32004,
+                http_status=410,
+            )
+        return artifact
+
+    def _require_authenticated(self, auth_context: AuthContext) -> None:
+        if not auth_context.principal.is_authenticated:
+            raise DashServerError(
+                category="consumption_authorization_denied",
+                summary="Authentication is required for export workflows.",
+                details={},
+                jsonrpc_code=-32030,
+                http_status=401,
+            )
+
+    def _normalize_idempotency_key(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or len(normalized) > 128:
+            raise DashServerError(
+                category="consumption_idempotency_key_invalid",
+                summary="Idempotency keys must contain 1 to 128 characters.",
+                details={},
+                jsonrpc_code=-32602,
+                http_status=400,
+            )
+        return normalized
+
+    def _strip_runtime_policy(self, output: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in output.items() if key not in {"policy", "contract_hash"}}
+
+    def _output_not_found(self, name: str, output_id: str) -> DashServerError:
+        return DashServerError(
+            category="consumption_output_not_found",
+            summary=f"Consumption output {output_id} was not found for app {name}.",
+            details={"app": name, "output_id": output_id},
+            jsonrpc_code=-32004,
+            http_status=404,
+        )
+
+    def _token_secret(self, config: dict[str, Any], root: Path) -> str:
+        configured = config.get("SECRET_KEY") or config.get("DASH_SERVER_CONSUMPTION_PARAMETER_KEY")
+        if isinstance(configured, str) and configured:
+            return configured
+        path = root / "consumption" / ".token-key"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+        value = secrets.token_urlsafe(48)
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+        return value
+
+
+__all__ = ["ConsumptionService"]

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if export.job.status in ('queued', 'running', 'cancel_requested') %}<meta http-equiv="refresh" content="2">{% endif %}
+    <title>Export {{ export.job.id }}</title>
+    <style>
+      body { margin: 0; background: #f5efe3; color: #211b17; font-family: "Avenir Next", "Segoe UI", sans-serif; }
+      main { width: min(760px, calc(100vw - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      a { color: #0f766e; font-weight: 700; }
+      article { margin-top: 1.5rem; padding: 1.25rem; border: 1px solid rgba(73,52,33,.18); border-radius: 16px; background: #fffaf2; }
+      dt { color: #6b5d52; } dd { margin: 0 0 .8rem; overflow-wrap: anywhere; }
+      button { padding: .65rem 1rem; border: 0; border-radius: 999px; background: #9f1239; color: white; font-weight: 700; }
+      .download { display: inline-block; padding: .7rem 1rem; border-radius: 999px; background: #0f766e; color: white; text-decoration: none; }
+      code { overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a href="/manage/apps/{{ export.job.app_name }}/consumption">Back to outputs</a>
+      <h1>Export {{ export.job.status }}</h1>
+      <article>
+        <dl>
+          <dt>Job</dt><dd><code>{{ export.job.id }}</code></dd>
+          <dt>Output</dt><dd>{{ export.job.output_id }}</dd>
+          <dt>Revision</dt><dd>{{ export.job.revision_number }}</dd>
+          <dt>Format</dt><dd>{{ export.job.requested_format }}</dd>
+          <dt>Rows</dt><dd>{{ export.job.progress.rows or 0 }}</dd>
+          <dt>Bytes</dt><dd>{{ export.job.progress.bytes or 0 }}</dd>
+        </dl>
+        {% if export.job.error %}<p role="alert">{{ export.job.error.summary }}</p>{% endif %}
+        {% if download %}<a class="download" href="{{ download.download_url }}">Download CSV</a>{% endif %}
+        {% if export.job.status in ('queued', 'running', 'cancel_requested') %}
+          <form method="post" action="/manage/exports/{{ export.job.id }}/cancel">
+            <input type="hidden" name="_csrf" value="{{ cancel_token }}">
+            <button type="submit">Cancel export</button>
+          </form>
+        {% endif %}
+      </article>
+    </main>
+  </body>
+</html>

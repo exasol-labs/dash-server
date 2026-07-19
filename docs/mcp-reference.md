@@ -10,7 +10,7 @@ This is the practical reference for the current `dash-server` MCP surface.
 ## Main Tools
 
 <!-- BEGIN: auto-tools -->
-_45 tools registered. Each `tools/call` request must pass the tool name and the arguments defined by its `inputSchema`._
+_50 tools registered. Each `tools/call` request must pass the tool name and the arguments defined by its `inputSchema`._
 
 - **`app_acknowledge_data_layer_errors`** — Reset the `data_layer` healthcheck probe by acknowledging all currently recorded Exasol query failures. Use after fixing SQL in-place without promoting a new revision; the underlying `dash://apps/{name}/errors` ledger is preserved, but the probe and `app_collect_diagnostics` both filter past the new watermark.
 - **`app_build`** — Validate the draft workspace and create a new immutable revision with a stored source artifact. Use app_start_preview or app_promote_revision after this. force_clean only bypasses cached dependency-install state; it does not change source snapshotting.
@@ -23,6 +23,8 @@ _45 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`app_deploy_draft`** — Run validate -> build -> deploy in one tool call. deployment_target=live promotes the revision to /apps/{name}; deployment_target=preview mounts it under /preview/{name}/{revision}. Optionally auto-rollback a live deployment if post-deploy health checks fail. force_clean only bypasses cached dependency-install state; it does not change source snapshotting.
 - **`app_diff_draft_vs_artifact`** — Show what differs between the current draft workspace and a built artifact. When revision_number is omitted, the tool compares against the latest built revision.
 - **`app_environment_invalidate`** — Mark a per-app dependency environment for removal on the next GC pass. Available in per_app dependency-isolation mode.
+- **`app_export_create`** — Queue a governed CSV export from a registered output on the current live revision.
+- **`app_exports_list`** — List the caller's recent export jobs for one app.
 - **`app_get_status`** — Return lifecycle state, revision pointers, and draft workspace state for a hosted app.
 - **`app_inspect_traceback`** — Parse and classify a provided traceback, or inspect the app's latest captured traceback.
 - **`app_invite_external_user`** — [hosted-mode] Create a hashed-token email invitation for an external user. The raw accept token is returned only once; manual email delivery is used until a sender integration is configured.
@@ -56,6 +58,9 @@ _45 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`exasol_profile_create_local`** — Create one local Exasol profile for a single-user workflow. Provide either secret_value or secret_env_var so secrets stay outside Git.
 - **`exasol_profile_validate`** — Resolve the configured secret, load pyexasol, and run a connection test.
 - **`exasol_profiles_list`** — Return Git-tracked Exasol profile metadata without secret values.
+- **`export_cancel`** — Request cancellation of the caller's queued or running export.
+- **`export_download_link_create`** — Create a short-lived authenticated URL for a completed export artifact.
+- **`export_get`** — Read principal-bound export status and bounded artifact metadata.
 - **`repo_reconcile`** — Read desired-state manifests from the GitOps repository and apply them to the observed runtime and cache state.
 <!-- END: auto-tools -->
 

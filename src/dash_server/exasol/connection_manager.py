@@ -145,7 +145,12 @@ class ExasolConnectionManager:
         cache[profile.name] = connection
         return connection
 
-    def connect_uncached(self, profile: ExasolProfile) -> ExaConnectionLike:
+    def connect_uncached(
+        self,
+        profile: ExasolProfile,
+        *,
+        query_timeout_seconds: int | None = None,
+    ) -> ExaConnectionLike:
         """Open a caller-owned connection without storing it in the thread cache.
 
         Use this for one-shot probes such as SQL smoke preflight where the caller
@@ -155,7 +160,13 @@ class ExasolConnectionManager:
 
         secret_value = self.secret_store.resolve(profile.secret_ref)
         connector = self.connector_loader()
-        return connector.connect(**self._connect_kwargs(profile, secret_value))
+        return connector.connect(
+            **self._connect_kwargs(
+                profile,
+                secret_value,
+                query_timeout_seconds=query_timeout_seconds,
+            )
+        )
 
     def invalidate(self, profile_name: str) -> None:
         """Discard the cached connection for ``profile_name`` on this thread.
@@ -189,7 +200,13 @@ class ExasolConnectionManager:
             self._local.connections = cache
         return cache
 
-    def _connect_kwargs(self, profile: ExasolProfile, secret_value: str) -> dict[str, Any]:
+    def _connect_kwargs(
+        self,
+        profile: ExasolProfile,
+        secret_value: str,
+        *,
+        query_timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
         # local_direct Exasol always uses TLS; tls_verify controls only certificate
         # validation. Mapping tls_verify directly onto pyexasol's encryption flag
         # (the pre-0.6 behavior) made self-signed deployments unreachable.
@@ -201,6 +218,8 @@ class ExasolConnectionManager:
                 "cert_reqs": ssl.CERT_REQUIRED if profile.tls_verify else ssl.CERT_NONE,
             },
         }
+        if query_timeout_seconds is not None:
+            kwargs["query_timeout"] = query_timeout_seconds
         if profile.credential_mode in {"password", "saas_pat"}:
             kwargs["password"] = secret_value
         elif profile.credential_mode == "access_token":

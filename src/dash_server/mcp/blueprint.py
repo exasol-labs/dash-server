@@ -24,6 +24,14 @@ _APP_SCOPED_TOOL_CAPABILITIES = {
     "app_delete": "dashboard.delete",
     "app_outputs_list": "dashboard.export",
     "app_output_get": "dashboard.export",
+    "app_export_create": "dashboard.export",
+    "app_exports_list": "dashboard.export",
+}
+
+_JOB_SCOPED_TOOLS = {
+    "export_get",
+    "export_cancel",
+    "export_download_link_create",
 }
 
 
@@ -123,20 +131,33 @@ def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
         tool_name = params.get("name")
         if not isinstance(tool_name, str):
             return False
-        capability = _APP_SCOPED_TOOL_CAPABILITIES.get(tool_name)
         arguments = params.get("arguments")
         if not isinstance(arguments, dict):
             return False
+        capability = _APP_SCOPED_TOOL_CAPABILITIES.get(tool_name)
         app_name = arguments.get("name")
+        if tool_name in _JOB_SCOPED_TOOLS:
+            job_id = arguments.get("job_id")
+            if not isinstance(job_id, str):
+                return False
+            capability = "dashboard.export"
+            app_name = current_app.extensions["consumption_service"].peek_job_app(job_id)
     elif method == "resources/read":
         uri = params.get("uri")
         if not isinstance(uri, str):
             return False
         match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/outputs", uri)
-        if match is None:
-            return False
-        capability = "dashboard.export"
-        app_name = match.group(1)
+        if match is not None:
+            capability = "dashboard.export"
+            app_name = match.group(1)
+        else:
+            export_match = re.fullmatch(r"dash://exports/([0-9a-f-]+)", uri)
+            if export_match is None:
+                return False
+            capability = "dashboard.export"
+            app_name = current_app.extensions["consumption_service"].peek_job_app(
+                export_match.group(1)
+            )
     else:
         return False
     if capability is None:
