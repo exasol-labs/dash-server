@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from flask import Blueprint, Response, current_app, jsonify, request
@@ -10,40 +9,18 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from dash_server.errors import JSONRPC_PARSE_ERROR, codes_for
 from dash_server.auth import current_auth_context
 from dash_server.auth.capabilities import (
-    DASHBOARD_EDIT_DRAFT,
     DASHBOARD_EXPORT,
-    DASHBOARD_MANAGE_CONSUMPTION,
-    DASHBOARD_MANAGE_SHARING,
-    DASHBOARD_DELETE,
     MCP_USE_CONTROL_PLANE,
     roles_with_capability,
 )
+from dash_server.mcp.resources import APP_OUTPUTS_RESOURCE_RE, EXPORT_RESOURCE_RE
+from dash_server.mcp.tool_specs import APP_SCOPED_TOOL_CAPABILITIES, JOB_SCOPED_TOOLS
 
 
-_APP_SCOPED_TOOL_CAPABILITIES = {
-    "app_share_get": DASHBOARD_MANAGE_SHARING,
-    "app_share_grant": DASHBOARD_MANAGE_SHARING,
-    "app_share_revoke": DASHBOARD_MANAGE_SHARING,
-    "app_share_set_link_scope": DASHBOARD_MANAGE_SHARING,
-    "app_share_explain_access": DASHBOARD_MANAGE_SHARING,
-    "app_share_create_one_time_link": DASHBOARD_MANAGE_SHARING,
-    "app_share_revoke_one_time_link": DASHBOARD_MANAGE_SHARING,
-    "app_invite_external_user": DASHBOARD_MANAGE_SHARING,
-    "app_revoke_external_invitation": DASHBOARD_MANAGE_SHARING,
-    "app_list_files": DASHBOARD_EDIT_DRAFT,
-    "app_delete": DASHBOARD_DELETE,
-    "app_outputs_list": DASHBOARD_EXPORT,
-    "app_output_get": DASHBOARD_EXPORT,
-    "app_export_create": DASHBOARD_EXPORT,
-    "app_exports_list": DASHBOARD_EXPORT,
-    "app_exports_admin_list": DASHBOARD_MANAGE_CONSUMPTION,
-}
-
-_JOB_SCOPED_TOOLS = {
-    "export_get",
-    "export_cancel",
-    "export_download_link_create",
-}
+# Derived from the single ToolSpec table so the transport gate cannot disagree
+# with the server's own handler dispatch. Names kept for the drift-guard test.
+_APP_SCOPED_TOOL_CAPABILITIES = APP_SCOPED_TOOL_CAPABILITIES
+_JOB_SCOPED_TOOLS = JOB_SCOPED_TOOLS
 
 
 def create_mcp_blueprint() -> Blueprint:
@@ -158,15 +135,15 @@ def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
         uri = params.get("uri")
         if not isinstance(uri, str):
             return False
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/outputs", uri)
+        match = APP_OUTPUTS_RESOURCE_RE.fullmatch(uri)
         if match is not None:
-            capability = "dashboard.export"
+            capability = DASHBOARD_EXPORT
             app_name = match.group(1)
         else:
-            export_match = re.fullmatch(r"dash://exports/([0-9a-f-]+)", uri)
+            export_match = EXPORT_RESOURCE_RE.fullmatch(uri)
             if export_match is None:
                 return False
-            capability = "dashboard.export"
+            capability = DASHBOARD_EXPORT
             app_name = current_app.extensions["consumption_service"].peek_job_app(
                 export_match.group(1)
             )

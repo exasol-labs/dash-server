@@ -31,7 +31,10 @@ from dash_server.errors import (
 )
 from dash_server.exceptions import DashServerError
 from dash_server.gitops import GitRepoService
+from dash_server.constants import GRANT_SCOPES, PRINCIPAL_TYPES
 from dash_server.mailer import InvitationEmailSender
+from dash_server.mcp.resources import APP_OUTPUTS_RESOURCE_RE, EXPORT_RESOURCE_RE
+from dash_server.mcp.tool_specs import TOOL_SPECS, TOOL_SPECS_BY_NAME
 from dash_server.runtime.service import AppRuntimeService
 
 LOGGER = logging.getLogger(__name__)
@@ -105,59 +108,10 @@ class MCPServer:
         self.exasol_dashboard_service = exasol_dashboard_service
         self.email_sender = email_sender
         self.consumption_service = consumption_service
+        # Handler dict is derived from the single ToolSpec table so a tool cannot
+        # exist in one structure but not the others.
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-            "apps_list": self._tool_apps_list,
-            "repo_reconcile": self._tool_repo_reconcile,
-            "exasol_profiles_list": self._tool_exasol_profiles_list,
-            "exasol_profile_create_local": self._tool_exasol_profile_create_local,
-            "exasol_profile_validate": self._tool_exasol_profile_validate,
-            "app_create": self._tool_app_create,
-            "app_create_from_files": self._tool_app_create_from_files,
-            "app_create_exasol_dashboard": self._tool_app_create_exasol_dashboard,
-            "app_scaffold_from_schema": self._tool_app_scaffold_from_schema,
-            "app_start": self._tool_app_start,
-            "app_stop": self._tool_app_stop,
-            "app_restart": self._tool_app_restart,
-            "app_delete": self._tool_app_delete,
-            "app_get_status": self._tool_app_get_status,
-            "app_build": self._tool_app_build,
-            "app_deploy_draft": self._tool_app_deploy_draft,
-            "app_start_preview": self._tool_app_start_preview,
-            "app_promote_revision": self._tool_app_promote_revision,
-            "app_rollback": self._tool_app_rollback,
-            "app_put_files": self._tool_app_put_files,
-            "app_list_files": self._tool_app_list_files,
-            "app_outputs_list": self._tool_app_outputs_list,
-            "app_output_get": self._tool_app_output_get,
-            "app_export_create": self._tool_app_export_create,
-            "app_exports_list": self._tool_app_exports_list,
-            "app_exports_admin_list": self._tool_app_exports_admin_list,
-            "export_get": self._tool_export_get,
-            "export_cancel": self._tool_export_cancel,
-            "export_download_link_create": self._tool_export_download_link_create,
-            "app_read_file": self._tool_app_read_file,
-            "app_diff_draft_vs_artifact": self._tool_app_diff_draft_vs_artifact,
-            "app_patch_file": self._tool_app_patch_file,
-            "app_delete_file": self._tool_app_delete_file,
-            "app_validate": self._tool_app_validate,
-            "app_collect_diagnostics": self._tool_app_collect_diagnostics,
-            "app_inspect_traceback": self._tool_app_inspect_traceback,
-            "app_tail_logs": self._tool_app_tail_logs,
-            "app_run_healthcheck": self._tool_app_run_healthcheck,
-            "app_share_get": self._tool_app_share_get,
-            "app_share_grant": self._tool_app_share_grant,
-            "app_share_revoke": self._tool_app_share_revoke,
-            "app_share_set_link_scope": self._tool_app_share_set_link_scope,
-            "app_share_explain_access": self._tool_app_share_explain_access,
-            "app_share_create_one_time_link": self._tool_app_share_create_one_time_link,
-            "app_share_revoke_one_time_link": self._tool_app_share_revoke_one_time_link,
-            "app_invite_external_user": self._tool_app_invite_external_user,
-            "app_revoke_external_invitation": self._tool_app_revoke_external_invitation,
-            # Phase 4f: runtime / environment introspection + control.
-            "app_runtime_workers_list": self._tool_app_runtime_workers_list,
-            "app_runtime_workers_restart": self._tool_app_runtime_workers_restart,
-            "app_environment_invalidate": self._tool_app_environment_invalidate,
-            "app_acknowledge_data_layer_errors": self._tool_app_acknowledge_data_layer_errors,
+            spec.name: getattr(self, spec.handler) for spec in TOOL_SPECS
         }
 
     def sse_ready_event(self) -> str:
@@ -246,10 +200,30 @@ class MCPServer:
                     details={"tool": name},
                 )
             self._validate_tool_arguments(str(name), arguments)
+            self._enforce_tool_capability(str(name), arguments)
             return handler(arguments)
         except DashServerError as exc:
             self._log_mcp_error("tools/call", params, exc)
             return self._tool_error_result(str(name), exc)
+
+    def _enforce_tool_capability(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        """Handler-path capability gate for app-scoped tools without a service check.
+
+        Driven by ``ToolSpec.enforce_in_handler`` so the transport capability map
+        is defense in depth rather than the sole gate — closing the gap where a
+        control-plane role that lacks the specific capability (e.g. an editor
+        without ``dashboard.manage_sharing``) could reach a sharing tool.
+        ``_require_app_capability`` is itself a no-op in local mode.
+        """
+
+        spec = TOOL_SPECS_BY_NAME.get(tool_name)
+        if spec is None or not spec.enforce_in_handler or spec.app_capability is None:
+            return
+        self._require_app_capability(
+            self._require_name(arguments),
+            spec.app_capability,
+            tool_name=tool_name,
+        )
 
     def _validate_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> None:
         schema = self._tool_input_schema(tool_name)
@@ -386,173 +360,131 @@ class MCPServer:
                 details={"received_type": type(raw_uri).__name__},
             )
         uri: str = raw_uri
-        if uri == "dash://meta/app-create-schema":
-            return self._resource_contents(uri, app_create_schema_help())
-        if uri == "dash://meta/app-create-from-files-schema":
-            return self._resource_contents(uri, app_create_from_files_schema_help())
-        if uri == "dash://meta/app-authoring-guide":
-            return self._resource_contents(uri, app_authoring_guide())
-        if uri == "dash://meta/workflows":
-            return self._resource_contents(uri, self._workflow_resource())
-        if uri == "dash://repo/status":
-            return self._resource_contents(uri, self._repo_status_payload())
-        if uri == "dash://runtime/status":
-            return self._resource_contents(uri, self._runtime_status_payload())
-        if uri == "dash://runtime/workers":
-            return self._resource_contents(uri, self._workers_payload())
-        if uri == "dash://runtime/environments":
-            return self._resource_contents(uri, self._environments_payload())
-        if uri == "dash://runtime/logs/runtime.events":
-            # Phase 5c: server-wide audit trail for GC + override events.
-            return self._resource_contents(
-                uri,
-                self.runtime_service.diagnostics_service.tail_logs(
-                    "__runtime__", channel="runtime.events", limit=200
-                ),
-            )
-        if uri == "dash://repo/desired-state":
-            return self._resource_contents(uri, self.runtime_service.git_desired_state())
-        if uri == "dash://repo/drift":
-            return self._resource_contents(uri, self.runtime_service.git_drift_report())
-        if uri == "dash://exasol/help/connection-modes":
-            return self._resource_contents(uri, self._exasol_service().connection_modes_help())
-        if uri == "dash://exasol/help/dashboard-patterns":
-            return self._resource_contents(uri, self._exasol_service().dashboard_patterns_help())
-        if uri == "dash://exasol/help/agent-workflow":
-            return self._resource_contents(uri, self._exasol_service().agent_workflow_help())
-        if uri == "dash://exasol/help/sql-placeholders":
-            return self._resource_contents(uri, self._exasol_service().sql_placeholders_help())
-        if uri == "dash://exasol/profiles":
-            return self._resource_contents(uri, self._exasol_service().list_profiles())
-
-        match = re.fullmatch(r"dash://exasol/profiles/([a-z0-9-]+)", str(uri))
-        if match:
-            return self._resource_contents(uri, self._exasol_service().get_profile(match.group(1)))
-
-        if uri == "dash://apps":
-            return self._resource_contents(uri, {"apps": self.runtime_service.list_apps()})
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_app_overview(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/status", str(uri))
-        if match:
-            return self._resource_contents(
-                uri, self.runtime_service.get_app_status(match.group(1))
-            )
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/health", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.run_healthcheck(match.group(1), record=False))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/routes", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_routes(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/permissions", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_permissions(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/sharing", str(uri))
-        if match:
-            return self._resource_contents(uri, self._share_payload(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/manifest", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_manifest(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/outputs", str(uri))
-        if match:
-            return self._resource_contents(
-                uri,
-                self._consumption_service().list_outputs(
-                    match.group(1),
-                    self._consumption_auth_context(),
-                ),
-            )
-
-        match = re.fullmatch(r"dash://exports/([0-9a-f-]+)", str(uri))
-        if match:
-            return self._resource_contents(
-                uri,
-                self._consumption_service().get_export(
-                    match.group(1),
-                    self._consumption_auth_context(),
-                ),
-            )
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/revisions", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.list_revisions(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/revisions/([0-9]+)", str(uri))
-        if match:
-            return self._resource_contents(
-                uri,
-                self.runtime_service.get_revision_details(match.group(1), int(match.group(2))),
-            )
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/events", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.list_events(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/logs/latest", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.tail_logs(match.group(1), channel="latest"))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/logs/runtime", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.tail_logs(match.group(1), channel="runtime"))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/logs/build", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.tail_logs(match.group(1), channel="build"))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/errors", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_errors(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/callback-failures", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_callback_failures(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/dependency-report", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_dependency_report(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/files", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.list_workspace_files(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/files/(.+)", str(uri))
-        if match:
-            app_name = match.group(1)
-            relative_path = match.group(2)
-            return self._resource_contents(
-                uri, self.runtime_service.read_workspace_file(app_name, relative_path)
-            )
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/diff/current\.\.\.draft", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.diff_workspace(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/artifacts/latest/files", str(uri))
-        if match:
-            return self._resource_contents(uri, self.runtime_service.get_latest_artifact_files(match.group(1)))
-
-        match = re.fullmatch(r"dash://apps/([a-z0-9-]+)/diff/latest-build\.\.\.draft", str(uri))
-        if match:
-            return self._resource_contents(
-                uri,
-                self.runtime_service.diff_workspace_against_artifact(match.group(1)),
-            )
+        for matcher, handler in self._resource_dispatch_table():
+            if isinstance(matcher, str):
+                if uri == matcher:
+                    return self._resource_contents(uri, handler(None))
+            else:
+                match = matcher.fullmatch(uri)
+                if match is not None:
+                    return self._resource_contents(uri, handler(match))
 
         raise DashServerError(
             category="resource_not_found",
             summary="Unknown resource.",
             details={"uri": uri},
         )
+
+    def _resource_dispatch_table(
+        self,
+    ) -> list[tuple[str | re.Pattern[str], Callable[[Any], dict[str, Any]]]]:
+        """Ordered ``(matcher, handler)`` resource dispatch.
+
+        Replaces the hand-maintained URI ladder. ``matcher`` is either an exact
+        URI string or a compiled regex; ``handler`` receives the regex match (or
+        ``None`` for exact matches) and returns the resource payload. The two
+        capability-gated patterns are the shared ones the blueprint also matches
+        against (``mcp/resources.py``), so the transport gate cannot drift from
+        this table. Patterns are anchored via ``fullmatch`` and mutually
+        exclusive, so ordering is for readability only.
+        """
+
+        runtime = self.runtime_service
+        return [
+            ("dash://meta/app-create-schema", lambda _m: app_create_schema_help()),
+            ("dash://meta/app-create-from-files-schema", lambda _m: app_create_from_files_schema_help()),
+            ("dash://meta/app-authoring-guide", lambda _m: app_authoring_guide()),
+            ("dash://meta/workflows", lambda _m: self._workflow_resource()),
+            ("dash://repo/status", lambda _m: self._repo_status_payload()),
+            ("dash://runtime/status", lambda _m: self._runtime_status_payload()),
+            ("dash://runtime/workers", lambda _m: self._workers_payload()),
+            ("dash://runtime/environments", lambda _m: self._environments_payload()),
+            # Phase 5c: server-wide audit trail for GC + override events.
+            (
+                "dash://runtime/logs/runtime.events",
+                lambda _m: runtime.diagnostics_service.tail_logs(
+                    "__runtime__", channel="runtime.events", limit=200
+                ),
+            ),
+            ("dash://repo/desired-state", lambda _m: runtime.git_desired_state()),
+            ("dash://repo/drift", lambda _m: runtime.git_drift_report()),
+            ("dash://exasol/help/connection-modes", lambda _m: self._exasol_service().connection_modes_help()),
+            ("dash://exasol/help/dashboard-patterns", lambda _m: self._exasol_service().dashboard_patterns_help()),
+            ("dash://exasol/help/agent-workflow", lambda _m: self._exasol_service().agent_workflow_help()),
+            ("dash://exasol/help/sql-placeholders", lambda _m: self._exasol_service().sql_placeholders_help()),
+            ("dash://exasol/profiles", lambda _m: self._exasol_service().list_profiles()),
+            (
+                re.compile(r"dash://exasol/profiles/([a-z0-9-]+)"),
+                lambda m: self._exasol_service().get_profile(m.group(1)),
+            ),
+            ("dash://apps", lambda _m: {"apps": runtime.list_apps()}),
+            (re.compile(r"dash://apps/([a-z0-9-]+)"), lambda m: runtime.get_app_overview(m.group(1))),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/status"), lambda m: runtime.get_app_status(m.group(1))),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/health"),
+                lambda m: runtime.run_healthcheck(m.group(1), record=False),
+            ),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/routes"), lambda m: runtime.get_routes(m.group(1))),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/permissions"), lambda m: runtime.get_permissions(m.group(1))),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/sharing"), lambda m: self._share_payload(m.group(1))),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/manifest"), lambda m: runtime.get_manifest(m.group(1))),
+            (
+                APP_OUTPUTS_RESOURCE_RE,
+                lambda m: self._consumption_service().list_outputs(
+                    m.group(1), self._consumption_auth_context()
+                ),
+            ),
+            (
+                EXPORT_RESOURCE_RE,
+                lambda m: self._consumption_service().get_export(
+                    m.group(1), self._consumption_auth_context()
+                ),
+            ),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/revisions"), lambda m: runtime.list_revisions(m.group(1))),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/revisions/([0-9]+)"),
+                lambda m: runtime.get_revision_details(m.group(1), int(m.group(2))),
+            ),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/events"), lambda m: runtime.list_events(m.group(1))),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/logs/latest"),
+                lambda m: runtime.tail_logs(m.group(1), channel="latest"),
+            ),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/logs/runtime"),
+                lambda m: runtime.tail_logs(m.group(1), channel="runtime"),
+            ),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/logs/build"),
+                lambda m: runtime.tail_logs(m.group(1), channel="build"),
+            ),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/errors"), lambda m: runtime.get_errors(m.group(1))),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/callback-failures"),
+                lambda m: runtime.get_callback_failures(m.group(1)),
+            ),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/dependency-report"),
+                lambda m: runtime.get_dependency_report(m.group(1)),
+            ),
+            (re.compile(r"dash://apps/([a-z0-9-]+)/files"), lambda m: runtime.list_workspace_files(m.group(1))),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/files/(.+)"),
+                lambda m: runtime.read_workspace_file(m.group(1), m.group(2)),
+            ),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/diff/current\.\.\.draft"),
+                lambda m: runtime.diff_workspace(m.group(1)),
+            ),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/artifacts/latest/files"),
+                lambda m: runtime.get_latest_artifact_files(m.group(1)),
+            ),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/diff/latest-build\.\.\.draft"),
+                lambda m: runtime.diff_workspace_against_artifact(m.group(1)),
+            ),
+        ]
 
     def _resource_contents(self, uri: str, payload: dict[str, Any]) -> dict[str, Any]:
         payload = self._attach_absolute_urls(payload)
@@ -1247,12 +1179,8 @@ class MCPServer:
         )
 
     def _tool_app_list_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        # Capability enforced centrally via ToolSpec(enforce_in_handler=True).
         name = self._require_name(arguments)
-        self._require_app_capability(
-            name,
-            "dashboard.edit_draft",
-            tool_name="app_list_files",
-        )
         listed = self.runtime_service.list_workspace_files(name)
         return self._tool_result(
             "app_list_files",
@@ -1382,7 +1310,7 @@ class MCPServer:
                 summary="App deletion confirmation must exactly match the app name.",
                 details={"app": name, "confirmation": confirmation},
             )
-        self._require_app_capability(name, "dashboard.delete", tool_name="app_delete")
+        # Capability enforced centrally via ToolSpec(enforce_in_handler=True).
         deleted = self.runtime_service.delete_app(name)
         return self._tool_result(
             "app_delete",
@@ -1535,7 +1463,8 @@ class MCPServer:
         principal_type = self._require_choice(
             arguments.get("principal_type"),
             field_name="principal_type",
-            allowed={"user", "group", "domain", "organization", "public"},
+            # "link" principals come from share links, not direct grants.
+            allowed=PRINCIPAL_TYPES - {"link"},
             tool_name="app_share_grant",
         )
         principal_id = self._require_non_empty_string(
@@ -1552,7 +1481,7 @@ class MCPServer:
         scope = self._require_choice(
             arguments.get("scope", "live"),
             field_name="scope",
-            allowed={"live", "preview", "manage", "all"},
+            allowed=set(GRANT_SCOPES),
             tool_name="app_share_grant",
         )
         if principal_type == "domain":
