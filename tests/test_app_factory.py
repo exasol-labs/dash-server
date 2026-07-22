@@ -13,6 +13,8 @@ import pytest
 from dash_server.app_factory import create_app
 from dash_server.dash_apps.branding import apply_hosted_footer
 
+pytestmark = pytest.mark.slow
+
 
 def test_create_app_builds_flask_app(app):
     assert app.name == "dash_server.app_factory"
@@ -2279,3 +2281,53 @@ def test_startup_reconcile_applies_external_git_desired_state_commit(tmp_path):
     assert live_layout.status_code == 200
     assert "Deals Dashboard v2" in json.dumps(live_layout.get_json())
     assert status["current_revision"]["revision_number"] == 2
+
+
+def test_single_app_mutation_reconciles_only_that_app(app, client):
+    """Wave 1 gate: exposure changes must not re-resolve or re-mount unrelated apps."""
+    for name in ("iso-a", "iso-b"):
+        response = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "app_create",
+                    "arguments": {
+                        "bundle": {
+                            "manifest": {
+                                "name": name,
+                                "title": name,
+                                "route": f"/apps/{name}",
+                                "description": "Reconcile isolation fixture.",
+                                "template": "metric-cards",
+                            },
+                            "dashboard": {
+                                "headline": name,
+                                "summary": "fixture",
+                                "metrics": [{"label": "m", "value": "1"}],
+                            },
+                        }
+                    },
+                },
+            },
+        )
+        assert response.status_code == 200
+        assert response.get_json()["result"]["isError"] is False
+
+    runtime_service = app.extensions["runtime_service"]
+    reconciled: list[str] = []
+    original = runtime_service._reconcile_app_desired_state
+
+    def recording_reconcile(app_name, *args, **kwargs):
+        reconciled.append(app_name)
+        return original(app_name, *args, **kwargs)
+
+    runtime_service._reconcile_app_desired_state = recording_reconcile
+    try:
+        runtime_service.update_visibility("iso-a", "private")
+    finally:
+        runtime_service._reconcile_app_desired_state = original
+
+    assert reconciled == ["iso-a"]

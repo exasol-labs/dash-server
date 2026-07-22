@@ -10,7 +10,7 @@ from flask import Flask, g
 
 from .auth import AuthContext, AuthorizationService, IdentityService
 from .auth.blueprint import create_auth_blueprint
-from .config import Config
+from .config import Config, coerce_bool
 from .consumption import ConsumptionService
 from .consumption.blueprint import create_consumption_blueprint
 from .dependencies import DependencyEnvironmentService, DependencyInstaller
@@ -36,7 +36,7 @@ def _configure_deployment_mode(app: Flask) -> AuthContext:
     if configured_auth_enabled is None:
         auth_enabled = mode == "hosted"
     else:
-        auth_enabled = _config_bool(configured_auth_enabled)
+        auth_enabled = coerce_bool(configured_auth_enabled)
     app.config["DASH_SERVER_AUTH_ENABLED"] = auth_enabled
 
     configured_provider = app.config.get("DASH_SERVER_AUTH_PROVIDER")
@@ -62,11 +62,11 @@ def _configure_deployment_mode(app: Flask) -> AuthContext:
 def _validate_hosted_mode_config(app: Flask) -> None:
     if not app.config.get("SECRET_KEY"):
         raise RuntimeError("Hosted mode requires SECRET_KEY or DASH_SERVER_SECRET_KEY.")
-    session_cookie_secure = _config_bool(app.config.get("SESSION_COOKIE_SECURE"))
+    session_cookie_secure = coerce_bool(app.config.get("SESSION_COOKIE_SECURE"))
     app.config["SESSION_COOKIE_SECURE"] = session_cookie_secure
     if not session_cookie_secure:
         raise RuntimeError("Hosted mode requires SESSION_COOKIE_SECURE=true.")
-    session_cookie_httponly = _config_bool(app.config.get("SESSION_COOKIE_HTTPONLY"), default=True)
+    session_cookie_httponly = coerce_bool(app.config.get("SESSION_COOKIE_HTTPONLY"), default=True)
     app.config["SESSION_COOKIE_HTTPONLY"] = session_cookie_httponly
     if not session_cookie_httponly:
         raise RuntimeError("Hosted mode requires SESSION_COOKIE_HTTPONLY=true.")
@@ -97,7 +97,7 @@ def _validate_runtime_isolation_config(app: Flask) -> None:
     app.config["APP_RUNTIME_MODE"] = runtime_mode
 
     if app.config.get("DASH_SERVER_MODE") == "hosted":
-        unsafe_ok = _config_bool(app.config.get("DASH_SERVER_ALLOW_UNSAFE_INPROCESS"))
+        unsafe_ok = coerce_bool(app.config.get("DASH_SERVER_ALLOW_UNSAFE_INPROCESS"))
         if (dep_iso != "per_app" or runtime_mode != "isolated") and not unsafe_ok:
             raise RuntimeError(
                 "Hosted mode requires APP_DEPENDENCY_ISOLATION=per_app and "
@@ -171,21 +171,11 @@ def _validate_hosted_auth_provider_config(app: Flask) -> None:
         return
 
     if provider == "trusted_proxy":
-        if not _config_bool(app.config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED")):
+        if not coerce_bool(app.config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED")):
             raise RuntimeError("Hosted trusted_proxy auth requires DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED=true.")
         allowed_cidrs = app.config.get("DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS")
         if not _config_string_sequence(allowed_cidrs):
             raise RuntimeError("Hosted trusted_proxy auth requires DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS.")
-
-
-def _config_bool(value: Any, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() not in {"0", "false", "no", "off"}
-    return bool(value)
 
 
 def _config_string_sequence(value: Any) -> tuple[str, ...]:

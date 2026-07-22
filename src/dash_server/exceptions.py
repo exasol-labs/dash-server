@@ -5,16 +5,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from dash_server.errors import codes_for
+
 
 @dataclass
 class DashServerError(Exception):
-    """Structured error returned through the MCP surface."""
+    """Structured error returned through the MCP surface.
+
+    ``jsonrpc_code`` and ``http_status`` default to the values registered for
+    the category in :mod:`dash_server.errors`; pass them explicitly only when a
+    site's semantics genuinely differ from the category default.
+    """
 
     category: str
     summary: str
     details: dict[str, Any] = field(default_factory=dict)
-    jsonrpc_code: int = -32000
-    http_status: int = 400
+    jsonrpc_code: int | None = None
+    http_status: int | None = None
+
+    def __post_init__(self) -> None:
+        default_code, default_status = codes_for(self.category)
+        if self.jsonrpc_code is None:
+            self.jsonrpc_code = default_code
+        if self.http_status is None:
+            self.http_status = default_status
 
     def __str__(self) -> str:
         """Render `category: summary` so tracebacks aren't blank.

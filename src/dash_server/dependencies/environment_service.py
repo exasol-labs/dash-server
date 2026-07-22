@@ -13,6 +13,8 @@ plumbing is unchanged.
 
 from __future__ import annotations
 
+from dash_server.timestamps import now_iso
+
 import hashlib
 import json
 import os
@@ -708,7 +710,7 @@ class DependencyEnvironmentService:
         return f"{self.base_python_executable}|{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
     def _timestamp(self) -> str:
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return now_iso()
 
     def _directory_size(self, path: Path) -> int:
         total = 0

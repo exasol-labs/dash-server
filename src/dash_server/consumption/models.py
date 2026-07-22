@@ -7,6 +7,8 @@ import hashlib
 import json
 from typing import Any
 
+from dash_server.config import coerce_bool
+
 
 @dataclass(frozen=True)
 class ConsumptionPolicy:
@@ -83,12 +85,12 @@ class ConsumptionPolicy:
                 "job pruning never outruns artifact expiry."
             )
         return cls(
-            enabled=bool(config.get("DASH_SERVER_CONSUMPTION_ENABLED", True)),
-            exports_enabled=bool(config.get("DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED", False)),
+            enabled=coerce_bool(config.get("DASH_SERVER_CONSUMPTION_ENABLED"), default=True),
+            exports_enabled=coerce_bool(config.get("DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED")),
             allowed_formats=formats,
             max_rows=max_rows,
             max_bytes=max_bytes,
-            public_exports_enabled=bool(config.get("DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED", False)),
+            public_exports_enabled=coerce_bool(config.get("DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED")),
             max_runtime_seconds=max_runtime_seconds,
             artifact_ttl_seconds=artifact_ttl_seconds,
             download_token_ttl_seconds=download_token_ttl_seconds,

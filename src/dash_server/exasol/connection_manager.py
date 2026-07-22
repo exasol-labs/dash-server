@@ -231,7 +231,6 @@ class ExasolConnectionManager:
                 category="exasol_profile_validation_error",
                 summary=f"Unsupported Exasol credential mode {profile.credential_mode}.",
                 details={"credential_mode": profile.credential_mode},
-                jsonrpc_code=-32602,
             )
         return kwargs
 

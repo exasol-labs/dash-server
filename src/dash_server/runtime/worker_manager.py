@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Protocol
 
+from ..timestamps import now_iso as _now_iso
 from ..timestamps import seconds_since
 
 
@@ -1197,8 +1198,6 @@ class AppWorkerManager:
         return stopped
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _send_sigterm_then_kill(pid: int, *, timeout_seconds: float = 10.0) -> None:

@@ -8,20 +8,12 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from dash_server.db import ensure_column, open_connection
+from dash_server.timestamps import now_iso, parse_iso8601
+
 from .models import ConsumptionArtifact, ConsumptionJob
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 _ACTIVE_STATUSES = ("queued", "running", "cancel_requested")
@@ -335,7 +327,7 @@ class ConsumptionStore:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM consumption_coordinator WHERE slot = 1").fetchone()
             if row is not None and row["owner"] != owner and int(row["pid"]) != pid:
-                heartbeat = _parse_iso(row["heartbeat_at"])
+                heartbeat = parse_iso8601(row["heartbeat_at"])
                 fresh = heartbeat is not None and (now - heartbeat).total_seconds() < stale_after_seconds
                 if fresh and bool(is_pid_alive(int(row["pid"]))):
                     raise RuntimeError(
@@ -548,17 +540,10 @@ class ConsumptionStore:
         )
 
     def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
-        with self._connect() as connection:
-            rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-            if column_name not in {row["name"] for row in rows}:
-                connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
-                connection.commit()
+        ensure_column(self.db_path, table_name, column_name, column_type, foreign_keys=True)
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+    def _connect(self):
+        return open_connection(self.db_path, foreign_keys=True)
 
 
 __all__ = ["ConsumptionStore", "now_iso"]

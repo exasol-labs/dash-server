@@ -8,8 +8,20 @@ fall-through behavior so they all agree on what "unparseable" means.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+
+
+def to_iso(value: datetime) -> str:
+    """Render a datetime in the server's canonical ``"...Z"`` UTC format."""
+
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def now_iso() -> str:
+    """The canonical stored-timestamp format: UTC now as ``"...Z"``."""
+
+    return to_iso(datetime.now(timezone.utc))
 
 
 def parse_iso8601(value: Any) -> datetime | None:

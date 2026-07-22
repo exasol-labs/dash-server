@@ -20,6 +20,14 @@ from flask import Flask, got_request_exception, request
 from werkzeug.test import Client as WSGIClient
 from werkzeug.wrappers import Response as WSGIResponse
 
+from dash_server.artifacts_io import (
+    APP_ENTRYPOINT_FILENAME,
+    APP_MANIFEST_FILENAME,
+    REQUIREMENTS_FILENAME,
+    list_artifact_files,
+    load_manifest_from_dir,
+    read_artifact_files,
+)
 from dash_server.dash_apps.demo import build_demo_bundle
 from dash_server.dash_apps.callback_isolation import (
     finalize_dash_app_callbacks,
@@ -231,26 +239,36 @@ class AppRuntimeService:
         worker_count = min(len(live_candidates) + 1, cpu_hint, 8)
         worker_count = max(1, worker_count)
 
-        tasks: list[Any] = []
+        tasks: list[tuple[str, Any]] = []
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             for app in live_candidates:
-                tasks.append(pool.submit(self._bootstrap_mount_live_revision, app.name))
+                tasks.append((app.name, pool.submit(self._bootstrap_mount_live_revision, app.name)))
             for app in all_apps:
                 if app.preview_revision_number is not None:
                     tasks.append(
-                        pool.submit(
-                            self._bootstrap_mount_preview_revision,
+                        (
                             app.name,
-                            app.preview_revision_number,
+                            pool.submit(
+                                self._bootstrap_mount_preview_revision,
+                                app.name,
+                                app.preview_revision_number,
+                            ),
                         )
                     )
-            # Surface the first exception (if any) by joining each task. Failures are
-            # already routed into diagnostics by the underlying _bootstrap_* helpers.
-            for task in tasks:
+            # Join every task so bootstrap doesn't return before mounting settles.
+            # Expected mount failures are recorded in diagnostics by the
+            # _bootstrap_* helpers themselves; an exception surfacing here is an
+            # unexpected bug, so record it instead of dropping it silently.
+            for app_name, task in tasks:
                 try:
                     task.result()
-                except Exception:
-                    continue
+                except Exception as exc:
+                    self.diagnostics_service.append_log(
+                        app_name,
+                        "runtime",
+                        f"Unexpected bootstrap mount failure: {type(exc).__name__}: {exc}",
+                        level="error",
+                    )
 
     def git_desired_state(self) -> dict[str, Any]:
         """Return the parsed Git-backed desired live and preview state."""
@@ -524,8 +542,6 @@ class AppRuntimeService:
                 category="app_conflict",
                 summary=f"App {manifest.name} already exists.",
                 details={"app": manifest.name},
-                jsonrpc_code=-32001,
-                http_status=409,
             )
         self._ensure_route_available(manifest.route)
         try:
@@ -538,8 +554,6 @@ class AppRuntimeService:
                 category="app_conflict",
                 summary=f"App {manifest.name} already exists.",
                 details={"app": manifest.name},
-                jsonrpc_code=-32001,
-                http_status=409,
             ) from exc
 
         self._write_live_desired_state_for_revision(
@@ -654,11 +668,9 @@ class AppRuntimeService:
                 category="workspace_validation_error",
                 summary="Workspace validation failed; fix the draft before building.",
                 details={"app": name, "validation": validation},
-                jsonrpc_code=-32007,
-                http_status=409,
             )
 
-        manifest = validate_manifest_payload(json.loads(self.workspace_service.read_file(name, "dash-app.json")))
+        manifest = validate_manifest_payload(json.loads(self.workspace_service.read_file(name, APP_MANIFEST_FILENAME)))
         self._validate_workspace_identity(app, manifest)
 
         next_revision_number = self.registry.next_revision_number(name)
@@ -1119,7 +1131,6 @@ class AppRuntimeService:
                 category="tool_validation_error",
                 summary="Healthcheck target must be live or preview.",
                 details={"field": "target", "value": target},
-                jsonrpc_code=-32602,
             )
 
         if target == "preview":
@@ -1129,8 +1140,6 @@ class AppRuntimeService:
                     category="preview_unavailable",
                     summary=f"App {name} does not have an active preview revision.",
                     details={"app": name},
-                    jsonrpc_code=-32005,
-                    http_status=409,
                 )
             mount_path = self.preview_path(name, revision.revision_number)
             mounted = self.dispatcher.is_mounted(mount_path)
@@ -1575,8 +1584,6 @@ class AppRuntimeService:
                     category="diagnostics_not_found",
                     summary=f"App {name} does not have a relevant traceback for the current revision or latest failed build.",
                     details={"app": name},
-                    jsonrpc_code=-32004,
-                    http_status=404,
                 )
             if latest_error.get("traceback_text"):
                 traceback_text = latest_error["traceback_text"]
@@ -1606,8 +1613,6 @@ class AppRuntimeService:
                     category="diagnostics_not_found",
                     summary=f"App {name} does not have a traceback payload to inspect.",
                     details={"app": name},
-                    jsonrpc_code=-32004,
-                    http_status=404,
                 )
 
         inspected = self.diagnostics_service.inspect_traceback(traceback_text)["traceback"]
@@ -1702,8 +1707,6 @@ class AppRuntimeService:
                 category="rollback_unavailable",
                 summary=f"App {name} does not have a rollback target.",
                 details={"app": name},
-                jsonrpc_code=-32005,
-                http_status=409,
             )
 
         current_revision = self.registry.get_current_revision(name)
@@ -2060,8 +2063,6 @@ class AppRuntimeService:
                 category="app_not_found",
                 summary=f"App {name} was not found.",
                 details={"app": name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return app
 
@@ -2072,8 +2073,6 @@ class AppRuntimeService:
                 category="revision_not_found",
                 summary=f"App {name} does not have a current revision.",
                 details={"app": name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return revision
 
@@ -2084,8 +2083,6 @@ class AppRuntimeService:
                 category="revision_not_found",
                 summary=f"App {name} does not have any built revisions.",
                 details={"app": name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return revisions[-1]
 
@@ -2355,8 +2352,6 @@ class AppRuntimeService:
                 category="revision_not_found",
                 summary=f"Revision {revision_number} for app {name} was not found.",
                 details={"app": name, "revision_number": revision_number},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return revision
 
@@ -2383,11 +2378,9 @@ class AppRuntimeService:
                 category="workspace_validation_error",
                 summary="Workspace validation failed during app creation.",
                 details={"app": app_name, "validation": validation},
-                jsonrpc_code=-32007,
-                http_status=409,
             )
 
-        manifest = validate_manifest_payload(json.loads(self.workspace_service.read_file(app_name, "dash-app.json")))
+        manifest = validate_manifest_payload(json.loads(self.workspace_service.read_file(app_name, APP_MANIFEST_FILENAME)))
         artifact_path, source_hash, dependency_lock_hash = self._write_workspace_artifact(app_name, 1)
         git_revision = self._materialize_git_revision(
             app_name,
@@ -2457,8 +2450,6 @@ class AppRuntimeService:
                     "traceback_text": traceback.format_exc(),
                     "exception_type": type(exc).__name__,
                 },
-                jsonrpc_code=-32008,
-                http_status=500,
             )
             self._record_dash_server_error(
                 revision.app_name,
@@ -2486,7 +2477,7 @@ class AppRuntimeService:
         from .worker_manager import WorkerStartError
 
         artifact_path = Path(revision.artifact_path)
-        app_source = artifact_path / "app.py"
+        app_source = artifact_path / APP_ENTRYPOINT_FILENAME
         if not (artifact_path.is_dir() and app_source.exists()):
             # Fall back to in-process for revisions whose artifact has no app.py on disk.
             wsgi_app = self._create_revision_wsgi_app(revision, mount_path)
@@ -2561,8 +2552,6 @@ class AppRuntimeService:
                     "worker_start_error": str(exc),
                     "python_executable": python_executable or sys.executable,
                 },
-                jsonrpc_code=-32008,
-                http_status=500,
             ) from exc
 
         proxy = WorkerProxyWSGIApp(
@@ -2573,7 +2562,7 @@ class AppRuntimeService:
         self.dispatcher.mount(mount_path, proxy)
 
     def _read_requirements_from_artifact(self, artifact_path: Path) -> list[str]:
-        path = artifact_path / "requirements.txt"
+        path = artifact_path / REQUIREMENTS_FILENAME
         if not path.exists():
             return []
         return [
@@ -2584,7 +2573,7 @@ class AppRuntimeService:
 
     def _create_revision_wsgi_app(self, revision: AppRevision, mount_path: str) -> Flask:
         artifact_path = Path(revision.artifact_path)
-        if artifact_path.is_dir() and (artifact_path / "app.py").exists():
+        if artifact_path.is_dir() and (artifact_path / APP_ENTRYPOINT_FILENAME).exists():
             wsgi_app = self._load_workspace_artifact_wsgi_app(
                 artifact_path,
                 mount_path,
@@ -2702,10 +2691,12 @@ class AppRuntimeService:
         *,
         revision_number: int,
     ) -> Flask:
-        manifest_payload = json.loads((artifact_dir / "dash-app.json").read_text())
+        manifest_payload = json.loads((artifact_dir / APP_MANIFEST_FILENAME).read_text())
         manifest = validate_manifest_payload(manifest_payload)
         module_name = f"dash_server_artifact_{manifest.name}_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(module_name, artifact_dir / "app.py")
+        spec = importlib.util.spec_from_file_location(
+            module_name, artifact_dir / APP_ENTRYPOINT_FILENAME
+        )
         assert spec is not None and spec.loader is not None
         with isolated_dash_callback_globals(), isolated_local_imports(artifact_dir):
             module = importlib.util.module_from_spec(spec)
@@ -2720,8 +2711,6 @@ class AppRuntimeService:
                         "exception_type": type(exc).__name__,
                         "traceback_text": traceback.format_exc(),
                     },
-                    jsonrpc_code=-32008,
-                    http_status=500,
                 ) from exc
             factory = getattr(module, "create_dash_app", None)
             if not callable(factory):
@@ -2729,8 +2718,6 @@ class AppRuntimeService:
                     category="artifact_error",
                     summary="Artifact app.py must define create_dash_app(server, url_base_pathname, metadata).",
                     details={"artifact_path": str(artifact_dir)},
-                    jsonrpc_code=-32008,
-                    http_status=500,
                 )
             server = Flask(f"dash_server.runtime.{manifest.name}.{uuid.uuid4().hex}")
             server.extensions.update(self.runtime_extensions)
@@ -2767,8 +2754,6 @@ class AppRuntimeService:
                         "exception_type": type(exc).__name__,
                         "traceback_text": traceback.format_exc(),
                     },
-                    jsonrpc_code=-32008,
-                    http_status=500,
                 ) from exc
             mount_check = verify_dash_mount(server)
             if mount_check["status"] != "passed":
@@ -2780,8 +2765,6 @@ class AppRuntimeService:
                         "mount_path": mount_path,
                         "mount_check": mount_check,
                     },
-                    jsonrpc_code=-32008,
-                    http_status=500,
                 )
         return server
 
@@ -2791,7 +2774,6 @@ class AppRuntimeService:
                 category="build_validation_error",
                 summary="Draft manifest name must match the existing app name.",
                 details={"app": app.name, "manifest_name": manifest.name},
-                jsonrpc_code=-32602,
             )
 
     def _seed_workspace_from_revision(self, app_name: str, revision: AppRevision) -> None:
@@ -2799,10 +2781,7 @@ class AppRuntimeService:
         if artifact_path.is_dir():
             if self.workspace_service.workspace_exists(app_name):
                 return
-            files: dict[str, str] = {}
-            for source in artifact_path.rglob("*"):
-                if source.is_file() and "__pycache__" not in source.parts and source.suffix != ".pyc":
-                    files[source.relative_to(artifact_path).as_posix()] = source.read_text()
+            files = read_artifact_files(artifact_path)
             self.workspace_service.replace_workspace(
                 app_name,
                 files,
@@ -2821,7 +2800,7 @@ class AppRuntimeService:
         self.workspace_service.snapshot_workspace(app_name, artifact_dir)
         files = self.workspace_service.read_all_files(app_name)
         source_payload = json.dumps(files, sort_keys=True).encode("utf-8")
-        requirements = self.workspace_service.read_file(app_name, "requirements.txt").encode("utf-8")
+        requirements = self.workspace_service.read_file(app_name, REQUIREMENTS_FILENAME).encode("utf-8")
         source_hash = hashlib.sha256(source_payload).hexdigest()
         dependency_lock_hash = hashlib.sha256(requirements).hexdigest()
         return str(artifact_dir), source_hash, dependency_lock_hash
@@ -3097,7 +3076,6 @@ class AppRuntimeService:
                     category="gitops_reconcile_error",
                     summary=f"Live desired state for app {app_name} is malformed.",
                     details={"app": app_name, "desired_state": live_desired},
-                    jsonrpc_code=-32010,
                 )
             route = self._normalize_live_route(str(spec.get("route", app.route)))
             if len(desired_live_routes.get(route, [])) > 1:
@@ -3105,7 +3083,6 @@ class AppRuntimeService:
                     category="route_conflict",
                     summary=f"Live desired state uses duplicate route {route}.",
                     details={"app": app_name, "route": route, "apps": desired_live_routes[route]},
-                    jsonrpc_code=-32009,
                 )
             self._ensure_route_available(route, excluding_app=app_name)
             visibility = self._normalize_visibility(str(spec.get("visibility", app.visibility)))
@@ -3159,7 +3136,6 @@ class AppRuntimeService:
                     category="gitops_reconcile_error",
                     summary=f"Preview desired state for app {app_name} could not be resolved.",
                     details={"app": app_name, "desired_state": preview_desired},
-                    jsonrpc_code=-32010,
                 )
             self.registry.set_preview_revision(app_name, desired_preview_revision.id)
             self.registry.update_revision_state(
@@ -3214,7 +3190,6 @@ class AppRuntimeService:
                     "desired_git_tag": git_tag,
                     "observed_git_tag": revision.git_tag,
                 },
-                jsonrpc_code=-32010,
             )
         return revision
 
@@ -3327,42 +3302,58 @@ class AppRuntimeService:
         artifact_path: str,
         fallback_manifest: AppManifest,
     ) -> AppManifest:
-        artifact_manifest_path = Path(artifact_path) / "dash-app.json"
-        if artifact_manifest_path.exists():
-            return validate_manifest_payload(json.loads(artifact_manifest_path.read_text()))
+        manifest_payload = load_manifest_from_dir(Path(artifact_path))
+        if manifest_payload is not None:
+            return validate_manifest_payload(manifest_payload)
         return fallback_manifest
 
     def _artifact_source_files(self, artifact_path: str) -> list[str]:
         artifact_dir = Path(artifact_path)
         if not artifact_dir.exists() or not artifact_dir.is_dir():
             return []
-        files: list[str] = []
-        for candidate in sorted(artifact_dir.rglob("*")):
-            if candidate.is_file() and "__pycache__" not in candidate.parts and candidate.suffix != ".pyc":
-                files.append(candidate.relative_to(artifact_dir).as_posix())
-        return files
+        return list_artifact_files(artifact_dir)
 
     def _strip_hash_prefix(self, value: str) -> str:
         return value.split("sha256:", 1)[1] if value.startswith("sha256:") else value
 
-    def _reconcile_or_raise(self, app_name: str) -> dict[str, Any]:
-        summary = self.reconcile_git_desired_state()
-        result = next((item for item in summary["results"] if item["app"] == app_name), None)
-        if result is None:
-            raise DashServerError(
-                category="gitops_reconcile_error",
-                summary=f"Git desired-state reconcile did not return a result for app {app_name}.",
-                details={"app": app_name, "summary": summary},
-                jsonrpc_code=-32010,
+    def reconcile_app(self, app_name: str) -> dict[str, Any]:
+        """Reconcile one app's Git desired state without touching the rest of the fleet.
+
+        Single-app mutations (route/visibility/exposure changes, promote,
+        rollback, preview) must not re-resolve or re-mount unrelated apps; the
+        fleet-wide `reconcile_git_desired_state` remains for bootstrap and
+        drift reporting.
+        """
+        app = self.registry.get_app(app_name)
+        if app is None:
+            return {"app": app_name, "status": "skipped", "reason": "app_not_registered"}
+        desired = self.git_desired_state()
+        desired_live_routes = self._desired_live_routes(desired["live"])
+        try:
+            return self._reconcile_app_desired_state(
+                app_name,
+                desired["live"].get(app_name),
+                desired["preview"].get(app_name),
+                desired_live_routes,
             )
+        except DashServerError as exc:
+            self._record_dash_server_error(app_name, source="runtime", exc=exc)
+            return {
+                "app": app_name,
+                "status": "failed",
+                "reason": exc.category,
+                "details": exc.details,
+            }
+
+    def _reconcile_or_raise(self, app_name: str) -> dict[str, Any]:
+        result = self.reconcile_app(app_name)
         if result.get("status") == "failed":
             raise DashServerError(
                 category=str(result.get("reason") or "gitops_reconcile_error"),
                 summary=f"Git desired-state reconcile failed for app {app_name}.",
                 details={"app": app_name, **(result.get("details") or {})},
-                jsonrpc_code=-32010,
             )
-        return summary
+        return result
 
     def _safe_workspace_validation(
         self,
@@ -3853,8 +3844,6 @@ class AppRuntimeService:
             category="route_conflict",
             summary=f"Route {route} is already assigned to app {existing.name}.",
             details={"route": route, "existing_app": existing.name},
-            jsonrpc_code=-32009,
-            http_status=409,
         )
 
     def _normalize_live_route(self, mount_path: str) -> str:
@@ -3863,7 +3852,6 @@ class AppRuntimeService:
                 category="exposure_validation_error",
                 summary="Live mount paths must start with /apps/.",
                 details={"mount_path": mount_path},
-                jsonrpc_code=-32602,
             )
         normalized = mount_path.rstrip("/") or mount_path
         if normalized.startswith("/preview/"):
@@ -3871,7 +3859,6 @@ class AppRuntimeService:
                 category="exposure_validation_error",
                 summary="Live mount paths cannot use the preview namespace.",
                 details={"mount_path": mount_path},
-                jsonrpc_code=-32602,
             )
         return normalized
 
@@ -3881,7 +3868,6 @@ class AppRuntimeService:
                 category="exposure_validation_error",
                 summary="Visibility must be one of private, public, or internal.",
                 details={"visibility": visibility},
-                jsonrpc_code=-32602,
             )
         return visibility
 
@@ -3891,7 +3877,6 @@ class AppRuntimeService:
                 category="exposure_validation_error",
                 summary="Auth policy must be one of inherited, required, none, or custom.",
                 details={"auth_policy": auth_policy},
-                jsonrpc_code=-32602,
             )
         return auth_policy
 
@@ -3901,7 +3886,6 @@ class AppRuntimeService:
                 category="exposure_validation_error",
                 summary="Permissions must be an object.",
                 details={"permissions": permissions},
-                jsonrpc_code=-32602,
             )
         normalized = {
             "filesystem": permissions.get("filesystem", {"mode": "workspace-write"}),
@@ -3914,7 +3898,6 @@ class AppRuntimeService:
                     category="exposure_validation_error",
                     summary=f"Permission section {key} must be an object.",
                     details={"section": key},
-                    jsonrpc_code=-32602,
                 )
         return normalized
 

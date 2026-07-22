@@ -49,16 +49,12 @@ class ParameterCodec:
                 category="consumption_parameter_decode_error",
                 summary="Stored export parameters could not be decoded.",
                 details={},
-                jsonrpc_code=-32012,
-                http_status=500,
             ) from exc
         if not isinstance(decoded, dict):
             raise DashServerError(
                 category="consumption_parameter_decode_error",
                 summary="Stored export parameters have an invalid shape.",
                 details={},
-                jsonrpc_code=-32012,
-                http_status=500,
             )
         return decoded
 
@@ -80,24 +76,18 @@ class ConsumptionTokenSigner:
                 category="consumption_token_expired",
                 summary="The consumption token has expired.",
                 details={"purpose": purpose},
-                jsonrpc_code=-32031,
-                http_status=410,
             ) from exc
         except BadSignature as exc:
             raise DashServerError(
                 category="consumption_token_invalid",
                 summary="The consumption token is invalid.",
                 details={"purpose": purpose},
-                jsonrpc_code=-32030,
-                http_status=403,
             ) from exc
         if not isinstance(payload, dict) or payload.get("purpose") != purpose:
             raise DashServerError(
                 category="consumption_token_invalid",
                 summary="The consumption token has the wrong purpose.",
                 details={"purpose": purpose},
-                jsonrpc_code=-32030,
-                http_status=403,
             )
         return payload
 

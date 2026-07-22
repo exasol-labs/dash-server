@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from dash_server.db import ensure_column, open_connection
+
 from .models import AppEvent, AppManifest, AppRevision, HostedApp
 
 
@@ -398,7 +400,6 @@ class SQLiteAppRegistry:
         self._ensure_column("app_invitations", "delivery_error", "TEXT")
         self._ensure_column("app_invitations", "sent_at", "TEXT")
 
-        self._backfill_stage1_current_pointers()
 
     def list_apps(self) -> list[HostedApp]:
         with self._connect() as connection:
@@ -1892,32 +1893,8 @@ class SQLiteAppRegistry:
             {suffix}
         """
 
-    def _backfill_stage1_current_pointers(self) -> None:
-        with self._connect() as connection:
-            rows = connection.execute(
-                "PRAGMA table_info(apps)"
-            ).fetchall()
-            columns = {row["name"] for row in rows}
-            if "current_revision_id" not in columns:
-                return
-            connection.execute(
-                """
-                UPDATE apps
-                SET current_revision_id = current_revision_id
-                WHERE current_revision_id IS NOT NULL
-                """
-            )
-            connection.commit()
-
     def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
-        with self._connect() as connection:
-            rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-            columns = {row["name"] for row in rows}
-            if column_name not in columns:
-                connection.execute(
-                    f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
-                )
-                connection.commit()
+        ensure_column(self.db_path, table_name, column_name, column_type)
 
     def _row_to_revision(self, row: sqlite3.Row) -> AppRevision:
         # The two new env-identity columns may not exist when reading old DBs that haven't
@@ -2085,7 +2062,5 @@ class SQLiteAppRegistry:
             "revoked_at": row["revoked_at"],
         }
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def _connect(self):
+        return open_connection(self.db_path)

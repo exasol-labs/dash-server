@@ -7,6 +7,10 @@ from pathlib import Path
 from dash_server.dependencies import DependencyInstaller
 from dash_server.workspace.service import WorkspaceService
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def test_dependency_installer_caches_successful_installs(tmp_path: Path, monkeypatch):
     installer = DependencyInstaller(
@@ -315,7 +319,7 @@ def test_subprocess_validator_smoke_against_in_tree_app(tmp_path):
 
     result = _sp.run(
         [
-            sys.executable, "-m", "dash_server.runtime.worker",
+            sys.executable, "-m", "dash_server_runtime.worker",
             "--mode=validate",
             "--app-name", "worker-validate",
             "--app-source", str(app_py),
@@ -344,7 +348,7 @@ def test_subprocess_validator_reports_import_failure(tmp_path):
     )
     result = _sp.run(
         [
-            sys.executable, "-m", "dash_server.runtime.worker",
+            sys.executable, "-m", "dash_server_runtime.worker",
             "--mode=validate",
             "--app-name", "broken",
             "--app-source", str(app_py),

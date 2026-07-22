@@ -15,6 +15,8 @@ import pytest
 from dash_server.app_factory import create_app
 from dash_server.gitops.repo_service import GitRepoService
 
+pytestmark = pytest.mark.slow
+
 
 # -- BUG-001: instance-path override -----------------------------------------
 

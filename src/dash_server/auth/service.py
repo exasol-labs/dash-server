@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 
 from flask import current_app, g, request, session
 
+from dash_server.config import coerce_bool
 from dash_server.exceptions import DashServerError
 
 from .models import AuthContext, Principal
@@ -26,7 +27,7 @@ class IdentityService:
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.mode = str(config.get("DASH_SERVER_MODE", "local"))
-        self.auth_enabled = bool(config.get("DASH_SERVER_AUTH_ENABLED", False))
+        self.auth_enabled = coerce_bool(config.get("DASH_SERVER_AUTH_ENABLED"))
         self.provider = str(config.get("DASH_SERVER_AUTH_PROVIDER", "disabled"))
         self.oidc_issuer = config.get("DASH_SERVER_OIDC_ISSUER")
         self.oidc_client_id = config.get("DASH_SERVER_OIDC_CLIENT_ID")
@@ -35,7 +36,7 @@ class IdentityService:
         self.oidc_scopes = str(config.get("DASH_SERVER_OIDC_SCOPES", "openid email profile"))
         self.oidc_groups_claim = str(config.get("DASH_SERVER_OIDC_GROUPS_CLAIM", "groups"))
         self.oidc_org_claim = config.get("DASH_SERVER_OIDC_ORG_CLAIM")
-        self.oidc_accept_test_tokens = bool(config.get("DASH_SERVER_OIDC_ACCEPT_TEST_TOKENS", False))
+        self.oidc_accept_test_tokens = coerce_bool(config.get("DASH_SERVER_OIDC_ACCEPT_TEST_TOKENS"))
         self.trusted_proxy_headers_enabled = bool(
             config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED", False)
         )
@@ -256,12 +257,11 @@ class IdentityService:
                 http_status=404,
             )
 
-    def _auth_error(self, category: str, summary: str, *, http_status: int = 400) -> DashServerError:
+    def _auth_error(self, category: str, summary: str, *, http_status: int | None = None) -> DashServerError:
         return DashServerError(
             category=category,
             summary=summary,
             details={"provider": self.provider, "mode": self.mode},
-            jsonrpc_code=-32020,
             http_status=http_status,
         )
 

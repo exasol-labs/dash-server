@@ -225,7 +225,6 @@ def validate_bundle(bundle: dict[str, Any]) -> tuple[AppManifest, dict[str, Any]
                 "expected": "object",
                 **app_create_schema_help(),
             },
-            jsonrpc_code=-32602,
         )
 
     normalized_bundle = _normalize_bundle_shape(bundle)
@@ -317,7 +316,6 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                 "field": "manifest",
                 **app_create_schema_help(),
             },
-            jsonrpc_code=-32602,
         )
 
     name = _require_non_empty_string(raw_manifest.get("name"), "manifest.name")
@@ -331,7 +329,6 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                 "expected_pattern": _APP_NAME_PATTERN.pattern,
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
 
     title = _require_non_empty_string(raw_manifest.get("title"), "manifest.title")
@@ -346,7 +343,6 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                 "expected_prefix": "/apps/",
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
 
     description = raw_manifest.get("description") or f"{title} hosted by dash-server."
@@ -359,7 +355,6 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                 "expected": "string",
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
 
     template = raw_manifest.get("template") or "metric-cards"
@@ -373,7 +368,6 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                 "supported_values": list(_SUPPORTED_TEMPLATES),
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
 
     raw_data_sources = raw_manifest.get("data_sources")
@@ -386,7 +380,6 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                 "expected": "object",
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
     if isinstance(raw_data_sources, dict):
         primary_source = raw_data_sources.get("primary")
@@ -415,7 +408,6 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
                         "forbidden_keys": forbidden_keys,
                         "help_resource": _APP_AUTHORING_GUIDE_RESOURCE,
                     },
-                    jsonrpc_code=-32602,
                 )
 
     consumption = normalize_consumption_contract(
@@ -447,7 +439,6 @@ def _validate_dashboard(raw_dashboard: Any, manifest: AppManifest) -> dict[str, 
                 "expected": "object",
                 **app_create_schema_help(),
             },
-            jsonrpc_code=-32602,
         )
 
     headline = raw_dashboard.get("headline") or manifest.title
@@ -465,7 +456,6 @@ def _validate_dashboard(raw_dashboard: Any, manifest: AppManifest) -> dict[str, 
                 "field": "dashboard.headline",
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
     if not isinstance(summary, str) or not summary.strip():
         raise DashServerError(
@@ -475,7 +465,6 @@ def _validate_dashboard(raw_dashboard: Any, manifest: AppManifest) -> dict[str, 
                 "field": "dashboard.summary",
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
     if not isinstance(metrics, list) or not metrics:
         raise DashServerError(
@@ -486,7 +475,6 @@ def _validate_dashboard(raw_dashboard: Any, manifest: AppManifest) -> dict[str, 
                 "expected": "non-empty array of {label, value} objects",
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
-            jsonrpc_code=-32602,
         )
 
     normalized_metrics: list[dict[str, str]] = []
@@ -500,7 +488,6 @@ def _validate_dashboard(raw_dashboard: Any, manifest: AppManifest) -> dict[str, 
                     "expected": "object with label and value",
                     "help_resource": _APP_CREATE_HELP_RESOURCE,
                 },
-                jsonrpc_code=-32602,
             )
         label = _require_non_empty_string(metric.get("label"), f"dashboard.metrics[{index}].label")
         value = _require_non_empty_string(metric.get("value"), f"dashboard.metrics[{index}].value")
@@ -523,7 +510,6 @@ def _require_non_empty_string(value: Any, field_name: str) -> str:
             "field": field_name,
             "help_resource": _APP_CREATE_HELP_RESOURCE,
         },
-        jsonrpc_code=-32602,
     )
 
 
@@ -584,7 +570,6 @@ def canonicalize_files_bundle(bundle: dict[str, Any]) -> tuple[dict[str, Any], l
                 "help_resource": _APP_CREATE_FROM_FILES_HELP_RESOURCE,
                 "received_bundle_keys": sorted(bundle.keys()),
             },
-            jsonrpc_code=-32602,
         )
 
     name = _require_non_empty_string(bundle.get("name"), "bundle.name")

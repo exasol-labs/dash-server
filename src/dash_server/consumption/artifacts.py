@@ -11,6 +11,7 @@ import tempfile
 from typing import Protocol
 
 from dash_server.exceptions import DashServerError
+from dash_server.paths import safe_join
 
 
 class ArtifactStore(Protocol):
@@ -58,25 +59,25 @@ class LocalArtifactStore:
             pass
 
     def resolve(self, storage_key: str) -> Path:
-        candidate = (self.root / storage_key).resolve()
-        if self.root not in candidate.parents or not candidate.is_file():
+        try:
+            candidate = safe_join(self.root, storage_key)
+        except ValueError:
+            candidate = None
+        if candidate is None or not candidate.is_file():
             raise DashServerError(
                 category="consumption_artifact_not_found",
                 summary="The export artifact is unavailable.",
                 details={},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return candidate
 
     def delete(self, storage_key: str) -> None:
         try:
-            candidate = (self.root / storage_key).resolve()
-            if self.root in candidate.parents:
-                candidate.unlink(missing_ok=True)
-                with suppress(OSError):
-                    candidate.parent.rmdir()
-        except OSError:
+            candidate = safe_join(self.root, storage_key)
+            candidate.unlink(missing_ok=True)
+            with suppress(OSError):
+                candidate.parent.rmdir()
+        except (OSError, ValueError):
             pass
 
     def _job_root(self, job_id: str) -> Path:
@@ -154,29 +155,25 @@ class ObjectStoreArtifactStore:
                 category="consumption_artifact_not_found",
                 summary="The export artifact is unavailable.",
                 details={},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
-        cached = (self.cache_root / storage_key).resolve()
-        if self.cache_root not in cached.parents:
+        try:
+            cached = safe_join(self.cache_root, storage_key)
+        except ValueError:
             raise DashServerError(
                 category="consumption_artifact_not_found",
                 summary="The export artifact is unavailable.",
                 details={},
-                jsonrpc_code=-32004,
-                http_status=404,
-            )
+            ) from None
         cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_bytes(self.client.get_object(storage_key))
         return cached
 
     def delete(self, storage_key: str) -> None:
         self.client.delete_object(storage_key)
-        with suppress(OSError):
-            cached = (self.cache_root / storage_key).resolve()
-            if self.cache_root in cached.parents:
-                cached.unlink(missing_ok=True)
-                cached.parent.rmdir()
+        with suppress(OSError, ValueError):
+            cached = safe_join(self.cache_root, storage_key)
+            cached.unlink(missing_ok=True)
+            cached.parent.rmdir()
 
 
 def _safe_job_id(job_id: str) -> str:

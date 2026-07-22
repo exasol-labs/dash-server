@@ -5,13 +5,28 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+from typing import Any
+
+
+def coerce_bool(value: Any, *, default: bool = False) -> bool:
+    """One boolean interpretation for config values, however they arrive.
+
+    Env vars come in as strings, test/embedder configs as real booleans; both
+    must agree that the string "false" is false. This is the only place that
+    rule is written.
+    """
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() not in {"0", "false", "no", "off"}
+    return coerce_bool(os.environ.get(name), default=default)
 
 
 class Config:
@@ -185,10 +200,7 @@ class Config:
     EXASOL_BOOTSTRAP_DSN: str | None = os.environ.get("DASH_SERVER_EXASOL_DSN")
     EXASOL_BOOTSTRAP_USER: str | None = os.environ.get("DASH_SERVER_EXASOL_USER")
     EXASOL_BOOTSTRAP_DESCRIPTION: str | None = os.environ.get("DASH_SERVER_EXASOL_DESCRIPTION")
-    EXASOL_BOOTSTRAP_TLS_VERIFY: bool = os.environ.get(
-        "DASH_SERVER_EXASOL_TLS_VERIFY",
-        "true",
-    ).strip().lower() not in {"0", "false", "no", "off"}
+    EXASOL_BOOTSTRAP_TLS_VERIFY: bool = _env_bool("DASH_SERVER_EXASOL_TLS_VERIFY", True)
     EXASOL_BOOTSTRAP_SECRET_ENV_VAR: str | None = os.environ.get(
         "DASH_SERVER_EXASOL_SECRET_ENV_VAR",
         "EXA_PASSWORD",

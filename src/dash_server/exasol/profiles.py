@@ -35,8 +35,6 @@ class ExasolProfileStore:
                 category="exasol_profile_not_found",
                 summary=f"Exasol profile {name} was not found.",
                 details={"profile": name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return self._profile_from_payload(json.loads(path.read_text()))
 
@@ -69,7 +67,6 @@ class ExasolProfileStore:
                 category="exasol_profile_validation_error",
                 summary="Exasol profile names must use lowercase letters, numbers, and hyphens.",
                 details={"field": "name", "value": name},
-                jsonrpc_code=-32602,
             )
 
     def _profile_from_payload(self, payload: dict[str, Any]) -> ExasolProfile:
@@ -79,7 +76,6 @@ class ExasolProfileStore:
                 category="exasol_profile_validation_error",
                 summary="Exasol profile secret_ref must be an object.",
                 details={"field": "secret_ref"},
-                jsonrpc_code=-32602,
             )
         return ExasolProfile(
             name=str(payload.get("name")),

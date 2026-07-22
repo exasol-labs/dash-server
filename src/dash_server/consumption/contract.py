@@ -9,6 +9,7 @@ import re
 from typing import Any, NoReturn
 
 from dash_server.exceptions import DashServerError
+from dash_server.paths import safe_relative_path
 
 
 _OUTPUT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -321,11 +322,10 @@ def _normalize_render(raw_render: Any, *, field: str, kind: str) -> dict[str, An
 
 
 def _safe_relative_path(value: str, field: str) -> str:
-    normalized = value.replace("\\", "/")
-    path = PurePosixPath(normalized)
-    if path.is_absolute() or not path.parts or ".." in path.parts or "." in path.parts:
+    try:
+        return safe_relative_path(value)
+    except ValueError:
         _error(field, "Output source path must be a normalized workspace-relative path.")
-    return str(path)
 
 
 def _required_string(payload: dict[str, Any], key: str, field: str) -> str:
@@ -353,6 +353,4 @@ def _error(field: str, summary: str) -> NoReturn:
         category="consumption_contract_validation_error",
         summary=summary,
         details={"field": field},
-        jsonrpc_code=-32602,
-        http_status=400,
     )

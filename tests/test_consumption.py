@@ -19,6 +19,8 @@ from dash_server.consumption import consumption_contract_hash, normalize_consump
 from dash_server.consumption.execution import DatasetStream, ExasolDatasetExecutor
 from dash_server.exceptions import DashServerError
 
+pytestmark = pytest.mark.slow
+
 
 _APP_PY = """from dash import Dash, html
 

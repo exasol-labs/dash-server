@@ -38,6 +38,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "slow: spawns real apps or subprocess workers, or polls background jobs; excluded from the fast inner loop via `pytest -m 'not slow'`",
+  "integration: exercises multiple subsystems end to end",
+]
 
 # -----------------------------------------------------------------------------
 # Lint / format (ruff)

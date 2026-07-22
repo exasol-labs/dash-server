@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from dash_server.exceptions import DashServerError
+from dash_server.paths import safe_join
 from dash_server.exasol.service import ExasolDashboardService
 from dash_server.exasol.sql_smoke import collect_sql_smoke_params, run_sql_smoke
 from dash_server.registry.models import AppRevision
@@ -52,8 +53,6 @@ class ExasolDatasetExecutor:
                     "output_id": output.get("id"),
                     "reason": reason,
                 },
-                jsonrpc_code=-32034,
-                http_status=422,
             )
 
     def stream(
@@ -76,8 +75,6 @@ class ExasolDatasetExecutor:
                 category="consumption_query_failed",
                 summary="The Exasol export query could not be started.",
                 details={"profile": profile.name, "reason": type(exc).__name__},
-                jsonrpc_code=-32035,
-                http_status=502,
             ) from exc
         columns = _extract_columns(statement)
         started = time.monotonic()
@@ -92,8 +89,6 @@ class ExasolDatasetExecutor:
                             category="consumption_query_timeout",
                             summary="The export exceeded its configured runtime limit.",
                             details={"max_runtime_seconds": self.max_runtime_seconds},
-                            jsonrpc_code=-32036,
-                            http_status=408,
                         )
                     rows = _fetch_batch(statement, self.batch_size)
                     if not rows:
@@ -106,8 +101,6 @@ class ExasolDatasetExecutor:
                     category="consumption_query_failed",
                     summary="The Exasol export query failed while fetching results.",
                     details={"profile": profile.name, "reason": type(exc).__name__},
-                    jsonrpc_code=-32035,
-                    http_status=502,
                 ) from exc
             finally:
                 with suppress(Exception):
@@ -128,8 +121,6 @@ class ExasolDatasetExecutor:
                 category="consumption_profile_not_found",
                 summary="The registered output has no usable Exasol profile binding.",
                 details={"app": revision.app_name, "output_id": output.get("id")},
-                jsonrpc_code=-32034,
-                http_status=422,
             )
         try:
             profile = self.service.profile_store.get_profile(profile_name)
@@ -138,19 +129,17 @@ class ExasolDatasetExecutor:
                 category="consumption_profile_not_found",
                 summary="The registered output's Exasol profile was not found.",
                 details={"profile": profile_name, "output_id": output.get("id")},
-                jsonrpc_code=-32004,
-                http_status=422,
             ) from exc
         relative_path = source.get("path")
-        artifact_root = Path(revision.artifact_path).resolve()
-        sql_path = (artifact_root / str(relative_path)).resolve()
-        if artifact_root not in sql_path.parents or not sql_path.is_file():
+        try:
+            sql_path = safe_join(Path(revision.artifact_path), str(relative_path))
+        except ValueError:
+            sql_path = None
+        if sql_path is None or not sql_path.is_file():
             raise DashServerError(
                 category="consumption_source_not_found",
                 summary="The pinned export SQL source is unavailable.",
                 details={"path": relative_path, "revision_number": revision.revision_number},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return profile, str(relative_path), sql_path.read_text(encoding="utf-8")
 
@@ -172,8 +161,6 @@ def _fetch_batch(statement: Any, size: int) -> Sequence[Sequence[Any]]:
         category="consumption_streaming_unsupported",
         summary="The configured Exasol driver does not provide bounded result fetching.",
         details={},
-        jsonrpc_code=-32012,
-        http_status=500,
     )
 
 
@@ -204,8 +191,6 @@ def _cancelled_error() -> DashServerError:
         category="consumption_job_cancelled",
         summary="Export cancellation was requested.",
         details={},
-        jsonrpc_code=-32032,
-        http_status=409,
     )
 
 

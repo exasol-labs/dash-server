@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+
+from dash_server.timestamps import parse_iso8601
 import json
 from typing import Any
 
@@ -395,13 +397,12 @@ class AuthorizationService:
         return scope in {"manage", "all"}
 
     def _grant_expired(self, grant: dict[str, Any]) -> bool:
-        expires_at = grant.get("expires_at")
-        if not isinstance(expires_at, str) or not expires_at:
+        expires_at = parse_iso8601(grant.get("expires_at"))
+        if expires_at is None:
             return False
-        try:
-            return datetime.fromisoformat(expires_at) <= datetime.utcnow()
-        except ValueError:
-            return False
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc)
 
     def _grant_matches_principal(self, grant: dict[str, Any], principal: Principal) -> bool:
         principal_type = grant["principal_type"]

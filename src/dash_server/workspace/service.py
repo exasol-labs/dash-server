@@ -32,7 +32,15 @@ from dash_server.dash_apps.factory import (
     validate_manifest_payload,
 )
 from dash_server.consumption import validate_consumption_sources
+from dash_server.artifacts_io import (
+    APP_ENTRYPOINT_FILENAME,
+    APP_MANIFEST_FILENAME,
+    REQUIREMENTS_FILENAME,
+    is_artifact_source_part,
+)
+from dash_server.errors import JSONRPC_INVALID_PARAMS
 from dash_server.exceptions import DashServerError
+from dash_server.paths import safe_join
 from dash_server.gitops import GitWorktreeService
 from dash_server.imports import isolated_local_imports
 from dash_server.registry.models import AppManifest
@@ -42,9 +50,9 @@ class WorkspaceService:
     """Manage editable draft workspaces for hosted apps."""
 
     _state_filename = ".draft-state.json"
-    _manifest_filename = "dash-app.json"
-    _app_filename = "app.py"
-    _requirements_filename = "requirements.txt"
+    _manifest_filename = APP_MANIFEST_FILENAME
+    _app_filename = APP_ENTRYPOINT_FILENAME
+    _requirements_filename = REQUIREMENTS_FILENAME
     _patch_preview_context_lines = 3
     _exasol_env_pattern = re.compile(
         r"\b(?:EXA|EXASOL)_(?:DSN|USER|PASS|PASSWORD|PAT|ACCESS_TOKEN|REFRESH_TOKEN)\b"
@@ -141,7 +149,6 @@ class WorkspaceService:
                 category="bundle_validation_error",
                 summary="Expected a files-based bundle shape.",
                 details={"field": "bundle"},
-                jsonrpc_code=-32602,
             )
 
         canonical_bundle, files = canonicalize_files_bundle(bundle)
@@ -167,8 +174,6 @@ class WorkspaceService:
                 category="workspace_file_not_found",
                 summary=f"Workspace file {relative_path} was not found.",
                 details={"app": app_name, "path": relative_path},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return file_path.read_text()
 
@@ -194,16 +199,12 @@ class WorkspaceService:
                 category="patch_error",
                 summary="Search text was not found in the target file.",
                 details={"app": app_name, "path": relative_path},
-                jsonrpc_code=-32006,
-                http_status=409,
             )
         if occurrences > 1 and not replace_all:
             raise DashServerError(
                 category="patch_error",
                 summary="Search text matched multiple locations; set replace_all to true to continue.",
                 details={"app": app_name, "path": relative_path, "occurrences": occurrences},
-                jsonrpc_code=-32006,
-                http_status=409,
             )
         selected_matches = matches if replace_all else matches[:1]
         updated, replacement_ranges = self._apply_patch_replacements(
@@ -230,8 +231,6 @@ class WorkspaceService:
                 category="workspace_constraint_error",
                 summary=f"{relative_path} is required for hosted app workspaces and cannot be deleted.",
                 details={"app": app_name, "path": relative_path},
-                jsonrpc_code=-32006,
-                http_status=409,
             )
         target = self._resolve_path(app_name, relative_path)
         if not target.exists():
@@ -239,8 +238,6 @@ class WorkspaceService:
                 category="workspace_file_not_found",
                 summary=f"Workspace file {relative_path} was not found.",
                 details={"app": app_name, "path": relative_path},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         target.unlink()
         candidate = self._bump_candidate(app_name)
@@ -1037,7 +1034,7 @@ class WorkspaceService:
         cmd = [
             subprocess_python,
             "-m",
-            "dash_server.runtime.worker",
+            "dash_server_runtime.worker",
             "--mode=validate",
             "--app-name",
             app_name,
@@ -1676,11 +1673,14 @@ def create_dash_app(server, url_base_pathname, metadata):
         try:
             manifest_payload = json.loads(manifest_text)
         except json.JSONDecodeError as exc:
+            # Malformed input, not a build-state conflict: override the
+            # category's 409 default with invalid-params semantics.
             raise DashServerError(
                 category="workspace_validation_error",
                 summary="dash-app.json must contain valid JSON.",
                 details={"app": app_name, "path": self._manifest_filename, "message": str(exc)},
-                jsonrpc_code=-32602,
+                jsonrpc_code=JSONRPC_INVALID_PARAMS,
+                http_status=400,
             ) from exc
         return validate_manifest_payload(manifest_payload)
 
@@ -1713,8 +1713,6 @@ def create_dash_app(server, url_base_pathname, metadata):
                 category="workspace_not_found",
                 summary=f"Workspace for app {app_name} was not found.",
                 details={"app": app_name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
 
     def _workspace_dir(
@@ -1757,25 +1755,22 @@ def create_dash_app(server, url_base_pathname, metadata):
             return False
 
     def _resolve_path(self, app_name: str, relative_path: str) -> Path:
-        if not relative_path or relative_path.startswith("/") or ".." in Path(relative_path).parts:
+        workspace_dir = self._workspace_dir(app_name, create=True)
+        assert workspace_dir is not None
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            return safe_join(workspace_dir, relative_path)
+        except ValueError:
             raise DashServerError(
                 category="tool_validation_error",
                 summary="Workspace paths must stay within the app workspace.",
                 details={"app": app_name, "path": relative_path},
-                jsonrpc_code=-32602,
-            )
-        workspace_dir = self._workspace_dir(app_name, create=True)
-        assert workspace_dir is not None
-        workspace_dir.mkdir(parents=True, exist_ok=True)
-        return workspace_dir / relative_path
+            ) from None
 
     def _is_editable_file(self, path: Path, root: Path) -> bool:
-        relative_parts = path.relative_to(root).parts
         if path.name == self._state_filename:
             return False
-        if "__pycache__" in relative_parts:
-            return False
-        return path.suffix != ".pyc"
+        return is_artifact_source_part(path.relative_to(root))
 
     def _require_string(self, value: Any, field_name: str, *, allow_empty: bool = False) -> str:
         if isinstance(value, str) and (allow_empty or value):
@@ -1784,7 +1779,6 @@ def create_dash_app(server, url_base_pathname, metadata):
             category="tool_validation_error",
             summary=f"{field_name} must be a string.",
             details={"field": field_name},
-            jsonrpc_code=-32602,
         )
 
     def _write_files(self, app_name: str, files: Any) -> list[str]:
@@ -1793,7 +1787,6 @@ def create_dash_app(server, url_base_pathname, metadata):
                 category="tool_validation_error",
                 summary="files must be a non-empty array.",
                 details={"field": "files"},
-                jsonrpc_code=-32602,
             )
         touched: list[str] = []
         for file_entry in files:
@@ -1802,7 +1795,6 @@ def create_dash_app(server, url_base_pathname, metadata):
                     category="tool_validation_error",
                     summary="Each file entry must be an object.",
                     details={"field": "files"},
-                    jsonrpc_code=-32602,
                 )
             relative_path = self._require_string(file_entry.get("path"), "files.path")
             content = self._require_string(file_entry.get("content"), "files.content", allow_empty=True)

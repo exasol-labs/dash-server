@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _call_mcp(client, method: str, params: dict[str, Any], request_id: int = 1):
     return client.post(

@@ -51,8 +51,6 @@ def write_xlsx(
                     category="consumption_job_cancelled",
                     summary="Export cancellation was requested.",
                     details={},
-                    jsonrpc_code=-32032,
-                    http_status=409,
                 )
             for row in batch:
                 if row_count >= max_rows:

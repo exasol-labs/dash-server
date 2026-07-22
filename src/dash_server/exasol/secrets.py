@@ -35,7 +35,6 @@ class ExasolSecretStore:
                 category="exasol_secret_error",
                 summary=f"Environment variable {secret_ref.key} is not set.",
                 details={"provider": "env", "key": secret_ref.key},
-                jsonrpc_code=-32011,
                 http_status=404,
             )
         if secret_ref.provider == "local_file":
@@ -45,7 +44,6 @@ class ExasolSecretStore:
                     category="exasol_secret_error",
                     summary=f"Local secret for profile {secret_ref.key} was not found.",
                     details={"provider": "local_file", "key": secret_ref.key},
-                    jsonrpc_code=-32011,
                     http_status=404,
                 )
             payload = json.loads(payload_path.read_text())
@@ -56,15 +54,11 @@ class ExasolSecretStore:
                 category="exasol_secret_error",
                 summary=f"Local secret for profile {secret_ref.key} is invalid.",
                 details={"provider": "local_file", "key": secret_ref.key},
-                jsonrpc_code=-32011,
-                http_status=400,
             )
         raise DashServerError(
             category="exasol_secret_error",
             summary=f"Unsupported secret provider {secret_ref.provider}.",
             details={"provider": secret_ref.provider},
-            jsonrpc_code=-32011,
-            http_status=400,
         )
 
     def _secret_path(self, profile_name: str) -> Path:

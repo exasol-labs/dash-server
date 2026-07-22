@@ -81,7 +81,6 @@ class ExasolDashboardService:
                 category="exasol_profile_validation_error",
                 summary="Provide exactly one of secret_value or secret_env_var.",
                 details={"field": "secret_value"},
-                jsonrpc_code=-32602,
             )
         if secret_value:
             secret_ref = self.secret_store.store_local_secret(name, secret_value)
@@ -137,7 +136,6 @@ class ExasolDashboardService:
                 category="exasol_profile_validation_error",
                 summary=f"Unsupported Exasol dashboard pattern {pattern}.",
                 details={"field": "pattern", "supported_patterns": list(EXASOL_DASHBOARD_PATTERNS)},
-                jsonrpc_code=-32602,
             )
         return build_exasol_dashboard_bundle(
             app_name=app_name,
@@ -270,7 +268,6 @@ class ExasolDashboardService:
                 category="exasol_profile_validation_error",
                 summary=f"Credential mode {credential_mode} is not valid for backend {backend}.",
                 details={"field": "credential_mode", "backend": backend},
-                jsonrpc_code=-32602,
             )
 
     def _field_error(self, field_name: str, detail: str) -> DashServerError:
@@ -278,7 +275,6 @@ class ExasolDashboardService:
             category="exasol_profile_validation_error",
             summary=f"{field_name} {detail}",
             details={"field": field_name},
-            jsonrpc_code=-32602,
         )
 
     def _validate_app_name(self, name: str, *, field_name: str) -> None:
@@ -287,7 +283,6 @@ class ExasolDashboardService:
                 category="exasol_profile_validation_error",
                 summary=f"{field_name} must use lowercase letters, numbers, and hyphens.",
                 details={"field": field_name},
-                jsonrpc_code=-32602,
             )
 
     def _humanize_name(self, name: str) -> str:
@@ -324,7 +319,6 @@ class ExasolDashboardService:
                 category="exasol_schema_scaffold_error",
                 summary="Schema introspection failed for the selected Exasol profile.",
                 details={"profile": profile_name, "query_result": result},
-                jsonrpc_code=-32012,
             )
         rows = self._records_from_result(result)
         if not rows:
@@ -332,7 +326,6 @@ class ExasolDashboardService:
                 category="exasol_schema_scaffold_error",
                 summary="Schema introspection returned no visible business tables.",
                 details={"profile": profile_name, "schema_name": schema_name},
-                jsonrpc_code=-32012,
             )
 
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -347,7 +340,6 @@ class ExasolDashboardService:
                 category="exasol_schema_scaffold_error",
                 summary="Schema introspection did not return usable column metadata.",
                 details={"profile": profile_name, "schema_name": schema_name},
-                jsonrpc_code=-32012,
             )
 
         candidates = []
@@ -386,7 +378,6 @@ class ExasolDashboardService:
                         "table_name": table_name,
                         "available_tables": sorted({cand["table_name"] for cand in candidates}),
                     },
-                    jsonrpc_code=-32602,
                 )
             selected = override
 

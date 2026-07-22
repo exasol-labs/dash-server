@@ -22,6 +22,8 @@ import pytest
 from dash_server.runtime.worker_manager import AppWorkerManager, WorkerStartError
 from dash_server.runtime.worker_proxy import WorkerProxyWSGIApp
 
+pytestmark = pytest.mark.slow
+
 
 _TINY_APP_PY = """
 from dash import Dash, Input, Output, html, dcc
@@ -473,14 +475,15 @@ def test_app_factory_rejects_invalid_worker_port_range(tmp_path):
 
 
 def test_worker_module_lives_at_dash_server_runtime_path():
-    """The worker entry point is importable from dash_server_runtime.worker (not just the shim)."""
+    """The worker entry point lives only at dash_server_runtime.worker; the old shim is gone."""
+    import importlib.util
+
     import dash_server_runtime.worker as new_worker
-    import dash_server.runtime.worker as shim_worker
 
     assert callable(new_worker.main)
-    # The shim re-exports the same function object so callers paying attention to identity
-    # still get the canonical implementation.
-    assert shim_worker.main is new_worker.main
+    # The dash_server.runtime.worker compat shim was removed once the last
+    # in-tree caller spawned the canonical path; nothing should resolve it.
+    assert importlib.util.find_spec("dash_server.runtime.worker") is None
 
 
 def test_python_m_dash_server_runtime_worker_validates_a_tiny_app(tmp_path):

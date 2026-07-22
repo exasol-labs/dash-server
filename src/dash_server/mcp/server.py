@@ -24,6 +24,11 @@ from dash_server.dash_apps.factory import (
     app_create_schema_help,
 )
 from dash_server.exasol import ExasolDashboardService
+from dash_server.errors import (
+    JSONRPC_INVALID_PARAMS,
+    JSONRPC_INVALID_REQUEST,
+    JSONRPC_METHOD_NOT_FOUND,
+)
 from dash_server.exceptions import DashServerError
 from dash_server.gitops import GitRepoService
 from dash_server.mailer import InvitationEmailSender
@@ -173,15 +178,15 @@ class MCPServer:
 
         if payload.get("jsonrpc") != "2.0":
             return self._error_response(
-                request_id, {"code": -32600, "message": "Only JSON-RPC 2.0 is supported."}, 200
+                request_id, {"code": JSONRPC_INVALID_REQUEST, "message": "Only JSON-RPC 2.0 is supported."}, 200
             )
         if not isinstance(method, str):
             return self._error_response(
-                request_id, {"code": -32600, "message": "A string method is required."}, 200
+                request_id, {"code": JSONRPC_INVALID_REQUEST, "message": "A string method is required."}, 200
             )
         if not isinstance(params, dict):
             return self._error_response(
-                request_id, {"code": -32602, "message": "Params must be an object."}, 200
+                request_id, {"code": JSONRPC_INVALID_PARAMS, "message": "Params must be an object."}, 200
             )
 
         try:
@@ -204,7 +209,7 @@ class MCPServer:
             return self._error_response(request_id, exc.to_error_object(), 200)
 
         return self._error_response(
-            request_id, {"code": -32601, "message": f"Method not found: {method}"}, 200
+            request_id, {"code": JSONRPC_METHOD_NOT_FOUND, "message": f"Method not found: {method}"}, 200
         )
 
     def _initialize_result(self) -> dict[str, Any]:
@@ -226,14 +231,12 @@ class MCPServer:
                     category="tool_validation_error",
                     summary="Tool `name` must be a string.",
                     details={"received_type": type(name).__name__},
-                    jsonrpc_code=-32602,
                 )
             if not isinstance(arguments, dict):
                 raise DashServerError(
                     category="tool_validation_error",
                     summary="Tool arguments must be an object.",
                     details={"tool": name},
-                    jsonrpc_code=-32602,
                 )
             handler = self._tool_handlers.get(name)
             if handler is None:
@@ -241,7 +244,6 @@ class MCPServer:
                     category="tool_not_found",
                     summary="Unknown tool.",
                     details={"tool": name},
-                    jsonrpc_code=-32602,
                 )
             self._validate_tool_arguments(str(name), arguments)
             return handler(arguments)
@@ -295,7 +297,7 @@ class MCPServer:
                 category=category,
                 summary=summary,
                 details=details,
-                jsonrpc_code=-32602,
+                jsonrpc_code=JSONRPC_INVALID_PARAMS,
             ) from exc
 
     @staticmethod
@@ -382,7 +384,6 @@ class MCPServer:
                 category="invalid_resource_uri",
                 summary="`uri` must be a string.",
                 details={"received_type": type(raw_uri).__name__},
-                jsonrpc_code=-32602,
             )
         uri: str = raw_uri
         if uri == "dash://meta/app-create-schema":
@@ -551,7 +552,6 @@ class MCPServer:
             category="resource_not_found",
             summary="Unknown resource.",
             details={"uri": uri},
-            jsonrpc_code=-32602,
         )
 
     def _resource_contents(self, uri: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -680,8 +680,6 @@ class MCPServer:
                     "or call exasol_profile_validate to inspect the current configuration."
                 ),
                 details={"profile": name, "overwrite": False},
-                jsonrpc_code=-32013,
-                http_status=409,
             )
 
         payload = self._exasol_service().create_local_profile(
@@ -736,7 +734,6 @@ class MCPServer:
                     "help_resource": "dash://meta/app-create-from-files-schema",
                     "suggested_tools": ["app_create_from_files"],
                 },
-                jsonrpc_code=-32602,
             )
         bundle = arguments.get("bundle")
         if isinstance(bundle, dict) and "files" in bundle:
@@ -749,7 +746,6 @@ class MCPServer:
                     "help_resource": "dash://meta/app-create-from-files-schema",
                     "suggested_tools": ["app_create_from_files"],
                 },
-                jsonrpc_code=-32602,
             )
         if bundle is None and "name" in arguments:
             bundle = self._bundle_from_top_level_arguments(arguments)
@@ -844,7 +840,6 @@ class MCPServer:
                     "validation": profile_validation,
                     "help_resource": "dash://exasol/help/connection-modes",
                 },
-                jsonrpc_code=-32012,
             )
         title_arg = arguments.get("title")
         route_arg = arguments.get("route")
@@ -911,7 +906,6 @@ class MCPServer:
                     "validation": profile_validation,
                     "help_resource": "dash://exasol/help/connection-modes",
                 },
-                jsonrpc_code=-32012,
             )
         bundle = self._exasol_service().build_schema_scaffold_bundle(
             app_name=app_name,
@@ -958,8 +952,6 @@ class MCPServer:
                     "revision_number": revision_number,
                     "preflight": preflight,
                 },
-                jsonrpc_code=-32010,
-                http_status=409,
             )
             return self._tool_error_result(
                 "app_build",
@@ -1042,8 +1034,6 @@ class MCPServer:
                     "diagnostics": diagnostics,
                     "force_clean": force_clean,
                 },
-                jsonrpc_code=-32007,
-                http_status=409,
             )
             return self._tool_error_result(
                 "app_deploy_draft",
@@ -1075,8 +1065,6 @@ class MCPServer:
                         "revision_number": built["revision"]["revision_number"],
                         "preflight": preflight,
                     },
-                    jsonrpc_code=-32010,
-                    http_status=409,
                 )
                 return self._tool_error_result(
                     "app_deploy_draft",
@@ -1142,8 +1130,6 @@ class MCPServer:
                     "health_status": health["health"]["status"],
                     "auto_rollback_on_health_failure": True,
                 },
-                jsonrpc_code=-32010,
-                http_status=409,
             )
             return self._tool_error_result(
                 "app_deploy_draft",
@@ -1224,7 +1210,6 @@ class MCPServer:
                 category="tool_validation_error",
                 summary="`files` must be a list.",
                 details={"received_type": type(files).__name__},
-                jsonrpc_code=-32602,
             )
         updated = self.runtime_service.put_files(
             self._require_name(arguments),
@@ -1311,8 +1296,6 @@ class MCPServer:
                 category="consumption_parameter_validation_error",
                 summary="Export parameters must be an object.",
                 details={"field": "parameters"},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         idempotency_key = arguments.get("idempotency_key")
         if idempotency_key is not None and not isinstance(idempotency_key, str):
@@ -1320,8 +1303,6 @@ class MCPServer:
                 category="consumption_idempotency_key_invalid",
                 summary="idempotency_key must be a string.",
                 details={"field": "idempotency_key"},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         payload = self._consumption_service().create_export(
             name,
@@ -1400,8 +1381,6 @@ class MCPServer:
                 category="app_delete_confirmation_error",
                 summary="App deletion confirmation must exactly match the app name.",
                 details={"app": name, "confirmation": confirmation},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         self._require_app_capability(name, "dashboard.delete", tool_name="app_delete")
         deleted = self.runtime_service.delete_app(name)
@@ -1844,8 +1823,6 @@ class MCPServer:
                 category="share_link_not_found",
                 summary=f"One-time sharing link {link_id} does not exist for app {name}.",
                 details={"tool": "app_share_revoke_one_time_link", "app": name, "link_id": link_id},
-                jsonrpc_code=-32602,
-                http_status=404,
             )
         revoked = self.runtime_service.registry.revoke_share_link(link_id)
         self.runtime_service.registry.append_event(
@@ -1987,8 +1964,6 @@ class MCPServer:
                 category="invitation_not_found",
                 summary=f"External invitation {invitation_id} does not exist for app {name}.",
                 details={"tool": "app_revoke_external_invitation", "app": name, "invitation_id": invitation_id},
-                jsonrpc_code=-32602,
-                http_status=404,
             )
         revoked = self.runtime_service.registry.revoke_invitation(invitation_id)
         self.runtime_service.registry.append_event(
@@ -2025,7 +2000,6 @@ class MCPServer:
                 category="tool_validation_error",
                 summary="mount_path must be an absolute path starting with /.",
                 details={"tool": "app_runtime_workers_restart", "field": "mount_path"},
-                jsonrpc_code=-32602,
             )
         # The Phase 3.5b re-spawn path: stop preserves the spec, ensure_running re-spawns it.
         manager.stop(mount_path, idle=True)
@@ -2035,7 +2009,6 @@ class MCPServer:
                 category="runtime_mount_error",
                 summary=f"Failed to restart worker for {mount_path} — no persisted spec on disk.",
                 details={"mount_path": mount_path},
-                jsonrpc_code=-32008,
             )
         return self._tool_result(
             "app_runtime_workers_restart",
@@ -2056,7 +2029,6 @@ class MCPServer:
                 category="tool_validation_error",
                 summary="environment_id must be a non-empty string.",
                 details={"tool": "app_environment_invalidate", "field": "environment_id"},
-                jsonrpc_code=-32602,
             )
         invalidated = env_service.invalidate(env_id)
         return self._tool_result(
@@ -2122,7 +2094,6 @@ class MCPServer:
                 category="runtime_state_error",
                 summary="Runtime worker tools require a request context.",
                 details={},
-                jsonrpc_code=-32603,
             )
         manager = current_app.extensions.get("worker_manager")
         if manager is None:
@@ -2133,7 +2104,6 @@ class MCPServer:
                     "enable out-of-process workers."
                 ),
                 details={"runtime_mode": current_app.config.get("APP_RUNTIME_MODE")},
-                jsonrpc_code=-32603,
             )
         return manager
 
@@ -2143,7 +2113,6 @@ class MCPServer:
                 category="runtime_state_error",
                 summary="Environment tools require a request context.",
                 details={},
-                jsonrpc_code=-32603,
             )
         service = current_app.extensions.get("dependency_environment_service")
         if service is None:
@@ -2156,7 +2125,6 @@ class MCPServer:
                 details={
                     "app_dependency_isolation": current_app.config.get("APP_DEPENDENCY_ISOLATION")
                 },
-                jsonrpc_code=-32603,
             )
         return service
 
@@ -3040,8 +3008,6 @@ class MCPServer:
                 category="exasol_not_configured",
                 summary="Exasol dashboard features are not configured on this server.",
                 details={},
-                jsonrpc_code=-32012,
-                http_status=500,
             )
         return self.exasol_dashboard_service
 
@@ -3051,8 +3017,6 @@ class MCPServer:
                 category="consumption_not_configured",
                 summary="Consumption output discovery is not configured on this server.",
                 details={},
-                jsonrpc_code=-32012,
-                http_status=500,
             )
         return self.consumption_service
 
@@ -3070,7 +3034,6 @@ class MCPServer:
             category="tool_validation_error",
             summary="Tool argument name must be a non-empty string.",
             details={"field": "name"},
-            jsonrpc_code=-32602,
         )
 
     def _require_revision_number(self, arguments: dict[str, Any], field_name: str) -> int:
@@ -3086,8 +3049,6 @@ class MCPServer:
                 category="app_not_found",
                 summary=f"App {name} does not exist.",
                 details={"tool": tool_name, "app": name},
-                jsonrpc_code=-32602,
-                http_status=404,
             )
         return app
 
@@ -3258,7 +3219,6 @@ class MCPServer:
             category="app_authorization_denied",
             summary=f"Principal cannot perform {capability} on app {name}.",
             details=decision.to_dict(),
-            jsonrpc_code=-32030,
             http_status=decision.status_code,
         )
 
@@ -3313,7 +3273,6 @@ class MCPServer:
             category="tool_validation_error",
             summary=f"{field_name} {detail}",
             details={"tool": tool_name, "field": field_name},
-            jsonrpc_code=-32602,
         )
 
     def _require_non_empty_string(self, value: Any, *, field_name: str, tool_name: str) -> str:
@@ -4598,6 +4557,76 @@ class MCPServer:
                 "suggested_tools": ["app_collect_diagnostics", "app_tail_logs", "app_get_status"],
                 "related_resources": ["dash://meta/workflows"],
             },
+            "app_validate": {
+                "next_step": "Fix any reported issues in the draft, or build a revision when validation passes.",
+                "suggested_tools": ["app_patch_file", "app_build", "app_read_file"],
+                "related_resources": ["dash://meta/app-authoring-guide"],
+            },
+            "app_acknowledge_data_layer_errors": {
+                "next_step": "Re-run the health check to confirm the data-layer probe is clean.",
+                "suggested_tools": ["app_run_healthcheck", "app_collect_diagnostics"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_environment_invalidate": {
+                "next_step": "Rebuild or restart the app so a fresh dependency environment is provisioned.",
+                "suggested_tools": ["app_build", "app_restart", "app_get_status"],
+                "related_resources": ["dash://runtime/status"],
+            },
+            "app_runtime_workers_list": {
+                "next_step": "Restart an unhealthy worker or inspect its logs.",
+                "suggested_tools": ["app_runtime_workers_restart", "app_tail_logs", "app_get_status"],
+                "related_resources": ["dash://runtime/status"],
+            },
+            "app_runtime_workers_restart": {
+                "next_step": "Confirm the restarted worker serves the app again.",
+                "suggested_tools": ["app_run_healthcheck", "app_runtime_workers_list"],
+                "related_resources": ["dash://runtime/status"],
+            },
+            "app_share_get": {
+                "next_step": "Grant, revoke, or explain access based on the current grants.",
+                "suggested_tools": ["app_share_grant", "app_share_revoke", "app_share_explain_access"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_share_grant": {
+                "next_step": "Confirm the grant appears in the app's sharing state.",
+                "suggested_tools": ["app_share_get", "app_share_explain_access"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_share_revoke": {
+                "next_step": "Confirm the principal no longer appears in the app's sharing state.",
+                "suggested_tools": ["app_share_get", "app_share_explain_access"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_share_set_link_scope": {
+                "next_step": "Verify the link scope change with the app's sharing state.",
+                "suggested_tools": ["app_share_get", "app_share_create_one_time_link"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_share_explain_access": {
+                "next_step": "Adjust grants if the explained decision does not match expectations.",
+                "suggested_tools": ["app_share_grant", "app_share_revoke", "app_share_get"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_share_create_one_time_link": {
+                "next_step": "Deliver the display-once link; revoke it if it should no longer grant access.",
+                "suggested_tools": ["app_share_revoke_one_time_link", "app_share_get"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_share_revoke_one_time_link": {
+                "next_step": "Confirm the link no longer appears in the app's sharing state.",
+                "suggested_tools": ["app_share_get"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_invite_external_user": {
+                "next_step": "Track invitation delivery and resend or revoke as needed.",
+                "suggested_tools": ["app_share_get", "app_revoke_external_invitation"],
+                "related_resources": ["dash://meta/workflows"],
+            },
+            "app_revoke_external_invitation": {
+                "next_step": "Confirm the invitation is revoked in the app's sharing state.",
+                "suggested_tools": ["app_share_get"],
+                "related_resources": ["dash://meta/workflows"],
+            },
         }
         return guidance_map.get(
             tool_name,
@@ -4718,5 +4747,3 @@ class MCPServer:
         return bundle
 
 
-Stage4MCPServer = MCPServer
-Stage3MCPServer = MCPServer

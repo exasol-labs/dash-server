@@ -36,8 +36,6 @@ def write_csv(
                     category="consumption_job_cancelled",
                     summary="Export cancellation was requested.",
                     details={},
-                    jsonrpc_code=-32032,
-                    http_status=409,
                 )
             for row in batch:
                 if row_count >= max_rows:
@@ -72,8 +70,6 @@ def limit_error(kind: str, limit: int) -> DashServerError:
         category="consumption_export_limit_exceeded",
         summary=f"Export exceeded the configured {kind} limit.",
         details={"limit_kind": kind, "limit": limit},
-        jsonrpc_code=-32033,
-        http_status=413,
     )
 
 

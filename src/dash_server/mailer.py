@@ -10,6 +10,8 @@ import smtplib
 import ssl
 from typing import Any
 
+from dash_server.config import coerce_bool
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -47,12 +49,12 @@ class InvitationEmailSender:
         password_env_var = _optional_string(config.get("DASH_SERVER_EMAIL_SMTP_PASSWORD_ENV_VAR"))
         if self.smtp_password is None and password_env_var:
             self.smtp_password = _optional_string(os.environ.get(password_env_var))
-        self.smtp_allow_no_auth = _config_bool(
+        self.smtp_allow_no_auth = coerce_bool(
             config.get("DASH_SERVER_EMAIL_SMTP_ALLOW_NO_AUTH"),
             default=False,
         )
-        self.smtp_use_tls = _config_bool(config.get("DASH_SERVER_EMAIL_SMTP_USE_TLS"), default=True)
-        self.smtp_use_ssl = _config_bool(config.get("DASH_SERVER_EMAIL_SMTP_USE_SSL"), default=False)
+        self.smtp_use_tls = coerce_bool(config.get("DASH_SERVER_EMAIL_SMTP_USE_TLS"), default=True)
+        self.smtp_use_ssl = coerce_bool(config.get("DASH_SERVER_EMAIL_SMTP_USE_SSL"), default=False)
         self.smtp_timeout_seconds = int(config.get("DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS", 15) or 15)
         self.ses_region = _optional_string(config.get("DASH_SERVER_EMAIL_SES_REGION")) or os.environ.get("AWS_REGION")
 
@@ -223,16 +225,6 @@ def _optional_string(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
-
-
-def _config_bool(value: Any, *, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() not in {"0", "false", "no", "off"}
-    return bool(value)
 
 
 def _html_escape(value: str) -> str:

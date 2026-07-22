@@ -18,7 +18,7 @@ from dash_server.exceptions import DashServerError
 from dash_server.exasol.service import ExasolDashboardService
 from dash_server.registry.models import AppRevision
 from dash_server.registry.sqlite_registry import SQLiteAppRegistry
-from dash_server.timestamps import parse_iso8601
+from dash_server.timestamps import parse_iso8601, to_iso
 
 from .artifacts import LocalArtifactStore
 from .contract import consumption_contract_hash, normalize_consumption_contract
@@ -165,9 +165,9 @@ class ConsumptionService:
         """Expire artifacts, prune retained rows, and refresh the coordinator heartbeat."""
         expired = self.cleanup_expired_artifacts()
         now = datetime.now(timezone.utc)
-        job_cutoff = (now - timedelta(seconds=self.policy.job_retention_seconds)).isoformat().replace("+00:00", "Z")
+        job_cutoff = to_iso(now - timedelta(seconds=self.policy.job_retention_seconds))
         audit_cutoff = (
-            (now - timedelta(seconds=self.policy.audit_retention_seconds)).isoformat().replace("+00:00", "Z")
+            to_iso(now - timedelta(seconds=self.policy.audit_retention_seconds))
         )
         pruned_jobs, orphaned_artifacts = self.store.prune_expired_jobs(
             finished_before=job_cutoff,
@@ -252,8 +252,6 @@ class ConsumptionService:
                 category="consumption_exports_disabled",
                 summary="On-demand exports are disabled by server policy.",
                 details={},
-                jsonrpc_code=-32030,
-                http_status=403,
             )
         payload = self.get_output(name, output_id, auth_context)
         output = payload["output"]
@@ -264,8 +262,6 @@ class ConsumptionService:
                 category="consumption_format_unavailable",
                 summary=f"Format {format_name!r} is not executable for this output.",
                 details={"format": format_name, "reason": (availability or {}).get("reason")},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         normalized_parameters = self._normalize_parameters(output["parameters"], parameters or {})
         params_hash = parameter_hash(normalized_parameters)
@@ -284,8 +280,6 @@ class ConsumptionService:
                         category="consumption_idempotency_conflict",
                         summary="The idempotency key was already used for a different export request.",
                         details={"idempotency_key": normalized_key},
-                        jsonrpc_code=-32037,
-                        http_status=409,
                     )
                 return self._job_payload(existing)
         self._enforce_quotas(principal_id, name)
@@ -296,8 +290,6 @@ class ConsumptionService:
                 category="app_revision_not_found",
                 summary="The live revision disappeared before the export could be pinned.",
                 details={"app": name, "revision_number": revision_number},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         self._preflight(revision, output)
         effective_limits = dict(output["policy"]["effective_limits"])
@@ -346,8 +338,6 @@ class ConsumptionService:
                 category="consumption_idempotency_conflict",
                 summary="A concurrent export request used the same idempotency key.",
                 details={"idempotency_key": normalized_key},
-                jsonrpc_code=-32037,
-                http_status=409,
             ) from exc
         self.store.record_audit(
             "export.created",
@@ -398,8 +388,6 @@ class ConsumptionService:
                 category="app_not_found",
                 summary=f"App {name} was not found.",
                 details={"app": name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         decision = self.authorization_service.authorize_app(auth_context, app, "dashboard.manage_consumption")
         if not decision.allowed:
@@ -407,7 +395,6 @@ class ConsumptionService:
                 category="consumption_authorization_denied",
                 summary=f"Principal cannot manage consumption workflows for app {name}.",
                 details=decision.to_dict(),
-                jsonrpc_code=-32030,
                 http_status=decision.status_code,
             )
         entries = []
@@ -469,7 +456,7 @@ class ConsumptionService:
             "job_id": job.id,
             "artifact": artifact.to_dict(),
             "download_url": f"/downloads/{token}",
-            "expires_at": token_expires_at.isoformat().replace("+00:00", "Z"),
+            "expires_at": to_iso(token_expires_at),
         }
 
     def resolve_download(self, token: str, auth_context: AuthContext) -> tuple[Path, ConsumptionArtifact]:
@@ -485,8 +472,6 @@ class ConsumptionService:
                 category="consumption_authorization_denied",
                 summary="The download link belongs to a different principal.",
                 details={},
-                jsonrpc_code=-32030,
-                http_status=403,
             )
         job = self._authorized_job(str(payload.get("job_id")), auth_context)
         artifact = self._available_artifact(job)
@@ -495,8 +480,6 @@ class ConsumptionService:
                 category="consumption_artifact_not_found",
                 summary="The download link no longer identifies the current artifact.",
                 details={},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         path = self.artifact_store.resolve(artifact.storage_key)
         self.store.record_audit(
@@ -546,8 +529,6 @@ class ConsumptionService:
                 category="consumption_csrf_invalid",
                 summary="The form security token is invalid for this action.",
                 details={},
-                jsonrpc_code=-32030,
-                http_status=403,
             )
 
     def peek_job_app(self, job_id: str) -> str | None:
@@ -560,7 +541,7 @@ class ConsumptionService:
 
     def _lease_expiry(self) -> str:
         expiry = datetime.now(timezone.utc) + timedelta(seconds=_LEASE_TTL_SECONDS)
-        return expiry.isoformat().replace("+00:00", "Z")
+        return to_iso(expiry)
 
     def _run_job_attempt(self, job_id: str) -> str | None:
         if not self.store.transition_job(
@@ -590,8 +571,6 @@ class ConsumptionService:
                     category="app_revision_not_found",
                     summary="The pinned app revision is unavailable.",
                     details={"app": job.app_name, "revision_number": job.revision_number},
-                    jsonrpc_code=-32004,
-                    http_status=404,
                 )
             self._verify_job_contract(job, revision)
             auth_context = self._context_for_job(job_id)
@@ -601,8 +580,6 @@ class ConsumptionService:
                     category="consumption_executor_unavailable",
                     summary="The Exasol export executor is not configured.",
                     details={},
-                    jsonrpc_code=-32012,
-                    http_status=500,
                 )
             export_format = get_dataset_format(job.requested_format)
             if export_format is None:
@@ -610,8 +587,6 @@ class ConsumptionService:
                     category="consumption_format_unavailable",
                     summary=f"Format {job.requested_format!r} has no registered dataset writer.",
                     details={"format": job.requested_format},
-                    jsonrpc_code=-32602,
-                    http_status=400,
                 )
             stream = self.executor.stream(
                 revision,
@@ -662,8 +637,6 @@ class ConsumptionService:
                     category="consumption_job_cancelled",
                     summary="Export cancellation was requested.",
                     details={},
-                    jsonrpc_code=-32032,
-                    http_status=409,
                 )
             filename = f"{job.app_name}-{job.output_id}.{export_format.extension}"
             storage_key = self.artifact_store.publish(job.id, temporary_path, filename)
@@ -679,10 +652,8 @@ class ConsumptionService:
                 byte_size=result["byte_size"],
                 row_count=result["row_count"],
                 classification=str(job.output.get("classification", "internal")),
-                created_at=created_at.isoformat().replace("+00:00", "Z"),
-                expires_at=(created_at + timedelta(seconds=self.policy.artifact_ttl_seconds))
-                .isoformat()
-                .replace("+00:00", "Z"),
+                created_at=to_iso(created_at),
+                expires_at=to_iso(created_at + timedelta(seconds=self.policy.artifact_ttl_seconds)),
             )
             self.store.create_artifact(artifact)
             completed = self.store.transition_job(
@@ -789,8 +760,6 @@ class ConsumptionService:
                 category="app_not_found",
                 summary=f"App {name} was not found.",
                 details={"app": name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         decision = self.authorization_service.authorize_app(auth_context, app, "dashboard.export")
         if not decision.allowed:
@@ -798,7 +767,6 @@ class ConsumptionService:
                 category="consumption_authorization_denied",
                 summary=f"Principal cannot access consumption outputs for app {name}.",
                 details=decision.to_dict(),
-                jsonrpc_code=-32030,
                 http_status=decision.status_code,
             )
         if not auth_context.principal.is_authenticated and not self.policy.public_exports_enabled:
@@ -806,8 +774,6 @@ class ConsumptionService:
                 category="consumption_authorization_denied",
                 summary="Public consumption output discovery is disabled by server policy.",
                 details={**decision.to_dict(), "reason": "public_exports_disabled"},
-                jsonrpc_code=-32030,
-                http_status=403,
             )
         revision = self.registry.get_current_revision(name)
         if revision is None:
@@ -815,8 +781,6 @@ class ConsumptionService:
                 category="app_revision_not_found",
                 summary=f"App {name} has no current revision.",
                 details={"app": name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         return app, revision, decision
 
@@ -837,8 +801,6 @@ class ConsumptionService:
                     "stored_hash": stored_hash,
                     "computed_hash": contract_hash,
                 },
-                jsonrpc_code=-32012,
-                http_status=500,
             )
         return consumption, contract_hash
 
@@ -888,8 +850,6 @@ class ConsumptionService:
                 category="consumption_parameter_validation_error",
                 summary="Export parameters must be an object.",
                 details={},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         normalized = dict(parameters)
         properties = schema.get("properties", {})
@@ -903,8 +863,6 @@ class ConsumptionService:
                 category="consumption_parameter_validation_error",
                 summary="Export parameters do not match the registered schema.",
                 details={"path": [str(item) for item in first.path], "reason": first.message},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         secret_like = sorted(
             key
@@ -916,8 +874,6 @@ class ConsumptionService:
                 category="consumption_parameter_validation_error",
                 summary="Secret-like values are not accepted as export parameters.",
                 details={"parameters": secret_like},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         return normalized
 
@@ -928,8 +884,6 @@ class ConsumptionService:
                 category="consumption_quota_exceeded",
                 summary="You already have the maximum number of active export jobs.",
                 details={"scope": "principal", "limit": self.policy.max_active_jobs_per_principal},
-                jsonrpc_code=-32039,
-                http_status=429,
             )
         active_for_app = self.store.count_active_jobs(app_name=app_name)
         if active_for_app >= self.policy.max_active_jobs_per_app:
@@ -937,8 +891,6 @@ class ConsumptionService:
                 category="consumption_quota_exceeded",
                 summary=f"App {app_name} already has the maximum number of active export jobs.",
                 details={"scope": "app", "limit": self.policy.max_active_jobs_per_app},
-                jsonrpc_code=-32039,
-                http_status=429,
             )
 
     def _preflight(self, revision: AppRevision, output: dict[str, Any]) -> None:
@@ -947,8 +899,6 @@ class ConsumptionService:
                 category="consumption_executor_unavailable",
                 summary="The Exasol export executor is not configured.",
                 details={},
-                jsonrpc_code=-32012,
-                http_status=500,
             )
         key = (
             revision.app_name,
@@ -970,16 +920,12 @@ class ConsumptionService:
                 category="consumption_job_not_found",
                 summary="The export job was not found.",
                 details={"job_id": job_id},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         if job.requested_by_principal_id != auth_context.principal.principal_id:
             raise DashServerError(
                 category="consumption_authorization_denied",
                 summary="The export job belongs to a different principal.",
                 details={"job_id": job_id},
-                jsonrpc_code=-32030,
-                http_status=403,
             )
         app = self.registry.get_app(job.app_name)
         if app is None:
@@ -987,8 +933,6 @@ class ConsumptionService:
                 category="app_not_found",
                 summary=f"App {job.app_name} was not found.",
                 details={"app": job.app_name},
-                jsonrpc_code=-32004,
-                http_status=404,
             )
         decision = self.authorization_service.authorize_app(auth_context, app, "dashboard.export")
         if not decision.allowed:
@@ -996,7 +940,6 @@ class ConsumptionService:
                 category="consumption_authorization_denied",
                 summary="The principal no longer has export access to this app.",
                 details=decision.to_dict(),
-                jsonrpc_code=-32030,
                 http_status=decision.status_code,
             )
         return job
@@ -1008,8 +951,6 @@ class ConsumptionService:
                 category="consumption_authorization_denied",
                 summary="The export execution principal no longer matches the queued job.",
                 details={},
-                jsonrpc_code=-32030,
-                http_status=403,
             )
 
     def _context_for_job(self, job_id: str) -> AuthContext:
@@ -1030,8 +971,6 @@ class ConsumptionService:
                 category="consumption_contract_hash_mismatch",
                 summary="The pinned job contract no longer matches its immutable revision.",
                 details={"job_id": job.id},
-                jsonrpc_code=-32012,
-                http_status=500,
             )
         declared = next(
             (item for item in (consumption or {}).get("outputs", []) if item["id"] == job.output_id),
@@ -1042,8 +981,6 @@ class ConsumptionService:
                 category="consumption_contract_hash_mismatch",
                 summary="The pinned output declaration no longer matches the job snapshot.",
                 details={"job_id": job.id, "output_id": job.output_id},
-                jsonrpc_code=-32012,
-                http_status=500,
             )
 
     def _job_payload(self, job: ConsumptionJob) -> dict[str, Any]:
@@ -1060,8 +997,6 @@ class ConsumptionService:
                 category="consumption_artifact_not_ready",
                 summary="The export artifact is not ready for download.",
                 details={"job_id": job.id, "status": job.status},
-                jsonrpc_code=-32038,
-                http_status=409,
             )
         artifact = self.store.get_artifact_for_job(job.id)
         expires_at = parse_iso8601(artifact.expires_at) if artifact is not None else None
@@ -1070,8 +1005,6 @@ class ConsumptionService:
                 category="consumption_artifact_expired",
                 summary="The export artifact has expired or is unavailable.",
                 details={"job_id": job.id},
-                jsonrpc_code=-32004,
-                http_status=410,
             )
         return artifact
 
@@ -1081,7 +1014,6 @@ class ConsumptionService:
                 category="consumption_authorization_denied",
                 summary="Authentication is required for export workflows.",
                 details={},
-                jsonrpc_code=-32030,
                 http_status=401,
             )
 
@@ -1094,8 +1026,6 @@ class ConsumptionService:
                 category="consumption_idempotency_key_invalid",
                 summary="Idempotency keys must contain 1 to 128 characters.",
                 details={},
-                jsonrpc_code=-32602,
-                http_status=400,
             )
         return normalized
 
@@ -1107,8 +1037,6 @@ class ConsumptionService:
             category="consumption_output_not_found",
             summary=f"Consumption output {output_id} was not found for app {name}.",
             details={"app": name, "output_id": output_id},
-            jsonrpc_code=-32004,
-            http_status=404,
         )
 
     def _token_secret(self, config: dict[str, Any], root: Path) -> str:

@@ -7,6 +7,7 @@ from typing import Any
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from dash_server.errors import JSONRPC_PARSE_ERROR, codes_for
 from dash_server.auth import current_auth_context
 
 
@@ -61,7 +62,7 @@ def create_mcp_blueprint() -> Blueprint:
                 {
                     "jsonrpc": "2.0",
                     "id": None,
-                    "error": {"code": -32700, "message": "Request body must be JSON."},
+                    "error": {"code": JSONRPC_PARSE_ERROR, "message": "Request body must be JSON."},
                 }
             ), 400
 
@@ -97,7 +98,7 @@ def _mcp_authorization_denial(payload: dict[str, Any] | None = None):
         "jsonrpc": "2.0",
         "id": request_id,
         "error": {
-            "code": -32030,
+            "code": codes_for("mcp_authorization_denied")[0],
             "message": "MCP control-plane access denied.",
             "data": {
                 "category": "mcp_authorization_denied",

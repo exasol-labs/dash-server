@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..timestamps import seconds_since
+from ..timestamps import now_iso
 
 
 def hashlib_sha1(text: str) -> str:
@@ -438,4 +439,4 @@ class DiagnosticsService:
         return payload
 
     def _timestamp(self) -> str:
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return now_iso()

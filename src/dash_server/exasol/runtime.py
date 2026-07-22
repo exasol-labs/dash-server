@@ -26,8 +26,6 @@ def execute_profile_query(
             category="exasol_runtime_error",
             summary="Exasol dashboard service is not registered on the Flask server.",
             details={},
-            jsonrpc_code=-32012,
-            http_status=500,
         )
     data_sources = metadata.get("data_sources")
     if not isinstance(data_sources, dict):
@@ -35,8 +33,6 @@ def execute_profile_query(
             category="exasol_runtime_error",
             summary="Hosted app metadata does not declare Exasol data_sources.",
             details={},
-            jsonrpc_code=-32012,
-            http_status=500,
         )
     primary = data_sources.get("primary")
     if not isinstance(primary, dict) or not isinstance(primary.get("profile"), str):
@@ -44,8 +40,6 @@ def execute_profile_query(
             category="exasol_runtime_error",
             summary="Hosted app metadata does not declare a primary Exasol profile.",
             details={},
-            jsonrpc_code=-32012,
-            http_status=500,
         )
     sql_path = Path(base_dir) / sql_relative_path
     if not sql_path.exists():
@@ -53,7 +47,6 @@ def execute_profile_query(
             category="exasol_runtime_error",
             summary=f"SQL file {sql_relative_path} was not found.",
             details={"path": str(sql_path)},
-            jsonrpc_code=-32012,
             http_status=404,
         )
     sql_text = sql_path.read_text()

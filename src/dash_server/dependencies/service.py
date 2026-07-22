@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from dash_server.timestamps import now_iso
 
 
 class DependencyInstaller:
@@ -143,4 +144,4 @@ class DependencyInstaller:
         return hashlib.sha256(encoded).hexdigest()
 
     def _timestamp(self) -> str:
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return now_iso()

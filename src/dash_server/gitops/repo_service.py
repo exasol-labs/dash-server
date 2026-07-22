@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Mapping
 
+from dash_server.artifacts_io import load_manifest_from_dir, read_artifact_files
+from dash_server.timestamps import to_iso
+
 
 class GitRepoService:
     """Own a local Git repository used as the GitOps foundation."""
@@ -357,10 +360,7 @@ class GitRepoService:
     def read_app_manifest(self, app_name: str) -> dict[str, Any] | None:
         """Read the authoritative branch manifest for one app when present."""
 
-        manifest_path = self.repo_root / "apps" / app_name / "dash-app.json"
-        if not manifest_path.exists():
-            return None
-        return json.loads(manifest_path.read_text())
+        return load_manifest_from_dir(self.repo_root / "apps" / app_name)
 
     def read_release_manifests(self, app_name: str) -> list[dict[str, Any]]:
         """Read release manifests for one app from the authoritative branch."""
@@ -755,7 +755,7 @@ class GitRepoService:
         dependency_lock_hash: str,
         artifact_path: str,
     ) -> str:
-        created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        created_at = to_iso(datetime.now(timezone.utc).replace(microsecond=0))
         return (
             "apiVersion: dash-server/v1\n"
             "kind: DashRelease\n"
@@ -870,13 +870,7 @@ class GitRepoService:
         return self._render_yaml_mapping(payload)
 
     def _artifact_files(self, artifact_dir: Path) -> dict[str, str]:
-        files: dict[str, str] = {}
-        for source in sorted(artifact_dir.rglob("*")):
-            if "__pycache__" in source.parts or source.suffix == ".pyc":
-                continue
-            if source.is_file():
-                files[source.relative_to(artifact_dir).as_posix()] = source.read_text()
-        return files
+        return read_artifact_files(artifact_dir)
 
     def _read_deployment_directory(self, directory: Path) -> dict[str, dict[str, Any]]:
         if not directory.exists():
@@ -933,4 +927,4 @@ class GitRepoService:
         return "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)
 
     def _timestamp(self) -> str:
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return to_iso(datetime.now(timezone.utc).replace(microsecond=0))

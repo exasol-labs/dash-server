@@ -5,6 +5,10 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
+import pytest
+
+pytestmark = pytest.mark.slow
+
 
 def _call_mcp(client, method, params, request_id=1):
     return client.post(
