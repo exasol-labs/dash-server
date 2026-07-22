@@ -1,0 +1,14 @@
+{
+  "name": "golden-overview",
+  "title": "Golden Overview",
+  "route": "/golden/overview",
+  "description": "Golden fixture for the overview pattern.",
+  "template": "exasol-analytics",
+  "data_sources": {
+    "primary": {
+      "kind": "exasol",
+      "profile": "golden-profile",
+      "auth_mode": "local_direct"
+    }
+  }
+}

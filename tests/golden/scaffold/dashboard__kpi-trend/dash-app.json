@@ -1,0 +1,14 @@
+{
+  "name": "golden-kpi-trend",
+  "title": "Golden Kpi-Trend",
+  "route": "/golden/kpi-trend",
+  "description": "Golden fixture for the kpi-trend pattern.",
+  "template": "exasol-analytics",
+  "data_sources": {
+    "primary": {
+      "kind": "exasol",
+      "profile": "golden-profile",
+      "auth_mode": "local_direct"
+    }
+  }
+}

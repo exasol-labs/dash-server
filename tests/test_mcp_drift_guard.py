@@ -9,7 +9,13 @@ one structure but not the others fails loudly instead of degrading silently.
 
 from __future__ import annotations
 
+from dash_server.auth.capabilities import MCP_USE_CONTROL_PLANE, roles_with_capability
 from dash_server.mcp.blueprint import _APP_SCOPED_TOOL_CAPABILITIES, _JOB_SCOPED_TOOLS
+
+
+def test_mcp_gate_is_the_matrix_roles_carrying_control_plane():
+    """The `/mcp` transport gate is derived from one declaration (P2.3/P10)."""
+    assert roles_with_capability(MCP_USE_CONTROL_PLANE) == frozenset({"admin", "owner", "editor"})
 
 
 def _tool_names(server) -> set[str]:

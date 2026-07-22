@@ -10,54 +10,82 @@ from typing import Any
 from dash_server.config import coerce_bool
 
 
+# Default consumption formats, defined once and shared by the dataclass field
+# default and the format validator.
+_DEFAULT_CONSUMPTION_FORMATS = ("csv", "xlsx", "pdf", "png", "pptx")
+_SUPPORTED_CONSUMPTION_FORMATS = frozenset(_DEFAULT_CONSUMPTION_FORMATS)
+
+
 @dataclass(frozen=True)
 class ConsumptionPolicy:
-    """Server policy intersected with app-declared output capabilities."""
+    """Server policy intersected with app-declared output capabilities.
 
-    enabled: bool
-    exports_enabled: bool
-    allowed_formats: tuple[str, ...]
-    max_rows: int
-    max_bytes: int
-    public_exports_enabled: bool
-    max_runtime_seconds: int
-    artifact_ttl_seconds: int
-    download_token_ttl_seconds: int
-    fetch_batch_size: int
-    max_concurrent_jobs: int
-    max_attempts: int
-    job_retention_seconds: int
-    audit_retention_seconds: int
-    max_active_jobs_per_principal: int
-    max_active_jobs_per_app: int
+    The field defaults ARE the source of truth for every consumption default.
+    ``Config`` parses the same keys from the environment; the empty-environment
+    equivalence of the two is asserted by ``test_config_single_source``. Because
+    the defaults live here, ``from_config`` reads ``config.get(KEY)`` with no
+    second argument (satisfying the "no duplicate default literal" rule) and
+    falls back to the field default when a key is absent — so a partial dict
+    (tests, embedders) is still valid.
+    """
+
+    enabled: bool = True
+    exports_enabled: bool = False
+    allowed_formats: tuple[str, ...] = _DEFAULT_CONSUMPTION_FORMATS
+    max_rows: int = 100_000
+    max_bytes: int = 50 * 1024 * 1024
+    public_exports_enabled: bool = False
+    max_runtime_seconds: int = 300
+    artifact_ttl_seconds: int = 86400
+    download_token_ttl_seconds: int = 300
+    fetch_batch_size: int = 1000
+    max_concurrent_jobs: int = 2
+    max_attempts: int = 2
+    job_retention_seconds: int = 7 * 86400
+    audit_retention_seconds: int = 90 * 86400
+    max_active_jobs_per_principal: int = 5
+    max_active_jobs_per_app: int = 20
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> ConsumptionPolicy:
-        raw_formats = config.get(
-            "DASH_SERVER_CONSUMPTION_ALLOWED_FORMATS",
-            ("csv", "xlsx", "pdf", "png", "pptx"),
-        )
-        if isinstance(raw_formats, str):
+        defaults = cls()
+
+        def _int(key: str, default: int) -> int:
+            value = config.get(key)
+            return int(value) if value is not None else default
+
+        raw_formats = config.get("DASH_SERVER_CONSUMPTION_ALLOWED_FORMATS")
+        if raw_formats is None:
+            formats = defaults.allowed_formats
+        elif isinstance(raw_formats, str):
             formats = tuple(item.strip().lower() for item in raw_formats.split(",") if item.strip())
         else:
             formats = tuple(str(item).strip().lower() for item in raw_formats if str(item).strip())
-        unknown_formats = sorted(set(formats) - {"csv", "xlsx", "pdf", "png", "pptx"})
+        unknown_formats = sorted(set(formats) - _SUPPORTED_CONSUMPTION_FORMATS)
         if unknown_formats:
             raise RuntimeError(
                 "DASH_SERVER_CONSUMPTION_ALLOWED_FORMATS contains unsupported values: " + ", ".join(unknown_formats)
             )
-        max_rows = int(config.get("DASH_SERVER_CONSUMPTION_MAX_ROWS", 100_000))
-        max_bytes = int(config.get("DASH_SERVER_CONSUMPTION_MAX_BYTES", 50 * 1024 * 1024))
-        max_runtime_seconds = int(config.get("DASH_SERVER_CONSUMPTION_MAX_RUNTIME_SECONDS", 300))
-        artifact_ttl_seconds = int(config.get("DASH_SERVER_CONSUMPTION_ARTIFACT_TTL_SECONDS", 86400))
-        download_token_ttl_seconds = int(config.get("DASH_SERVER_CONSUMPTION_DOWNLOAD_TOKEN_TTL_SECONDS", 300))
-        fetch_batch_size = int(config.get("DASH_SERVER_CONSUMPTION_FETCH_BATCH_SIZE", 1000))
-        max_concurrent_jobs = int(config.get("DASH_SERVER_CONSUMPTION_MAX_CONCURRENT_JOBS", 2))
-        max_attempts = int(config.get("DASH_SERVER_CONSUMPTION_MAX_ATTEMPTS", 2))
-        job_retention_seconds = int(config.get("DASH_SERVER_CONSUMPTION_JOB_RETENTION_SECONDS", 7 * 86400))
-        audit_retention_seconds = int(config.get("DASH_SERVER_CONSUMPTION_AUDIT_RETENTION_SECONDS", 90 * 86400))
-        max_active_jobs_per_principal = int(config.get("DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_PRINCIPAL", 5))
-        max_active_jobs_per_app = int(config.get("DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_APP", 20))
+        max_rows = _int("DASH_SERVER_CONSUMPTION_MAX_ROWS", defaults.max_rows)
+        max_bytes = _int("DASH_SERVER_CONSUMPTION_MAX_BYTES", defaults.max_bytes)
+        max_runtime_seconds = _int("DASH_SERVER_CONSUMPTION_MAX_RUNTIME_SECONDS", defaults.max_runtime_seconds)
+        artifact_ttl_seconds = _int("DASH_SERVER_CONSUMPTION_ARTIFACT_TTL_SECONDS", defaults.artifact_ttl_seconds)
+        download_token_ttl_seconds = _int(
+            "DASH_SERVER_CONSUMPTION_DOWNLOAD_TOKEN_TTL_SECONDS", defaults.download_token_ttl_seconds
+        )
+        fetch_batch_size = _int("DASH_SERVER_CONSUMPTION_FETCH_BATCH_SIZE", defaults.fetch_batch_size)
+        max_concurrent_jobs = _int("DASH_SERVER_CONSUMPTION_MAX_CONCURRENT_JOBS", defaults.max_concurrent_jobs)
+        max_attempts = _int("DASH_SERVER_CONSUMPTION_MAX_ATTEMPTS", defaults.max_attempts)
+        job_retention_seconds = _int("DASH_SERVER_CONSUMPTION_JOB_RETENTION_SECONDS", defaults.job_retention_seconds)
+        audit_retention_seconds = _int(
+            "DASH_SERVER_CONSUMPTION_AUDIT_RETENTION_SECONDS", defaults.audit_retention_seconds
+        )
+        max_active_jobs_per_principal = _int(
+            "DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_PRINCIPAL", defaults.max_active_jobs_per_principal
+        )
+        max_active_jobs_per_app = _int(
+            "DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_APP", defaults.max_active_jobs_per_app
+        )
         if (
             min(
                 max_rows,
@@ -85,12 +113,17 @@ class ConsumptionPolicy:
                 "job pruning never outruns artifact expiry."
             )
         return cls(
-            enabled=coerce_bool(config.get("DASH_SERVER_CONSUMPTION_ENABLED"), default=True),
-            exports_enabled=coerce_bool(config.get("DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED")),
+            enabled=coerce_bool(config.get("DASH_SERVER_CONSUMPTION_ENABLED"), default=defaults.enabled),
+            exports_enabled=coerce_bool(
+                config.get("DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED"), default=defaults.exports_enabled
+            ),
             allowed_formats=formats,
             max_rows=max_rows,
             max_bytes=max_bytes,
-            public_exports_enabled=coerce_bool(config.get("DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED")),
+            public_exports_enabled=coerce_bool(
+                config.get("DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED"),
+                default=defaults.public_exports_enabled,
+            ),
             max_runtime_seconds=max_runtime_seconds,
             artifact_ttl_seconds=artifact_ttl_seconds,
             download_token_ttl_seconds=download_token_ttl_seconds,

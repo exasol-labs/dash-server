@@ -1,0 +1,14 @@
+{
+  "name": "golden-schema_rel",
+  "title": "Golden schema_rel",
+  "route": "/golden/schema_rel",
+  "description": "Golden fixture for schema_rel.",
+  "template": "exasol-analytics",
+  "data_sources": {
+    "primary": {
+      "kind": "exasol",
+      "profile": "golden-profile",
+      "auth_mode": "local_direct"
+    }
+  }
+}

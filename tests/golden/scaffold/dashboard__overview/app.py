@@ -1,0 +1,66 @@
+import importlib.util
+from pathlib import Path
+
+from dash import Dash, Input, Output, dcc, html
+
+
+_HELPER_SPEC = importlib.util.spec_from_file_location(
+    "dash_server_generated_exasol_helper",
+    Path(__file__).with_name("dash_server_exasol.py"),
+)
+assert _HELPER_SPEC is not None and _HELPER_SPEC.loader is not None
+_HELPER_MODULE = importlib.util.module_from_spec(_HELPER_SPEC)
+_HELPER_SPEC.loader.exec_module(_HELPER_MODULE)
+load_row = _HELPER_MODULE.load_row
+load_rows = _HELPER_MODULE.load_rows
+render_error_panel = _HELPER_MODULE.render_error_panel
+render_table = _HELPER_MODULE.render_table
+
+
+def create_dash_app(server, url_base_pathname, metadata):
+    app = Dash(
+        __name__,
+        server=server,
+        routes_pathname_prefix="/",
+        requests_pathname_prefix=url_base_pathname.rstrip("/") + "/",
+        title=metadata.get("title", 'Golden Overview'),
+    )
+    app.layout = html.Div(
+        [
+            html.H1(metadata.get("title", 'Golden Overview')),
+            html.P(metadata.get("description", "Live Exasol dashboard.")),
+            html.Div(
+                [
+                    html.Button("Refresh", id="refresh", n_clicks=0),
+                    dcc.Interval(id="initial-load", interval=250, max_intervals=1, n_intervals=0),
+                ],
+                style={"display": "flex", "gap": "0.75rem", "alignItems": "center"},
+            ),
+            html.Div(id="summary-row", style={"display": "grid", "gridTemplateColumns": "repeat(3, 1fr)", "gap": "1rem", "marginTop": "1rem"}),
+            html.Div(id="detail-table", style={"marginTop": "1rem"}),
+        ],
+        style={"fontFamily": "sans-serif", "margin": "2rem auto", "maxWidth": "960px"},
+    )
+
+    @app.callback(
+        Output("summary-row", "children"),
+        Output("detail-table", "children"),
+        Input("refresh", "n_clicks"),
+        Input("initial-load", "n_intervals"),
+    )
+    def refresh_dashboard(_n_clicks, _n_intervals):
+        summary = load_row(server, metadata, __file__, "queries/summary.sql")
+        detail = load_rows(server, metadata, __file__, "queries/detail.sql")
+        if summary and "_error" in summary:
+            return render_error_panel(summary["_error"]), render_error_panel(summary["_error"])
+        cards = []
+        for label, value in (summary or {}).items():
+            cards.append(
+                html.Div(
+                    [html.Div(label, style={"fontSize": "12px", "color": "#64748b"}), html.Strong(str(value), style={"fontSize": "28px"})],
+                    style={"padding": "1rem", "border": "1px solid #e2e8f0", "borderRadius": "12px"},
+                )
+            )
+        return cards, render_table(detail)
+
+    return app

@@ -1,0 +1,14 @@
+{
+  "name": "golden-ops-monitor",
+  "title": "Golden Ops-Monitor",
+  "route": "/golden/ops-monitor",
+  "description": "Golden fixture for the ops-monitor pattern.",
+  "template": "exasol-analytics",
+  "data_sources": {
+    "primary": {
+      "kind": "exasol",
+      "profile": "golden-profile",
+      "auth_mode": "local_direct"
+    }
+  }
+}

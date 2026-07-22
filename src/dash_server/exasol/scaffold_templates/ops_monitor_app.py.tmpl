@@ -1,0 +1,129 @@
+import importlib.util
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+
+import plotly.graph_objects as go
+from dash import Dash, Input, Output, dcc, html
+
+
+_HELPER_SPEC = importlib.util.spec_from_file_location(
+    "dash_server_generated_exasol_helper",
+    Path(__file__).with_name("dash_server_exasol.py"),
+)
+assert _HELPER_SPEC is not None and _HELPER_SPEC.loader is not None
+_HELPER_MODULE = importlib.util.module_from_spec(_HELPER_SPEC)
+_HELPER_SPEC.loader.exec_module(_HELPER_MODULE)
+load_rows = _HELPER_MODULE.load_rows
+render_error_panel = _HELPER_MODULE.render_error_panel
+render_table = _HELPER_MODULE.render_table
+
+REFRESH = 10000
+
+
+def create_dash_app(server, url_base_pathname, metadata):
+    app = Dash(
+        __name__,
+        server=server,
+        routes_pathname_prefix="/",
+        requests_pathname_prefix=url_base_pathname.rstrip("/") + "/",
+        title=metadata.get("title", {title!r}),
+    )
+    app.layout = html.Div(
+        [
+            dcc.Interval(id="tick", interval=REFRESH, n_intervals=0),
+            html.H1(metadata.get("title", {title!r})),
+            html.Div(id="subhead", style={{"color": "#64748b", "marginBottom": "1rem"}}),
+            html.Div(id="summary-row", style={{"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)", "gap": "1rem"}}),
+            html.Div(
+                [
+                    dcc.Graph(id="monitor-chart", style={{"flex": "1"}}),
+                    dcc.Graph(id="usage-chart", style={{"flex": "1"}}),
+                ],
+                style={{"display": "flex", "gap": "1rem", "marginTop": "1rem"}},
+            ),
+            html.Div(id="sql-table", style={{"marginTop": "1rem"}}),
+            html.Div(id="sessions-table", style={{"marginTop": "1rem"}}),
+        ],
+        style={{"fontFamily": "sans-serif", "margin": "2rem auto", "maxWidth": "1200px"}},
+    )
+
+    @app.callback(
+        Output("subhead", "children"),
+        Output("summary-row", "children"),
+        Output("monitor-chart", "figure"),
+        Output("usage-chart", "figure"),
+        Output("sql-table", "children"),
+        Output("sessions-table", "children"),
+        Input("tick", "n_intervals"),
+    )
+    def refresh_dashboard(_):
+        meta_rows = load_rows(server, metadata, __file__, "queries/meta.sql")
+        sessions_rows = load_rows(server, metadata, __file__, "queries/sessions.sql")
+        monitor_rows = load_rows(server, metadata, __file__, "queries/monitor.sql")
+        usage_rows = load_rows(server, metadata, __file__, "queries/usage.sql")
+        sql_rows = load_rows(server, metadata, __file__, "queries/sql_hist.sql")
+
+        if meta_rows and "_error" in meta_rows[0]:
+            error = meta_rows[0]["_error"]
+            return (
+                error,
+                render_error_panel(error),
+                go.Figure(),
+                go.Figure(),
+                render_error_panel(error),
+                render_error_panel(error),
+            )
+
+        version = next((row["PARAM_VALUE"] for row in meta_rows if row.get("PARAM_NAME") == "databaseProductVersion"), "?")
+        cards = []
+        for label, value in [
+            ("Version", version),
+            ("Active Sessions", len([row for row in sessions_rows if "_error" not in row])),
+            ("Monitor Samples", len([row for row in monitor_rows if "_error" not in row])),
+            ("Recent SQL Rows", len([row for row in sql_rows if "_error" not in row])),
+        ]:
+            cards.append(
+                html.Div(
+                    [html.Div(label, style={{"fontSize": "12px", "color": "#64748b"}}), html.Strong(str(value), style={{"fontSize": "28px"}})],
+                    style={{"padding": "1rem", "border": "1px solid #e2e8f0", "borderRadius": "12px"}},
+                )
+            )
+
+        monitor_figure = go.Figure()
+        if monitor_rows and "_error" not in monitor_rows[0]:
+            monitor_figure.add_trace(go.Scatter(x=[row.get("T") for row in monitor_rows], y=[row.get("CPU") for row in monitor_rows], name="CPU"))
+            monitor_figure.add_trace(go.Scatter(x=[row.get("T") for row in monitor_rows], y=[row.get("LOAD") for row in monitor_rows], name="Load"))
+            monitor_figure.add_trace(go.Scatter(x=[row.get("T") for row in monitor_rows], y=[row.get("RAM") for row in monitor_rows], name="RAM"))
+        else:
+            monitor_figure.add_annotation(text="No monitor data available.", showarrow=False)
+
+        usage_figure = go.Figure()
+        if usage_rows and "_error" not in usage_rows[0]:
+            usage_figure.add_trace(go.Bar(x=[row.get("T") for row in usage_rows], y=[row.get("QUERIES") for row in usage_rows], name="Queries"))
+            usage_figure.add_trace(go.Scatter(x=[row.get("T") for row in usage_rows], y=[row.get("USERS") for row in usage_rows], name="Users", yaxis="y2"))
+            if sql_rows and "_error" not in sql_rows[0]:
+                counts = Counter(row.get("COMMAND_CLASS", "Unknown") or "Unknown" for row in sql_rows)
+                usage_figure.add_trace(
+                    go.Pie(
+                        labels=list(counts.keys()),
+                        values=list(counts.values()),
+                        hole=0.5,
+                        domain={{"x": [0.72, 1.0], "y": [0.52, 1.0]}},
+                        name="SQL Mix",
+                    )
+                )
+            usage_figure.update_layout(yaxis2={{"overlaying": "y", "side": "right"}})
+        else:
+            usage_figure.add_annotation(text="No usage data available.", showarrow=False)
+
+        return (
+            f"Live Exasol ops view · EXASolution {{version}} · {{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}}",
+            cards,
+            monitor_figure,
+            usage_figure,
+            render_table(sql_rows[:20]),
+            render_table(sessions_rows[:20]),
+        )
+
+    return app

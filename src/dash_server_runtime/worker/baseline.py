@@ -46,6 +46,14 @@ import traceback
 from argparse import Namespace
 from typing import Any
 
+from .protocol import (
+    EVENT_ERROR,
+    EVENT_FAILED,
+    EVENT_FORKED,
+    EVENT_READY,
+    KEY_EVENT,
+)
+
 # Imports the baseline pre-warms before it starts accepting fork requests.
 # Children inherit this state via copy-on-write.
 DEFAULT_PREWARM_PACKAGES: tuple[str, ...] = (
@@ -91,7 +99,7 @@ def _handle_request(conn: socket.socket) -> None:
                 pass
         try:
             conn.sendall(
-                json.dumps({"event": "error", "phase": "recv_fds", "error": "expected two FDs"}).encode()
+                json.dumps({KEY_EVENT: EVENT_ERROR, "phase": "recv_fds", "error": "expected two FDs"}).encode()
                 + b"\n"
             )
         except OSError:
@@ -110,7 +118,7 @@ def _handle_request(conn: socket.socket) -> None:
         try:
             conn.sendall(
                 json.dumps(
-                    {"event": "error", "phase": "json_parse", "error": str(exc)}
+                    {KEY_EVENT: EVENT_ERROR, "phase": "json_parse", "error": str(exc)}
                 ).encode()
                 + b"\n"
             )
@@ -143,7 +151,7 @@ def _handle_request(conn: socket.socket) -> None:
             print(
                 json.dumps(
                     {
-                        "event": "failed",
+                        KEY_EVENT: EVENT_FAILED,
                         "phase": "child_serve",
                         "error": traceback.format_exc(),
                     }
@@ -164,7 +172,7 @@ def _handle_request(conn: socket.socket) -> None:
             pass
     try:
         conn.sendall(
-            json.dumps({"event": "forked", "pid": pid}).encode() + b"\n"
+            json.dumps({KEY_EVENT: EVENT_FORKED, "pid": pid}).encode() + b"\n"
         )
     except OSError:
         pass
@@ -185,7 +193,7 @@ def _reap_dead_children(_signum: int | None = None, _frame: Any = None) -> None:
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     if not argv:
-        print(json.dumps({"event": "failed", "phase": "argparse", "error": "missing socket_path"}), flush=True)
+        print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "argparse", "error": "missing socket_path"}), flush=True)
         return 2
     socket_path = argv[0]
     if len(argv) > 1 and argv[1]:
@@ -206,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         print(
             json.dumps(
-                {"event": "failed", "phase": "bind", "error": f"{type(exc).__name__}: {exc}", "socket_path": socket_path}
+                {KEY_EVENT: EVENT_FAILED, "phase": "bind", "error": f"{type(exc).__name__}: {exc}", "socket_path": socket_path}
             ),
             flush=True,
         )
@@ -222,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         json.dumps(
             {
-                "event": "ready",
+                KEY_EVENT: EVENT_READY,
                 "pid": os.getpid(),
                 "socket_path": socket_path,
                 "prewarmed_packages": list(prewarm_packages),
@@ -263,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                 conn.sendall(
                     json.dumps(
                         {
-                            "event": "error",
+                            KEY_EVENT: EVENT_ERROR,
                             "phase": "request",
                             "error": traceback.format_exc(),
                         }

@@ -35,6 +35,17 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Ship the Exasol scaffold templates (generated-app sources, SQL bodies, and
+# guidance payloads) as package data so `importlib.resources` can read them from
+# an installed wheel. The runtime helper (`scaffold_helper.py`) is a real module
+# and needs no declaration here.
+[tool.setuptools.package-data]
+"dash_server.exasol" = [
+  "scaffold_templates/*.tmpl",
+  "scaffold_templates/*.sql",
+  "scaffold_templates/*.json",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

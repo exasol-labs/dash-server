@@ -26,34 +26,31 @@ class IdentityService:
     _oidc_next_key = "dash_server_oidc_next"
 
     def __init__(self, config: dict[str, Any]) -> None:
-        self.mode = str(config.get("DASH_SERVER_MODE", "local"))
+        # ``config`` here is always the fully-populated ``app.config`` (see
+        # app_factory); every DASH_SERVER_* key is present via from_object(Config),
+        # so these reads carry no duplicate default literal (P6.1).
+        self.mode = str(config.get("DASH_SERVER_MODE"))
         self.auth_enabled = coerce_bool(config.get("DASH_SERVER_AUTH_ENABLED"))
-        self.provider = str(config.get("DASH_SERVER_AUTH_PROVIDER", "disabled"))
+        self.provider = str(config.get("DASH_SERVER_AUTH_PROVIDER"))
         self.oidc_issuer = config.get("DASH_SERVER_OIDC_ISSUER")
         self.oidc_client_id = config.get("DASH_SERVER_OIDC_CLIENT_ID")
         self.oidc_redirect_uri = config.get("DASH_SERVER_OIDC_REDIRECT_URI")
         self.oidc_authorization_endpoint = config.get("DASH_SERVER_OIDC_AUTHORIZATION_ENDPOINT")
-        self.oidc_scopes = str(config.get("DASH_SERVER_OIDC_SCOPES", "openid email profile"))
-        self.oidc_groups_claim = str(config.get("DASH_SERVER_OIDC_GROUPS_CLAIM", "groups"))
+        self.oidc_scopes = str(config.get("DASH_SERVER_OIDC_SCOPES"))
+        self.oidc_groups_claim = str(config.get("DASH_SERVER_OIDC_GROUPS_CLAIM"))
         self.oidc_org_claim = config.get("DASH_SERVER_OIDC_ORG_CLAIM")
         self.oidc_accept_test_tokens = coerce_bool(config.get("DASH_SERVER_OIDC_ACCEPT_TEST_TOKENS"))
-        self.trusted_proxy_headers_enabled = bool(
-            config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED", False)
+        self.trusted_proxy_headers_enabled = coerce_bool(
+            config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED")
         )
         self.trusted_proxy_allowed_cidrs = tuple(
             str(item).strip()
             for item in (config.get("DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS") or ())
             if str(item).strip()
         )
-        self.trusted_proxy_user_header = str(
-            config.get("DASH_SERVER_TRUSTED_PROXY_USER_HEADER", "X-Forwarded-User")
-        )
-        self.trusted_proxy_email_header = str(
-            config.get("DASH_SERVER_TRUSTED_PROXY_EMAIL_HEADER", "X-Forwarded-Email")
-        )
-        self.trusted_proxy_groups_header = str(
-            config.get("DASH_SERVER_TRUSTED_PROXY_GROUPS_HEADER", "X-Forwarded-Groups")
-        )
+        self.trusted_proxy_user_header = str(config.get("DASH_SERVER_TRUSTED_PROXY_USER_HEADER"))
+        self.trusted_proxy_email_header = str(config.get("DASH_SERVER_TRUSTED_PROXY_EMAIL_HEADER"))
+        self.trusted_proxy_groups_header = str(config.get("DASH_SERVER_TRUSTED_PROXY_GROUPS_HEADER"))
         raw_bootstrap_admins = config.get("DASH_SERVER_BOOTSTRAP_ADMIN_PRINCIPAL_IDS") or ()
         if isinstance(raw_bootstrap_admins, str):
             raw_bootstrap_admins = raw_bootstrap_admins.split(",")

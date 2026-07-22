@@ -1791,14 +1791,15 @@ class AppRuntimeService:
     def get_manifest(self, name: str) -> dict[str, Any]:
         app = self._require_app(name)
         revision = self._require_current_revision(name)
+        desired = self.git_desired_state()
         return {
             "app": app.to_dict(),
             "manifest": revision.manifest,
             "exposure": app.exposure.to_dict(),
             "revision": self._revision_metadata(revision),
             "desired_state": {
-                "live": self.git_desired_state()["live"].get(name),
-                "preview": self.git_desired_state()["preview"].get(name),
+                "live": desired["live"].get(name),
+                "preview": desired["preview"].get(name),
             },
         }
 

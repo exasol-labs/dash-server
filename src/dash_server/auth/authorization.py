@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from dash_server.config import coerce_bool
 from dash_server.timestamps import parse_iso8601
 import json
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 from dash_server.registry.models import HostedApp
 from dash_server.registry.sqlite_registry import SQLiteAppRegistry
 
+from .capabilities import ROLE_CAPABILITIES
 from .models import AuthContext, Principal
 
 
@@ -58,60 +60,16 @@ class AuthorizationDecision:
 class AuthorizationService:
     """Evaluate dashboard capabilities for the current request principal."""
 
-    _role_capabilities: dict[str, set[str]] = {
-        "viewer": {
-            "dashboard.discover",
-            "dashboard.view_live",
-            "dashboard.view_metadata",
-            "dashboard.export",
-        },
-        "preview_viewer": {"dashboard.discover", "dashboard.view_preview", "dashboard.view_metadata"},
-        "editor": {
-            "dashboard.discover",
-            "dashboard.view_live",
-            "dashboard.view_preview",
-            "dashboard.view_metadata",
-            "dashboard.export",
-            "dashboard.edit_draft",
-            "dashboard.build_preview",
-            "diagnostics.view",
-        },
-        "owner": {
-            "dashboard.discover",
-            "dashboard.view_live",
-            "dashboard.view_preview",
-            "dashboard.view_metadata",
-            "dashboard.export",
-            "dashboard.manage_consumption",
-            "dashboard.edit_draft",
-            "dashboard.build_preview",
-            "dashboard.promote",
-            "dashboard.manage_sharing",
-            "dashboard.delete",
-            "diagnostics.view",
-        },
-        "admin": {
-            "dashboard.discover",
-            "dashboard.view_live",
-            "dashboard.view_preview",
-            "dashboard.view_metadata",
-            "dashboard.export",
-            "dashboard.manage_consumption",
-            "dashboard.edit_draft",
-            "dashboard.build_preview",
-            "dashboard.promote",
-            "dashboard.manage_sharing",
-            "dashboard.delete",
-            "diagnostics.view",
-            "mcp.use_control_plane",
-            "tenant.admin",
-        },
-    }
+    # The role→capability matrix now lives in ``auth.capabilities`` so the MCP
+    # transport gate can derive from the same source. ``editor``/``owner`` carry
+    # ``mcp.use_control_plane`` there, matching the roles the ``/mcp`` gate has
+    # always admitted.
+    _role_capabilities: dict[str, frozenset[str]] = ROLE_CAPABILITIES
 
     def __init__(self, registry: SQLiteAppRegistry, config: dict[str, Any]) -> None:
         self.registry = registry
-        self.public_dashboards_enabled = bool(
-            config.get("DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED", False)
+        self.public_dashboards_enabled = coerce_bool(
+            config.get("DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED")
         )
 
     def authorize_path(

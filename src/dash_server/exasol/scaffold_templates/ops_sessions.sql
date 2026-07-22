@@ -1,0 +1,10 @@
+SELECT "SESSION_ID",
+       "USER_NAME",
+       "STATUS",
+       "COMMAND_NAME",
+       "CLIENT",
+       "TEMP_DB_RAM",
+       "LOGIN_TIME",
+       "CLUSTER_NAME"
+FROM EXA_ALL_SESSIONS
+ORDER BY "LOGIN_TIME" DESC

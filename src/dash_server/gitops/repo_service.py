@@ -14,6 +14,119 @@ from dash_server.artifacts_io import load_manifest_from_dir, read_artifact_files
 from dash_server.timestamps import to_iso
 
 
+# ---------------------------------------------------------------------------
+# Desired-state YAML store
+# ---------------------------------------------------------------------------
+#
+# The GitOps desired-state and release manifests are persisted as YAML, but the
+# server deliberately carries no YAML dependency. ``render_yaml_mapping`` and
+# ``parse_yaml_mapping`` are an exact round-trip pair over a small, explicitly
+# documented subset of YAML:
+#
+#   * The document is a mapping. Each value is either a nested mapping (any
+#     depth) or a scalar. Sequences, anchors, tags, flow collections and
+#     multi-line block scalars are NOT supported (none appear in the manifests
+#     this module writes). Blank lines and whole-line ``#`` comments are
+#     ignored on read.
+#   * Indentation is two spaces per nesting level.
+#   * Scalars are Python ``str`` or ``bool``. Booleans render as the bare
+#     tokens ``true``/``false``; every other scalar renders as its ``str()``.
+#   * A scalar is emitted as a JSON double-quoted string whenever a bare
+#     rendering would not survive the round-trip: the empty string, values
+#     with leading/trailing whitespace, values containing a colon, ``#``,
+#     a quote or a control character, values beginning with a YAML indicator
+#     character, and the literal tokens ``true``/``false``/``null`` (so the
+#     string ``"true"`` is not read back as a boolean, and an empty scalar is
+#     ``key: ""`` — distinct from a bare ``key:`` which denotes an empty
+#     nested mapping). Quoting/unquoting go through ``json.dumps``/
+#     ``json.loads``; JSON's double-quoted string grammar is a subset of
+#     YAML's, so a ``:``-bearing route or a quoted scalar round-trips
+#     byte-for-byte through git.
+#
+# Reading is intentionally lenient: an unquoted value keeps everything after
+# the first ``:`` on the line, so legacy manifests whose scalars contain
+# colons (ISO timestamps, ``sha256:`` hashes) continue to parse unchanged.
+
+# YAML indicator characters that are unsafe as the first character of a plain
+# (unquoted) scalar; their presence forces JSON-quoting on write.
+_LEADING_INDICATORS = "\"'#&*!|>%@`,[]{}?-:"
+# Reserved plain tokens that would be re-typed on read unless quoted.
+_RESERVED_TOKENS = frozenset({"true", "false", "null", "~"})
+
+
+def _scalar_needs_quoting(value: str) -> bool:
+    if value == "" or value in _RESERVED_TOKENS:
+        return True
+    if value != value.strip():
+        return True
+    if value[0] in _LEADING_INDICATORS:
+        return True
+    return any(ch in value for ch in (":", "#", '"', "\n", "\t", "\r"))
+
+
+def _render_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = value if isinstance(value, str) else str(value)
+    return json.dumps(text) if _scalar_needs_quoting(text) else text
+
+
+def _parse_scalar(value: str) -> Any:
+    if value.startswith('"'):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    return value
+
+
+def render_yaml_mapping(payload: Mapping[str, Any], indent: int = 0) -> str:
+    """Serialize a mapping to the supported desired-state YAML subset."""
+
+    lines: list[str] = []
+    prefix = " " * indent
+    for key, value in payload.items():
+        if isinstance(value, Mapping):
+            lines.append(f"{prefix}{key}:")
+            if value:
+                lines.append(render_yaml_mapping(value, indent + 2).rstrip("\n"))
+        else:
+            lines.append(f"{prefix}{key}: {_render_scalar(value)}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_yaml_mapping(text: str) -> dict[str, Any]:
+    """Parse the supported desired-state YAML subset into a nested mapping.
+
+    Inverse of :func:`render_yaml_mapping` for every value that pair produces.
+    """
+
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(0, root)]
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        while len(stack) > 1 and indent < stack[-1][0]:
+            stack.pop()
+        current = stack[-1][1]
+        key, _, rest = stripped.partition(":")
+        key = key.strip()
+        rest = rest.strip()
+        if rest == "":
+            child: dict[str, Any] = {}
+            current[key] = child
+            stack.append((indent + 2, child))
+        else:
+            current[key] = _parse_scalar(rest)
+    return root
+
+
 class GitRepoService:
     """Own a local Git repository used as the GitOps foundation."""
 
@@ -883,45 +996,10 @@ class GitRepoService:
         return payload
 
     def _render_yaml_mapping(self, payload: Mapping[str, Any], indent: int = 0) -> str:
-        lines: list[str] = []
-        prefix = " " * indent
-        for key, value in payload.items():
-            if isinstance(value, Mapping):
-                lines.append(f"{prefix}{key}:")
-                lines.append(self._render_yaml_mapping(value, indent + 2).rstrip("\n"))
-            elif isinstance(value, bool):
-                lines.append(f"{prefix}{key}: {'true' if value else 'false'}")
-            else:
-                lines.append(f"{prefix}{key}: {value}")
-        return "\n".join(lines) + "\n"
+        return render_yaml_mapping(payload, indent)
 
     def _parse_yaml_mapping(self, text: str) -> dict[str, Any]:
-        root: dict[str, Any] = {}
-        stack: list[tuple[int, dict[str, Any]]] = [(0, root)]
-        for raw_line in text.splitlines():
-            if not raw_line.strip() or raw_line.lstrip().startswith("#"):
-                continue
-            indent = len(raw_line) - len(raw_line.lstrip(" "))
-            line = raw_line.strip()
-            while len(stack) > 1 and indent < stack[-1][0]:
-                stack.pop()
-            current = stack[-1][1]
-            if line.endswith(":"):
-                key = line[:-1]
-                child: dict[str, Any] = {}
-                current[key] = child
-                stack.append((indent + 2, child))
-                continue
-            key, _, value = line.partition(":")
-            current[key.strip()] = self._parse_scalar(value.strip())
-        return root
-
-    def _parse_scalar(self, value: str) -> Any:
-        if value == "true":
-            return True
-        if value == "false":
-            return False
-        return value
+        return parse_yaml_mapping(text)
 
     def _render_history_entries(self, entries: list[dict[str, Any]]) -> str:
         return "".join(json.dumps(entry, sort_keys=True) + "\n" for entry in entries)

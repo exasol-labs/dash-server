@@ -1,0 +1,14 @@
+{
+  "name": "golden-schema_full",
+  "title": "Golden schema_full",
+  "route": "/golden/schema_full",
+  "description": "Golden fixture for schema_full.",
+  "template": "exasol-analytics",
+  "data_sources": {
+    "primary": {
+      "kind": "exasol",
+      "profile": "golden-profile",
+      "auth_mode": "local_direct"
+    }
+  }
+}

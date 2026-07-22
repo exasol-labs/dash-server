@@ -1,0 +1,56 @@
+{
+  "resource": "dash://exasol/help/dashboard-patterns",
+  "summary": "Built-in Exasol dashboard patterns for profile-bound hosted app scaffolds.",
+  "patterns": [
+    {
+      "name": "analytics-hub",
+      "best_for": "The default exasol-analytics scaffold: a multi-tab app with system health, query history, and a business analytics placeholder ready for schema-specific SQL.",
+      "sql_kind": "real",
+      "generated_files": [
+        "queries/system/meta.sql",
+        "queries/system/monitor.sql",
+        "queries/system/usage.sql",
+        "queries/system/sql_hist.sql",
+        "queries/business/summary.sql",
+        "queries/business/trend.sql",
+        "queries/business/detail.sql"
+      ]
+    },
+    {
+      "name": "overview",
+      "best_for": "Demo-only KPI/detail layout. Use this when you want to look at the layout shape before binding real SQL — the generated `queries/summary.sql` and `queries/detail.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers, not catalog-backed queries. For a real schema-bound scaffold, call `app_scaffold_from_schema` instead.",
+      "sql_kind": "demo_placeholder",
+      "generated_files": [
+        "queries/summary.sql",
+        "queries/detail.sql"
+      ]
+    },
+    {
+      "name": "kpi-trend",
+      "best_for": "Demo-only KPI + trend + detail layout. Like `overview`, the generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded data. For a real schema-bound trend dashboard, call `app_scaffold_from_schema` (it picks a date column from your schema and emits catalog-backed SQL).",
+      "sql_kind": "demo_placeholder",
+      "generated_files": [
+        "queries/summary.sql",
+        "queries/trend.sql",
+        "queries/detail.sql"
+      ]
+    },
+    {
+      "name": "ops-monitor",
+      "best_for": "Operational Exasol monitoring dashboards using metadata, session, usage, and SQL history queries.",
+      "sql_kind": "real",
+      "generated_files": [
+        "queries/meta.sql",
+        "queries/sessions.sql",
+        "queries/monitor.sql",
+        "queries/usage.sql",
+        "queries/sql_hist.sql"
+      ]
+    }
+  ],
+  "template_guide": {
+    "metric-cards": "Generic starter app with static metric cards. Use it when you are not building around a live Exasol profile.",
+    "exasol-analytics": "Profile-bound analytical scaffold with SQL files, a runtime helper, and a multi-tab structure designed for live Exasol queries."
+  },
+  "recommendation": "For catalog-bound business dashboards prefer `app_scaffold_from_schema` over `app_create_exasol_dashboard {pattern: kpi-trend/overview}` — the schema-aware path emits real SQL against a chosen table, while `kpi-trend` and `overview` ship demo `SELECT … FROM DUAL` stubs. Use `analytics-hub` as the default Exasol scaffold and `ops-monitor` for database-operations views."
+}

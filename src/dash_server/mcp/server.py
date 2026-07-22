@@ -573,8 +573,8 @@ class MCPServer:
             return {}
         config = current_app.config
         return {
-            "control_plane_host": config.get("DASH_SERVER_HOST", "127.0.0.1"),
-            "control_plane_port": config.get("DASH_SERVER_PORT", 5100),
+            "control_plane_host": config.get("DASH_SERVER_HOST"),
+            "control_plane_port": config.get("DASH_SERVER_PORT"),
             "dependency_isolation": config.get("APP_DEPENDENCY_ISOLATION", "shared"),
             "runtime_mode": config.get("APP_RUNTIME_MODE", "in_process"),
             "app_environments_root": config.get("APP_ENVIRONMENTS_ROOT"),

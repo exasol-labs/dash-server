@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import ast
 import difflib
-import importlib.util
 import json
 import re
 import shutil
 import subprocess
 import sys
 import traceback
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +30,7 @@ from dash_server.dash_apps.factory import (
     validate_manifest_payload,
 )
 from dash_server.consumption import validate_consumption_sources
+from dash_server_runtime.worker._app_loader import load_app_module
 from dash_server.artifacts_io import (
     APP_ENTRYPOINT_FILENAME,
     APP_MANIFEST_FILENAME,
@@ -936,13 +935,12 @@ class WorkspaceService:
                 app_path=app_path,
                 subprocess_python=subprocess_python,
             )
-        module_name = f"dash_server_workspace_{app_name}_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(module_name, app_path)
-        assert spec is not None and spec.loader is not None
         with isolated_dash_callback_globals(), isolated_local_imports(app_path.parent):
-            module = importlib.util.module_from_spec(spec)
+            # Shared "load app.py as a fresh module" contract — the same loader the
+            # out-of-process worker uses (dash_server_runtime.worker._serve), so the
+            # in-process smoke check and the subprocess serve path import identically.
             try:
-                spec.loader.exec_module(module)
+                module = load_app_module(app_path, app_name)
             except Exception as exc:
                 return self._import_failure_result(
                     exc,

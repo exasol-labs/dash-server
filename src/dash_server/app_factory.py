@@ -11,6 +11,13 @@ from flask import Flask, g
 from .auth import AuthContext, AuthorizationService, IdentityService
 from .auth.blueprint import create_auth_blueprint
 from .config import Config, coerce_bool
+from .constants import (
+    AUTH_PROVIDERS,
+    DEPENDENCY_ISOLATION_MODES,
+    DEPLOYMENT_MODES,
+    RUNTIME_MODES,
+    SAMESITE_VALUES,
+)
 from .consumption import ConsumptionService
 from .consumption.blueprint import create_consumption_blueprint
 from .dependencies import DependencyEnvironmentService, DependencyInstaller
@@ -28,7 +35,7 @@ from .runtime.service import AppRuntimeService
 
 def _configure_deployment_mode(app: Flask) -> AuthContext:
     mode = str(app.config.get("DASH_SERVER_MODE", "local")).strip().lower()
-    if mode not in {"local", "hosted"}:
+    if mode not in DEPLOYMENT_MODES:
         raise RuntimeError("DASH_SERVER_MODE must be either 'local' or 'hosted'.")
     app.config["DASH_SERVER_MODE"] = mode
 
@@ -44,7 +51,7 @@ def _configure_deployment_mode(app: Flask) -> AuthContext:
         provider = "oidc" if mode == "hosted" else "disabled"
     else:
         provider = str(configured_provider).strip().lower()
-    if provider not in {"disabled", "oidc", "trusted_proxy"}:
+    if provider not in AUTH_PROVIDERS:
         raise RuntimeError("DASH_SERVER_AUTH_PROVIDER must be disabled, oidc, or trusted_proxy.")
     app.config["DASH_SERVER_AUTH_PROVIDER"] = provider
 
@@ -71,7 +78,7 @@ def _validate_hosted_mode_config(app: Flask) -> None:
     if not session_cookie_httponly:
         raise RuntimeError("Hosted mode requires SESSION_COOKIE_HTTPONLY=true.")
     same_site = app.config.get("SESSION_COOKIE_SAMESITE")
-    if not isinstance(same_site, str) or same_site.lower() not in {"lax", "strict", "none"}:
+    if not isinstance(same_site, str) or same_site.lower() not in SAMESITE_VALUES:
         raise RuntimeError("Hosted mode requires SESSION_COOKIE_SAMESITE to be Lax, Strict, or None.")
     public_base_url = app.config.get("DASH_SERVER_PUBLIC_BASE_URL")
     if not isinstance(public_base_url, str) or not public_base_url.startswith("https://"):
@@ -85,11 +92,11 @@ def _validate_runtime_isolation_config(app: Flask) -> None:
 
     dep_iso = str(app.config.get("APP_DEPENDENCY_ISOLATION", "shared")).strip().lower()
     runtime_mode = str(app.config.get("APP_RUNTIME_MODE", "in_process")).strip().lower()
-    if dep_iso not in {"shared", "per_app"}:
+    if dep_iso not in DEPENDENCY_ISOLATION_MODES:
         raise RuntimeError(
             "DASH_SERVER_APP_DEPENDENCY_ISOLATION must be 'shared' or 'per_app'."
         )
-    if runtime_mode not in {"in_process", "isolated"}:
+    if runtime_mode not in RUNTIME_MODES:
         raise RuntimeError(
             "DASH_SERVER_APP_RUNTIME_MODE must be 'in_process' or 'isolated'."
         )

@@ -1,0 +1,63 @@
+{
+  "resource": "dash://exasol/help/connection-modes",
+  "summary": "Supported Exasol connection modes for phase 0 local dashboard creation.",
+  "security_rules": [
+    "Store Exasol profile metadata in the server and keep secret values outside Git.",
+    "Generated or uploaded hosted apps must not embed DSN, user, password, PAT, or token values in source files.",
+    "Hosted apps should refer to Exasol profiles by name and let the server resolve credentials.",
+    "Do not call pyexasol.connect(...) directly from hosted app code unless the server architecture is explicitly extended to support that safely."
+  ],
+  "modes": [
+    {
+      "name": "local_onprem_password",
+      "backend": "onprem",
+      "credential_mode": "password",
+      "required_fields": [
+        "name",
+        "dsn",
+        "user",
+        "secret_value or secret_env_var"
+      ]
+    },
+    {
+      "name": "local_onprem_access_token",
+      "backend": "onprem",
+      "credential_mode": "access_token",
+      "required_fields": [
+        "name",
+        "dsn",
+        "user",
+        "secret_value or secret_env_var"
+      ]
+    },
+    {
+      "name": "local_onprem_refresh_token",
+      "backend": "onprem",
+      "credential_mode": "refresh_token",
+      "required_fields": [
+        "name",
+        "dsn",
+        "user",
+        "secret_value or secret_env_var"
+      ]
+    },
+    {
+      "name": "local_saas_pat",
+      "backend": "saas",
+      "credential_mode": "saas_pat",
+      "required_fields": [
+        "name",
+        "dsn",
+        "user",
+        "secret_value or secret_env_var"
+      ]
+    }
+  ],
+  "recommended_workflow": [
+    "Create a local Exasol profile with exasol_profile_create_local.",
+    "Validate the profile with exasol_profile_validate.",
+    "Create a hosted dashboard with app_create_exasol_dashboard.",
+    "Inspect or patch the generated SQL and deploy revisions as usual.",
+    "Do not rewrite the generated app to own Exasol credentials in app.py."
+  ]
+}

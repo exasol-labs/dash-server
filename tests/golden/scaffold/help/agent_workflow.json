@@ -1,0 +1,29 @@
+{
+  "recommended_workflow": [
+    "Use the external Exasol MCP server to inspect schema, test candidate SQL, and understand the dataset.",
+    "Create or validate a dash-server Exasol profile with exasol_profile_create_local and exasol_profile_validate.",
+    "Generate the hosted app with app_create_exasol_dashboard or app_scaffold_from_schema.",
+    "Copy only safe SQL and structural findings into queries/*.sql; keep credentials and connection setup in the dash-server profile.",
+    "Deploy to a preview URL first, then promote the approved revision live."
+  ],
+  "resource": "dash://exasol/help/agent-workflow",
+  "roles": {
+    "dash_server": [
+      "Owns Exasol profile metadata and secret references for hosted dashboards.",
+      "Executes dashboard SQL at runtime through the configured profile.",
+      "Generates safe Exasol dashboard scaffolds and validates hosted app safety rules."
+    ],
+    "external_exasol_mcp": [
+      "Explore schemas, tables, columns, and system metadata interactively.",
+      "Prototype and refine SQL during authoring time.",
+      "Help the agent understand business entities and available database structures."
+    ]
+  },
+  "rules": [
+    "Use the external Exasol MCP server for discovery and SQL design, not for dashboard runtime execution.",
+    "Use dash-server profiles for hosted dashboards so credentials stay server-side.",
+    "Do not copy DSN, user, password, PAT, token, or raw secret values from Exasol MCP output into app files.",
+    "Do not make a hosted dashboard depend on live MCP tool calls. Put final runtime SQL in queries/*.sql and execute it through dash_server_exasol.py or server-side helpers."
+  ],
+  "summary": "How dash-server should coexist with a separate Exasol MCP server in agent workflows."
+}

@@ -1089,3 +1089,42 @@ def test_phase_5f_readme_mentions_runtime_isolation():
     text = readme.read_text()
     assert "runtime-isolation" in text or "runtime isolation" in text
     assert "docs/runtime-modes.md" in text
+
+
+def test_worker_wire_events_are_single_sourced_in_protocol():
+    """A worker event-name rename must break both sides here, not as a runtime timeout.
+
+    Wave 2 item 5: the emitting side (dash_server_runtime.worker) and the parsing side
+    (dash_server.runtime.worker_manager) both reference dash_server_runtime.worker.protocol
+    constants instead of raw string literals. This test pins the wire values (so a rename is
+    a deliberate, visible protocol change) and asserts both sides consume the shared symbols.
+    """
+    import inspect
+
+    from dash_server.runtime import worker_manager
+    from dash_server_runtime.worker import _serve, baseline, protocol
+
+    # Wire values are frozen: changing any of these is a breaking protocol change and must
+    # be an intentional edit to this pin, not an accidental drift on one side of the boundary.
+    assert protocol.EVENT_READY == "ready"
+    assert protocol.EVENT_FAILED == "failed"
+    assert protocol.EVENT_FORKED == "forked"
+    assert protocol.EVENT_RESPONSE == "response"
+    assert protocol.EVENT_WARNING == "warning"
+    assert protocol.EVENT_ERROR == "error"
+    assert protocol.KEY_EVENT == "event"
+    assert frozenset({"ready", "failed"}) == protocol.READY_READ_EVENTS
+
+    # Both sides bind the identical constant objects from the one protocol module.
+    assert _serve.EVENT_READY is protocol.EVENT_READY
+    assert baseline.EVENT_FORKED is protocol.EVENT_FORKED
+    assert worker_manager.EVENT_READY is protocol.EVENT_READY
+    assert worker_manager.EVENT_RESPONSE is protocol.EVENT_RESPONSE
+
+    # Guard against a regression to raw literals: the parsing side must discriminate events
+    # through the KEY_EVENT/EVENT_* symbols, never `payload.get("event") == "ready"`.
+    manager_src = inspect.getsource(worker_manager)
+    assert 'get("event")' not in manager_src
+    assert '"event" in' not in manager_src
+    for symbol in ("KEY_EVENT", "EVENT_READY", "EVENT_FORKED", "EVENT_RESPONSE", "READY_READ_EVENTS"):
+        assert symbol in manager_src, symbol

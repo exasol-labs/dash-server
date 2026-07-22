@@ -1,0 +1,84 @@
+{
+  "resource": "dash://exasol/help/sql-placeholders",
+  "summary": "How to parameterize SQL files in hosted dashboards. dash-server uses pyexasol's client-side format-style placeholders. SQL-driver-style :name placeholders are NOT supported and produce 'Feature not supported: host parameter specification' from Exasol.",
+  "placeholders": [
+    {
+      "syntax": "{name} or {name!s}",
+      "use_for": "string literal",
+      "renders_to": "single-quoted SQL string",
+      "example_sql": "WHERE region = {region!s}",
+      "example_params": {
+        "region": "EMEA"
+      },
+      "rendered": "WHERE region = 'EMEA'",
+      "notes": "Empty Python string '' renders as SQL NULL, so 'cohort = {x!s}' with x='' will not match empty-string rows. Branch on the param being None/empty in Python instead."
+    },
+    {
+      "syntax": "{name!d}",
+      "use_for": "validated decimal/integer",
+      "renders_to": "unquoted numeric literal",
+      "example_sql": "WHERE created_at >= ADD_DAYS(CURRENT_TIMESTAMP, -{days!d})",
+      "example_params": {
+        "days": 30
+      },
+      "rendered": "WHERE created_at >= ADD_DAYS(CURRENT_TIMESTAMP, -30)"
+    },
+    {
+      "syntax": "{name!f}",
+      "use_for": "validated float",
+      "renders_to": "unquoted float literal",
+      "example_sql": "WHERE temperature >= {threshold!f}",
+      "example_params": {
+        "threshold": 0.85
+      },
+      "rendered": "WHERE temperature >= 0.85"
+    },
+    {
+      "syntax": "{name!i}",
+      "use_for": "safe identifier (table/column name)",
+      "renders_to": "unquoted identifier with validation",
+      "example_sql": "SELECT * FROM {table!i}",
+      "example_params": {
+        "table": "SALES"
+      },
+      "rendered": "SELECT * FROM SALES"
+    },
+    {
+      "syntax": "{name!q}",
+      "use_for": "quoted identifier (case-preserving / reserved-word safe)",
+      "renders_to": "double-quoted identifier",
+      "example_sql": "SELECT {col!q} FROM SALES",
+      "example_params": {
+        "col": "DAY"
+      },
+      "rendered": "SELECT \"DAY\" FROM SALES"
+    },
+    {
+      "syntax": "{name!r}",
+      "use_for": "raw SQL fragment (no escaping)",
+      "renders_to": "verbatim insertion",
+      "example_sql": "ORDER BY revenue {direction!r}",
+      "example_params": {
+        "direction": "DESC"
+      },
+      "rendered": "ORDER BY revenue DESC",
+      "notes": "Never substitute user-controlled values via !r; it is the SQL-injection path."
+    }
+  ],
+  "rules": [
+    "Never write :name placeholders. Exasol rejects them with 0A000 / 'Feature not supported: host parameter specification'.",
+    "Parameterized queries in queries/*.sql need sample values in queries/sql_smoke.json before live promotion can pass SQL smoke preflight.",
+    "Reserved identifiers in AS clauses must be quoted. Common offenders include: VALUE, COUNT, SUM, KEY, TYPE, NAME, STATUS, DAY, MONTH, YEAR, LEVEL, ORDER, GROUP, USER, ROLE, SESSION, TIME, ZONE. Quote with double quotes: AS \"VALUE\".",
+    "Empty Python strings substitute to NULL. Branch on None/'' in Python rather than relying on '= ''' filters."
+  ],
+  "common_mistakes": [
+    "Using :name like SQLAlchemy or psycopg2; pyexasol does not recognize it.",
+    "Using %s or %(name)s; pyexasol does not recognize it.",
+    "Writing AS VALUE (or AS COUNT, AS SUM, AS TYPE, AS KEY) without quoting. These are reserved in Exasol.",
+    "Treating '' the same as NULL; in Exasol they are equivalent for equality, which can produce zero rows from a 'show-all' filter."
+  ],
+  "related_resources": [
+    "dash://exasol/help/dashboard-patterns",
+    "dash://meta/app-authoring-guide"
+  ]
+}

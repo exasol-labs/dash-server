@@ -9,25 +9,34 @@ from flask import Blueprint, Response, current_app, jsonify, request
 
 from dash_server.errors import JSONRPC_PARSE_ERROR, codes_for
 from dash_server.auth import current_auth_context
+from dash_server.auth.capabilities import (
+    DASHBOARD_EDIT_DRAFT,
+    DASHBOARD_EXPORT,
+    DASHBOARD_MANAGE_CONSUMPTION,
+    DASHBOARD_MANAGE_SHARING,
+    DASHBOARD_DELETE,
+    MCP_USE_CONTROL_PLANE,
+    roles_with_capability,
+)
 
 
 _APP_SCOPED_TOOL_CAPABILITIES = {
-    "app_share_get": "dashboard.manage_sharing",
-    "app_share_grant": "dashboard.manage_sharing",
-    "app_share_revoke": "dashboard.manage_sharing",
-    "app_share_set_link_scope": "dashboard.manage_sharing",
-    "app_share_explain_access": "dashboard.manage_sharing",
-    "app_share_create_one_time_link": "dashboard.manage_sharing",
-    "app_share_revoke_one_time_link": "dashboard.manage_sharing",
-    "app_invite_external_user": "dashboard.manage_sharing",
-    "app_revoke_external_invitation": "dashboard.manage_sharing",
-    "app_list_files": "dashboard.edit_draft",
-    "app_delete": "dashboard.delete",
-    "app_outputs_list": "dashboard.export",
-    "app_output_get": "dashboard.export",
-    "app_export_create": "dashboard.export",
-    "app_exports_list": "dashboard.export",
-    "app_exports_admin_list": "dashboard.manage_consumption",
+    "app_share_get": DASHBOARD_MANAGE_SHARING,
+    "app_share_grant": DASHBOARD_MANAGE_SHARING,
+    "app_share_revoke": DASHBOARD_MANAGE_SHARING,
+    "app_share_set_link_scope": DASHBOARD_MANAGE_SHARING,
+    "app_share_explain_access": DASHBOARD_MANAGE_SHARING,
+    "app_share_create_one_time_link": DASHBOARD_MANAGE_SHARING,
+    "app_share_revoke_one_time_link": DASHBOARD_MANAGE_SHARING,
+    "app_invite_external_user": DASHBOARD_MANAGE_SHARING,
+    "app_revoke_external_invitation": DASHBOARD_MANAGE_SHARING,
+    "app_list_files": DASHBOARD_EDIT_DRAFT,
+    "app_delete": DASHBOARD_DELETE,
+    "app_outputs_list": DASHBOARD_EXPORT,
+    "app_output_get": DASHBOARD_EXPORT,
+    "app_export_create": DASHBOARD_EXPORT,
+    "app_exports_list": DASHBOARD_EXPORT,
+    "app_exports_admin_list": DASHBOARD_MANAGE_CONSUMPTION,
 }
 
 _JOB_SCOPED_TOOLS = {
@@ -82,7 +91,8 @@ def _mcp_authorization_denial(payload: dict[str, Any] | None = None):
         return None
 
     principal = auth_context.principal
-    allowed_roles = {"admin", "owner", "editor"}
+    # Single source of truth: whoever the matrix grants control-plane access.
+    allowed_roles = roles_with_capability(MCP_USE_CONTROL_PLANE)
     if (
         principal.is_authenticated
         and principal.principal_type == "user"

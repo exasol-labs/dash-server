@@ -1,0 +1,14 @@
+{
+  "name": "golden-analytics-hub",
+  "title": "Golden Analytics-Hub",
+  "route": "/golden/analytics-hub",
+  "description": "Golden fixture for the analytics-hub pattern.",
+  "template": "exasol-analytics",
+  "data_sources": {
+    "primary": {
+      "kind": "exasol",
+      "profile": "golden-profile",
+      "auth_mode": "local_direct"
+    }
+  }
+}

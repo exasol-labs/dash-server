@@ -35,6 +35,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Protocol
 
+from dash_server_runtime.worker.protocol import (
+    EVENT_FORKED,
+    EVENT_READY,
+    EVENT_RESPONSE,
+    KEY_EVENT,
+    KEY_STATUS,
+    READY_READ_EVENTS,
+)
+
 from ..timestamps import now_iso as _now_iso
 from ..timestamps import seconds_since
 
@@ -331,7 +340,7 @@ class AppWorkerManager:
                 raise WorkerStartError(f"Failed to launch worker subprocess: {exc!s}") from exc
 
             ready_payload = self._read_ready_event(process)
-            if ready_payload is None or ready_payload.get("event") != "ready":
+            if ready_payload is None or ready_payload.get(KEY_EVENT) != EVENT_READY:
                 # Worker died or emitted an error event; gather its tail for diagnostics.
                 stderr_tail = ""
                 stdout_tail = ""
@@ -766,7 +775,7 @@ class AppWorkerManager:
                         payload = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(payload, dict) and "event" in payload:
+                    if isinstance(payload, dict) and KEY_EVENT in payload:
                         return payload
                 return None
             line = process.stdout.readline()
@@ -778,9 +787,7 @@ class AppWorkerManager:
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(payload, dict) and payload.get("event") == "ready":
-                return payload
-            if isinstance(payload, dict) and payload.get("event") == "failed":
+            if isinstance(payload, dict) and payload.get(KEY_EVENT) in READY_READ_EVENTS:
                 return payload
         return None  # timed out
 
@@ -809,7 +816,7 @@ class AppWorkerManager:
                         candidate = json.loads(line)
                     except json.JSONDecodeError:
                         candidate = None
-                    if isinstance(candidate, dict) and "event" in candidate:
+                    if isinstance(candidate, dict) and KEY_EVENT in candidate:
                         parsed = candidate
                 if parsed is not None:
                     self._handle_worker_event(record, parsed)
@@ -822,9 +829,9 @@ class AppWorkerManager:
     def _handle_worker_event(self, record: WorkerRecord, payload: dict[str, Any]) -> None:
         """Update the in-memory record from a structured worker event."""
 
-        event_name = payload.get("event")
-        if event_name == "response":
-            status = payload.get("status")
+        event_name = payload.get(KEY_EVENT)
+        if event_name == EVENT_RESPONSE:
+            status = payload.get(KEY_STATUS)
             if isinstance(status, int):
                 with self._lock:
                     record.last_response_status = status
@@ -984,7 +991,7 @@ class AppWorkerManager:
             ack = json.loads(ack_bytes.decode().strip() or "{}")
         except json.JSONDecodeError:
             ack = {}
-        if ack.get("event") != "forked":
+        if ack.get(KEY_EVENT) != EVENT_FORKED:
             os.close(out_r)
             os.close(err_r)
             return None
@@ -994,7 +1001,7 @@ class AppWorkerManager:
         stdout_file = os.fdopen(out_r, "r", buffering=1)
         stderr_file = os.fdopen(err_r, "r", buffering=1)
         ready_payload = self._read_ready_event_from_file(stdout_file)
-        if ready_payload is None or ready_payload.get("event") != "ready":
+        if ready_payload is None or ready_payload.get(KEY_EVENT) != EVENT_READY:
             # Forked child failed to bind / import; kill it and let caller fall back.
             _send_sigterm_then_kill(forked_pid, timeout_seconds=5)
             for handle in (stdout_file, stderr_file):
@@ -1036,7 +1043,7 @@ class AppWorkerManager:
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(payload, dict) and payload.get("event") in {"ready", "failed"}:
+            if isinstance(payload, dict) and payload.get(KEY_EVENT) in READY_READ_EVENTS:
                 return payload
         return None
 
@@ -1091,7 +1098,7 @@ class AppWorkerManager:
             bufsize=1,
         )
         ready = self._read_ready_event(process)
-        if ready is None or ready.get("event") != "ready":
+        if ready is None or ready.get(KEY_EVENT) != EVENT_READY:
             # No drain thread is running yet, so use `communicate()` to flush stdout/stderr
             # while we wait — `SubprocessHandle.stop()` only does terminate+wait and would
             # deadlock if the baseline filled its pipe buffer before exiting.

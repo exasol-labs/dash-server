@@ -19,6 +19,12 @@ from ._runtime_services import (
     build_diagnostics_service_for_worker,
     build_exasol_service_for_worker,
 )
+from .protocol import (
+    EVENT_FAILED,
+    EVENT_READY,
+    EVENT_WARNING,
+    KEY_EVENT,
+)
 
 
 def serve(args: argparse.Namespace) -> int:
@@ -32,7 +38,7 @@ def serve(args: argparse.Namespace) -> int:
         else:
             manifest_data = json.loads(args.manifest_json)
     except Exception as exc:
-        print(json.dumps({"event": "failed", "phase": "manifest_parse", "error": str(exc)}), flush=True)
+        print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "manifest_parse", "error": str(exc)}), flush=True)
         return 1
 
     mount_path = args.mount_path or manifest_data.get("route") or f"/apps/{args.app_name}"
@@ -41,13 +47,13 @@ def serve(args: argparse.Namespace) -> int:
     try:
         from flask import Flask
     except Exception as exc:
-        print(json.dumps({"event": "failed", "phase": "flask_import", "error": str(exc)}), flush=True)
+        print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "flask_import", "error": str(exc)}), flush=True)
         return 1
 
     try:
         from dash import Dash
     except Exception as exc:
-        print(json.dumps({"event": "failed", "phase": "dash_import", "error": str(exc)}), flush=True)
+        print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "dash_import", "error": str(exc)}), flush=True)
         return 1
 
     server = Flask(f"dash_server.worker.{args.app_name}")
@@ -61,7 +67,7 @@ def serve(args: argparse.Namespace) -> int:
         server.extensions["exasol_dashboard_service"] = exasol_service
     elif exasol_error is not None:
         print(
-            json.dumps({"event": "warning", "phase": "exasol_bootstrap", "error": exasol_error}),
+            json.dumps({KEY_EVENT: EVENT_WARNING, "phase": "exasol_bootstrap", "error": exasol_error}),
             flush=True,
         )
 
@@ -73,7 +79,7 @@ def serve(args: argparse.Namespace) -> int:
     elif diagnostics_error is not None:
         print(
             json.dumps(
-                {"event": "warning", "phase": "diagnostics_bootstrap", "error": diagnostics_error}
+                {KEY_EVENT: EVENT_WARNING, "phase": "diagnostics_bootstrap", "error": diagnostics_error}
             ),
             flush=True,
         )
@@ -84,7 +90,7 @@ def serve(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "event": "failed",
+                    KEY_EVENT: EVENT_FAILED,
                     "phase": "import",
                     "error": f"{type(exc).__name__}: {exc}",
                     "traceback": traceback.format_exc(),
@@ -99,7 +105,7 @@ def serve(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "event": "failed",
+                    KEY_EVENT: EVENT_FAILED,
                     "phase": "factory_lookup",
                     "error": "app.py must define create_dash_app(server, url_base_pathname, metadata).",
                 }
@@ -121,7 +127,7 @@ def serve(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "event": "failed",
+                    KEY_EVENT: EVENT_FAILED,
                     "phase": "factory_call",
                     "error": f"{type(exc).__name__}: {exc}",
                     "traceback": traceback.format_exc(),
@@ -135,7 +141,7 @@ def serve(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "event": "failed",
+                    KEY_EVENT: EVENT_FAILED,
                     "phase": "factory_result",
                     "error": "create_dash_app must return a dash.Dash instance.",
                 }
@@ -153,7 +159,7 @@ def serve(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "event": "failed",
+                    KEY_EVENT: EVENT_FAILED,
                     "phase": "runtime_hooks",
                     "error": f"{type(exc).__name__}: {exc}",
                     "traceback": traceback.format_exc(),
@@ -179,10 +185,10 @@ def serve(args: argparse.Namespace) -> int:
             _QuietHandler,
         )
     except ValueError as exc:
-        print(json.dumps({"event": "failed", "phase": "port_config", "error": str(exc)}), flush=True)
+        print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "port_config", "error": str(exc)}), flush=True)
         return 1
     except OSError as exc:
-        print(json.dumps({"event": "failed", "phase": "bind", "error": str(exc)}), flush=True)
+        print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "bind", "error": str(exc)}), flush=True)
         return 1
     bound_host, bound_port = httpd.server_address[:2]
 
@@ -198,7 +204,7 @@ def serve(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
-                "event": "ready",
+                KEY_EVENT: EVENT_READY,
                 "port": bound_port,
                 "host": bound_host,
                 "pid": os.getpid(),

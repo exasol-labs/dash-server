@@ -8,8 +8,16 @@ from pathlib import Path
 from typing import Any
 
 from dash_server.db import ensure_column, open_connection
+from dash_server.timestamps import now_iso
 
 from .models import AppEvent, AppManifest, AppRevision, HostedApp
+
+# Numbered registry schema ledger. The single version-1 step folds every
+# previously guarded ``_ensure_column`` ALTER into one idempotent set recorded
+# in registry_schema_migrations. Each step stays idempotent (guarded ALTER /
+# CREATE IF NOT EXISTS) so a partially applied migration re-runs safely, and
+# initialize() refuses to touch a database stamped newer than this server.
+_SCHEMA_VERSION = 1
 
 
 def _last_row_id(cursor: sqlite3.Cursor) -> int:
@@ -40,6 +48,14 @@ class SQLiteAppRegistry:
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS registry_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS apps (
@@ -232,136 +248,36 @@ class SQLiteAppRegistry:
                 )
                 """
             )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS consumption_jobs (
-                    id TEXT PRIMARY KEY,
-                    app_name TEXT NOT NULL,
-                    output_id TEXT NOT NULL,
-                    job_type TEXT NOT NULL DEFAULT 'export',
-                    requested_by_principal_id TEXT NOT NULL,
-                    run_as_principal_id TEXT NOT NULL,
-                    revision_number INTEGER NOT NULL,
-                    output_contract_hash TEXT NOT NULL,
-                    policy_version TEXT NOT NULL,
-                    parameters_json TEXT NOT NULL DEFAULT '{}',
-                    parameters_hash TEXT NOT NULL DEFAULT '',
-                    requested_format TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'queued',
-                    progress_json TEXT NOT NULL DEFAULT '{}',
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    lease_owner TEXT,
-                    lease_expires_at TEXT,
-                    idempotency_key TEXT,
-                    error_json TEXT,
-                    subscription_id TEXT,
-                    alert_id TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    started_at TEXT,
-                    finished_at TEXT
-                )
-                """
+            connection.commit()
+
+        applied = self._applied_schema_version()
+        if applied > _SCHEMA_VERSION:
+            raise RuntimeError(
+                "The registry database schema "
+                f"(version {applied}) is newer than this server supports "
+                f"(version {_SCHEMA_VERSION}). Refusing to run against a downgraded install."
             )
+        if applied < 1:
+            self._apply_v1_migrations()
+            self._record_schema_version(1)
+
+    def _applied_schema_version(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT MAX(version) AS version FROM registry_schema_migrations"
+            ).fetchone()
+        return int(row["version"]) if row and row["version"] is not None else 0
+
+    def _record_schema_version(self, version: int) -> None:
+        with self._connect() as connection:
             connection.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS consumption_jobs_idempotency
-                ON consumption_jobs(requested_by_principal_id, idempotency_key)
-                WHERE idempotency_key IS NOT NULL
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS consumption_artifacts (
-                    id TEXT PRIMARY KEY,
-                    job_id TEXT NOT NULL,
-                    app_name TEXT NOT NULL,
-                    format TEXT NOT NULL,
-                    storage_key TEXT NOT NULL,
-                    content_type TEXT NOT NULL,
-                    filename TEXT NOT NULL,
-                    sha256 TEXT NOT NULL,
-                    byte_size INTEGER NOT NULL DEFAULT 0,
-                    row_count INTEGER,
-                    page_count INTEGER,
-                    classification TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    expires_at TEXT NOT NULL,
-                    deleted_at TEXT
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS consumption_subscriptions (
-                    id TEXT PRIMARY KEY,
-                    app_name TEXT NOT NULL,
-                    output_id TEXT NOT NULL,
-                    owner_principal_id TEXT NOT NULL,
-                    parameters_json TEXT NOT NULL DEFAULT '{}',
-                    requested_format TEXT NOT NULL,
-                    schedule_expression TEXT NOT NULL,
-                    timezone TEXT NOT NULL,
-                    revision_policy TEXT NOT NULL DEFAULT 'follow_live',
-                    delivery_json TEXT NOT NULL DEFAULT '{}',
-                    status TEXT NOT NULL DEFAULT 'enabled',
-                    pause_reason TEXT,
-                    misfire_policy TEXT NOT NULL DEFAULT 'coalesce_one',
-                    next_run_at TEXT,
-                    last_success_at TEXT,
-                    last_failure_at TEXT,
-                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS consumption_alerts (
-                    id TEXT PRIMARY KEY,
-                    app_name TEXT NOT NULL,
-                    output_id TEXT NOT NULL,
-                    owner_principal_id TEXT NOT NULL,
-                    parameters_json TEXT NOT NULL DEFAULT '{}',
-                    schedule_expression TEXT NOT NULL,
-                    timezone TEXT NOT NULL,
-                    condition_json TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'enabled',
-                    state TEXT NOT NULL DEFAULT 'unknown',
-                    state_json TEXT NOT NULL DEFAULT '{}',
-                    next_run_at TEXT,
-                    last_evaluated_at TEXT,
-                    last_notified_at TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS consumption_delivery_attempts (
-                    id TEXT PRIMARY KEY,
-                    app_name TEXT NOT NULL,
-                    job_id TEXT,
-                    artifact_id TEXT,
-                    subscription_id TEXT,
-                    alert_id TEXT,
-                    recipient_principal_id TEXT,
-                    recipient_email_normalized TEXT,
-                    provider TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    provider_message_id TEXT,
-                    retry_count INTEGER NOT NULL DEFAULT 0,
-                    error TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    sent_at TEXT,
-                    delivered_at TEXT,
-                    failed_at TEXT
-                )
-                """
+                "INSERT OR IGNORE INTO registry_schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, now_iso()),
             )
             connection.commit()
 
+    def _apply_v1_migrations(self) -> None:
+        """Version 1: the historical guarded ALTERs, folded into one idempotent step."""
         self._ensure_column("apps", "current_revision_id", "INTEGER")
         self._ensure_column("apps", "preview_revision_id", "INTEGER")
         self._ensure_column("apps", "rollback_revision_id", "INTEGER")
@@ -436,19 +352,30 @@ class SQLiteAppRegistry:
             ).fetchone()
             if exists is None:
                 return False
-            for table in (
+            # The consumption store owns its tables; when only the registry has
+            # initialized this database they may not exist yet, so scrub only the
+            # consumption projections that are actually present before the
+            # registry-owned tables (which always exist here).
+            existing = {
+                row["name"]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            consumption_tables = (
                 "consumption_delivery_attempts",
                 "consumption_artifacts",
                 "consumption_jobs",
                 "consumption_subscriptions",
                 "consumption_alerts",
+            )
+            registry_tables = (
                 "app_invitations",
                 "share_links",
                 "app_acl_entries",
                 "app_share_policies",
                 "app_events",
                 "app_revisions",
-            ):
+            )
+            for table in (*[t for t in consumption_tables if t in existing], *registry_tables):
                 connection.execute(f"DELETE FROM {table} WHERE app_name = ?", (name,))
             connection.execute("DELETE FROM apps WHERE name = ?", (name,))
             connection.commit()
@@ -1176,7 +1103,7 @@ class SQLiteAppRegistry:
         release_manifest_path: str = "",
         lifecycle_state: str = "live",
     ) -> tuple[HostedApp, AppRevision]:
-        revision_id = self._insert_revision(
+        revision = self._insert_revision(
             manifest.name,
             revision_number=1,
             manifest=manifest.to_dict(),
@@ -1191,6 +1118,7 @@ class SQLiteAppRegistry:
             release_manifest_path=release_manifest_path,
             rollout_metadata={"created_via": "app_create"},
         )
+        revision_id = revision.id
         with self._connect() as connection:
             connection.execute(
                 """
@@ -1224,9 +1152,7 @@ class SQLiteAppRegistry:
             connection.commit()
 
         app = self.get_app(manifest.name)
-        revision = self.get_current_revision(manifest.name)
         assert app is not None
-        assert revision is not None
         return app, revision
 
     def create_revision(
@@ -1243,10 +1169,12 @@ class SQLiteAppRegistry:
         git_branch: str = "",
         release_manifest_path: str = "",
     ) -> AppRevision:
-        next_revision_number = self.next_revision_number(app_name)
-        self._insert_revision(
+        # Let the INSERT compute MAX(revision_number)+1 in its own transaction so
+        # the number is assigned and read back atomically rather than via a
+        # separate SELECT that races the INSERT.
+        return self._insert_revision(
             app_name,
-            revision_number=next_revision_number,
+            revision_number=None,
             manifest=manifest.to_dict(),
             bundle=bundle,
             lifecycle_state="validated",
@@ -1259,9 +1187,6 @@ class SQLiteAppRegistry:
             release_manifest_path=release_manifest_path,
             rollout_metadata={"created_via": "app_build"},
         )
-        revision = self.get_revision_by_number(app_name, next_revision_number)
-        assert revision is not None
-        return revision
 
     def upsert_revision_cache(
         self,
@@ -1283,7 +1208,7 @@ class SQLiteAppRegistry:
         existing = self.get_revision_by_number(app_name, revision_number)
         payload = rollout_metadata or {}
         if existing is None:
-            self._insert_revision(
+            return self._insert_revision(
                 app_name,
                 revision_number=revision_number,
                 manifest=manifest,
@@ -1764,7 +1689,7 @@ class SQLiteAppRegistry:
         self,
         app_name: str,
         *,
-        revision_number: int,
+        revision_number: int | None = None,
         manifest: dict[str, Any],
         bundle: dict[str, Any],
         lifecycle_state: str,
@@ -1776,11 +1701,28 @@ class SQLiteAppRegistry:
         git_branch: str,
         release_manifest_path: str,
         rollout_metadata: dict[str, Any],
-    ) -> int:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO app_revisions (
+    ) -> AppRevision:
+        """Insert a revision and read it back atomically via ``RETURNING``.
+
+        When ``revision_number`` is None the next number is computed inside the
+        same INSERT statement (``INSERT ... SELECT MAX(revision_number)+1``) so
+        it can never race a second reader/writer; the UNIQUE(app_name,
+        revision_number) constraint is the backstop, not the mechanism.
+        """
+        payload = (
+            json.dumps(manifest),
+            json.dumps(bundle),
+            lifecycle_state,
+            artifact_path,
+            source_hash,
+            dependency_lock_hash,
+            commit_sha,
+            git_tag,
+            git_branch,
+            release_manifest_path,
+            json.dumps(rollout_metadata),
+        )
+        columns = """
                     app_name,
                     revision_number,
                     manifest_json,
@@ -1793,29 +1735,29 @@ class SQLiteAppRegistry:
                     git_tag,
                     git_branch,
                     release_manifest_path,
-                    rollout_metadata_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    app_name,
-                    revision_number,
-                    json.dumps(manifest),
-                    json.dumps(bundle),
-                    lifecycle_state,
-                    artifact_path,
-                    source_hash,
-                    dependency_lock_hash,
-                    commit_sha,
-                    git_tag,
-                    git_branch,
-                    release_manifest_path,
-                    json.dumps(rollout_metadata),
-                ),
-            )
-            revision_id = _last_row_id(cursor)
+                    rollout_metadata_json"""
+        with self._connect() as connection:
+            if revision_number is None:
+                row = connection.execute(
+                    f"""
+                    INSERT INTO app_revisions ({columns})
+                    SELECT ?, COALESCE(MAX(revision_number), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    FROM app_revisions WHERE app_name = ?
+                    RETURNING *
+                    """,
+                    (app_name, *payload, app_name),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    f"""
+                    INSERT INTO app_revisions ({columns})
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING *
+                    """,
+                    (app_name, revision_number, *payload),
+                ).fetchone()
             connection.commit()
-        return revision_id
+        return self._row_to_revision(row)
 
     def _app_select_sql(self, suffix: str) -> str:
         return f"""

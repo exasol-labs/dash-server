@@ -25,25 +25,48 @@ class EmailDeliveryResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _ProviderSpec:
+    """One provider's behavior: how it delivers plus its SMTP defaults.
+
+    ``delivery`` is ``"none"`` (accept-and-hold: manual/disabled), ``"console"``
+    (log the message), or ``"smtp"`` (relay). Host/port/username/use_tls are the
+    provider's SMTP defaults, applied only where the operator did not override.
+    """
+
+    delivery: str
+    host: str | None = None
+    port: int | None = None
+    username: str | None = None
+    use_tls: bool | None = None
+
+
+# The single source of truth for "which providers exist and how each behaves".
+# ``configured``, ``validate_startup``, and the error message all derive from
+# this table — no parallel provider set or hand-written message to drift.
+_PROVIDERS: dict[str, _ProviderSpec] = {
+    "manual": _ProviderSpec("none"),
+    "disabled": _ProviderSpec("none"),
+    "console": _ProviderSpec("console"),
+    "smtp": _ProviderSpec("smtp"),
+    "ses": _ProviderSpec("smtp", port=587, use_tls=True),
+    "sendgrid": _ProviderSpec("smtp", host="smtp.sendgrid.net", port=587, username="apikey", use_tls=True),
+    "postmark": _ProviderSpec("smtp", host="smtp.postmarkapp.com", port=587, use_tls=True),
+    "mailgun": _ProviderSpec("smtp", host="smtp.mailgun.org", port=587, use_tls=True),
+    "resend": _ProviderSpec("smtp", host="smtp.resend.com", port=587, username="resend", use_tls=True),
+}
+
+
 class InvitationEmailSender:
     """Send invitation emails, or leave them for manual delivery."""
 
-    _provider_defaults: dict[str, dict[str, Any]] = {
-        "smtp": {},
-        "ses": {"port": 587, "use_tls": True},
-        "sendgrid": {"host": "smtp.sendgrid.net", "port": 587, "username": "apikey", "use_tls": True},
-        "postmark": {"host": "smtp.postmarkapp.com", "port": 587, "use_tls": True},
-        "mailgun": {"host": "smtp.mailgun.org", "port": 587, "use_tls": True},
-        "resend": {"host": "smtp.resend.com", "port": 587, "username": "resend", "use_tls": True},
-    }
-
     def __init__(self, config: dict[str, Any]) -> None:
-        self.provider = str(config.get("DASH_SERVER_EMAIL_PROVIDER", "manual")).strip().lower()
+        self.provider = str(config.get("DASH_SERVER_EMAIL_PROVIDER") or "manual").strip().lower()
         self.from_email = _optional_string(config.get("DASH_SERVER_EMAIL_FROM"))
         self.from_name = _optional_string(config.get("DASH_SERVER_EMAIL_FROM_NAME")) or "Dash Server"
         self.reply_to = _optional_string(config.get("DASH_SERVER_EMAIL_REPLY_TO"))
         self.smtp_host = _optional_string(config.get("DASH_SERVER_EMAIL_SMTP_HOST"))
-        self.smtp_port = int(config.get("DASH_SERVER_EMAIL_SMTP_PORT", 587) or 587)
+        self.smtp_port = int(config.get("DASH_SERVER_EMAIL_SMTP_PORT") or 587)
         self.smtp_username = _optional_string(config.get("DASH_SERVER_EMAIL_SMTP_USERNAME"))
         self.smtp_password = _optional_string(config.get("DASH_SERVER_EMAIL_SMTP_PASSWORD"))
         password_env_var = _optional_string(config.get("DASH_SERVER_EMAIL_SMTP_PASSWORD_ENV_VAR"))
@@ -55,32 +78,40 @@ class InvitationEmailSender:
         )
         self.smtp_use_tls = coerce_bool(config.get("DASH_SERVER_EMAIL_SMTP_USE_TLS"), default=True)
         self.smtp_use_ssl = coerce_bool(config.get("DASH_SERVER_EMAIL_SMTP_USE_SSL"), default=False)
-        self.smtp_timeout_seconds = int(config.get("DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS", 15) or 15)
+        self.smtp_timeout_seconds = int(config.get("DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS") or 15)
         self.ses_region = _optional_string(config.get("DASH_SERVER_EMAIL_SES_REGION")) or os.environ.get("AWS_REGION")
 
-        defaults = self._provider_defaults.get(self.provider, {})
-        self.smtp_host = self.smtp_host or defaults.get("host")
-        self.smtp_port = int(config.get("DASH_SERVER_EMAIL_SMTP_PORT") or defaults.get("port") or self.smtp_port)
-        self.smtp_username = self.smtp_username or defaults.get("username")
-        if "use_tls" in defaults and config.get("DASH_SERVER_EMAIL_SMTP_USE_TLS") is None:
-            self.smtp_use_tls = bool(defaults["use_tls"])
+        spec = _PROVIDERS.get(self.provider)
+        self.smtp_host = self.smtp_host or (spec.host if spec else None)
+        self.smtp_port = int(
+            config.get("DASH_SERVER_EMAIL_SMTP_PORT")
+            or (spec.port if spec else None)
+            or self.smtp_port
+        )
+        self.smtp_username = self.smtp_username or (spec.username if spec else None)
+        if spec is not None and spec.use_tls is not None and config.get("DASH_SERVER_EMAIL_SMTP_USE_TLS") is None:
+            self.smtp_use_tls = spec.use_tls
         if self.provider == "ses" and self.smtp_host is None and self.ses_region:
             self.smtp_host = f"email-smtp.{self.ses_region}.amazonaws.com"
 
     @property
     def configured(self) -> bool:
-        return self.provider not in {"manual", "disabled"}
+        spec = _PROVIDERS.get(self.provider)
+        # Unknown providers are treated as "configured" (they fail loudly at
+        # validate_startup); only the accept-and-hold providers are unconfigured.
+        return spec is None or spec.delivery != "none"
 
     def validate_startup(self, *, hosted_mode: bool) -> None:
-        if self.provider in {"manual", "disabled"}:
+        spec = _PROVIDERS.get(self.provider)
+        if spec is not None and spec.delivery == "none":
             return
-        if self.provider == "console":
+        if spec is not None and spec.delivery == "console":
             if not self.from_email:
                 raise RuntimeError("Console email delivery requires DASH_SERVER_EMAIL_FROM.")
             return
-        if self.provider not in self._provider_defaults:
+        if spec is None:
             raise RuntimeError(
-                "DASH_SERVER_EMAIL_PROVIDER must be manual, console, smtp, ses, sendgrid, postmark, mailgun, or resend."
+                "DASH_SERVER_EMAIL_PROVIDER must be one of: " + ", ".join(_PROVIDERS) + "."
             )
         if not self.from_email:
             raise RuntimeError("Email delivery requires DASH_SERVER_EMAIL_FROM.")
