@@ -268,7 +268,7 @@ For local Claude Desktop, you can bridge that HTTP endpoint with `mcp-remote`:
 - Hosted/admin guide: [docs/hosted-mode.md](docs/hosted-mode.md)
 - Exasol workflow: [docs/exasol.md](docs/exasol.md)
 - Architecture: [docs/architecture.md](docs/architecture.md)
-- Runtime modes (dependency + process isolation): [docs/runtime-modes.md](docs/runtime-modes.md)
+- Runtime modes — per-app runtime isolation (dependency environments + process isolation): [docs/runtime-modes.md](docs/runtime-modes.md)
 
 ## Running Tests
 
