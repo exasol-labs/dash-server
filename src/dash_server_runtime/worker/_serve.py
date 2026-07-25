@@ -153,7 +153,15 @@ def serve(args: argparse.Namespace) -> int:
     try:
         from dash_server_runtime import apply_hosted_footer, finalize_dash_app_callbacks
 
-        apply_hosted_footer(created, mount_path=mount_path, revision_number=args.revision_number)
+        apply_hosted_footer(
+            created,
+            mount_path=mount_path,
+            revision_number=args.revision_number,
+            # The control plane owns the local-mode gate and passes its decision in the
+            # worker env; the worker does not re-derive it from `DASH_SERVER_MODE`,
+            # which is deliberately not in the allow-listed worker environment.
+            session_channel=os.environ.get("DASH_SERVER_SESSION_CHANNEL") == "1",
+        )
         finalize_dash_app_callbacks(created)
     except Exception as exc:
         print(

@@ -17,7 +17,11 @@ this package triggers a deterministic env rebuild rather than a silent skew.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+# 0.2.0: `apply_hosted_footer` gained the `session_channel` flag, which changes what a
+# hosted page contains. The version feeds each per-app environment's identity key, so
+# the bump forces a deterministic env rebuild instead of leaving old envs serving pages
+# whose chrome does not match this server's.
+__version__ = "0.2.0"
 
 # Re-export the hosted-runtime entry points. Each one is a thin alias for the canonical
 # implementation in `dash_server.*` so editing happens in exactly one place.

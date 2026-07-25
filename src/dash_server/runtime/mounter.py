@@ -385,6 +385,7 @@ class RuntimeMounter:
                             (manifest.consumption or {}).get("outputs")
                         ),
                         wrap=True,
+                        session_channel=self.svc.session_channel_enabled,
                     )
                     finalize_dash_app_callbacks(created)
             except Exception as exc:

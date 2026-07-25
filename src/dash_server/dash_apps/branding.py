@@ -7,6 +7,8 @@ from typing import Any
 from dash import Dash, Input, Output, State, dcc, html
 from flask import jsonify
 
+from dash_server.session_channel.contract import BLUEPRINT_URL_PREFIX as SESSION_CHANNEL_BASE_PATH
+
 _EXASOL_URL = "https://www.exasol.com/"
 _FOOTER_HEIGHT_PX = 32
 _REFRESH_INTERVAL_MS = 2000
@@ -22,11 +24,23 @@ _HOSTED_CHROME_ID = "__dash-server-hosted-chrome"
 _CATALOG_LINK_ID = "__dash-server-catalog-link"
 _EXPORTS_LINK_ID = "__dash-server-exports-link"
 
+# Session-channel element ids (see `dash_server.session_channel`). Kept beside the
+# refresh ids for the same reason: the JS binds to them, so a rename must break both
+# sides in one file.
+_SESSION_INTERVAL_ID = "__dash-server-session-interval"
+_SESSION_META_ID = "__dash-server-session-meta"
+_SESSION_NOOP_ID = "__dash-server-session-noop"
+_SESSION_POLL_INTERVAL_MS = 2000
+
 # The auto-refresh clientside callback body lives in a dedicated assets file so
 # it is version-controlled, lint/test-visible, and read exactly once at import
 # time rather than re-parsed from an embedded literal on every registration.
 _REFRESH_JS_PATH = Path(__file__).with_name("assets") / "hosted_refresh.js"
 _REFRESH_CLIENTSIDE_JS = _REFRESH_JS_PATH.read_text(encoding="utf-8")
+
+# Session-channel payload, read once at import time for the same reasons.
+_SESSION_CHANNEL_JS_PATH = Path(__file__).with_name("assets") / "session_channel.js"
+_SESSION_CHANNEL_JS = _SESSION_CHANNEL_JS_PATH.read_text(encoding="utf-8")
 
 
 def apply_hosted_footer(
@@ -37,6 +51,7 @@ def apply_hosted_footer(
     app_name: str | None = None,
     has_consumption_outputs: bool = False,
     wrap: bool = True,
+    session_channel: bool = False,
 ) -> None:
     """Wrap a Dash app layout with the standard hosted-app footer once.
 
@@ -46,6 +61,13 @@ def apply_hosted_footer(
     explicitly: a marker attribute stashed on the Dash app records that chrome
     was applied, and a layout whose root already carries the hosted-chrome id is
     left untouched (an O(1) root check, not a recursive scan of ``children``).
+
+    ``session_channel`` opts the page into the browser session channel (see
+    ``dash_server.session_channel``). It is the **first of three enforcement
+    points** for that local-mode-only feature: when false, none of the channel's
+    components, callbacks, or JavaScript are registered, so a hosted-mode page has
+    no client-side channel code in it at all. The caller decides — branding never
+    infers it.
     """
 
     if not wrap:
@@ -67,6 +89,10 @@ def apply_hosted_footer(
         )
         _register_refresh_clientside_callback(dash_app)
 
+    include_session_channel = bool(session_channel and mount_path)
+    if include_session_channel:
+        _register_session_channel_clientside_callback(dash_app)
+
     if callable(original_layout):
 
         def wrapped_layout() -> Any:
@@ -76,6 +102,7 @@ def apply_hosted_footer(
                 revision_number=revision_number,
                 app_name=app_name,
                 has_consumption_outputs=has_consumption_outputs,
+                session_channel=include_session_channel,
             )
 
         dash_app.layout = wrapped_layout
@@ -86,6 +113,7 @@ def apply_hosted_footer(
             revision_number=revision_number,
             app_name=app_name,
             has_consumption_outputs=has_consumption_outputs,
+            session_channel=include_session_channel,
         )
 
     # Idempotency marker — stashed on the Dash app so re-wrapping is a no-op. Dash's
@@ -101,6 +129,7 @@ def _with_footer(
     revision_number: int | None,
     app_name: str | None,
     has_consumption_outputs: bool,
+    session_channel: bool = False,
 ) -> Any:
     if _is_hosted_chrome(content):
         return content
@@ -122,6 +151,29 @@ def _with_footer(
                     n_intervals=0,
                 ),
                 html.Div(id=_REFRESH_NOOP_ID, style={"display": "none"}),
+            ]
+        )
+    if session_channel and mount_path:
+        children.extend(
+            [
+                dcc.Store(
+                    id=_SESSION_META_ID,
+                    data={
+                        "mount_path": mount_path,
+                        "revision_number": revision_number,
+                        # Absolute control-plane path: the session routes are served by
+                        # the control plane, not by this app, and no mount prefix can
+                        # collide with `/__dash-server/...`.
+                        "base": SESSION_CHANNEL_BASE_PATH,
+                        "interval_id": _SESSION_INTERVAL_ID,
+                    },
+                ),
+                dcc.Interval(
+                    id=_SESSION_INTERVAL_ID,
+                    interval=_SESSION_POLL_INTERVAL_MS,
+                    n_intervals=0,
+                ),
+                html.Div(id=_SESSION_NOOP_ID, style={"display": "none"}),
             ]
         )
     footer_children: list[Any] = [
@@ -250,3 +302,23 @@ def _register_refresh_clientside_callback(dash_app: Dash) -> None:
         State(_REFRESH_META_ID, "data"),
     )
     dash_app._dash_server_refresh_callback_registered = True  # type: ignore[attr-defined]
+
+
+def _register_session_channel_clientside_callback(dash_app: Dash) -> None:
+    """Register the session-channel poll loop as a clientside callback.
+
+    Driven by a `dcc.Interval` rather than a free-running `setInterval` so the loop
+    is visible in the component tree, stops with the page, and can be re-paced from
+    the server by writing the Interval's ``interval`` prop.
+    """
+
+    if getattr(dash_app, "_dash_server_session_channel_registered", False):
+        return
+
+    dash_app.clientside_callback(
+        _SESSION_CHANNEL_JS,
+        Output(_SESSION_NOOP_ID, "children"),
+        Input(_SESSION_INTERVAL_ID, "n_intervals"),
+        State(_SESSION_META_ID, "data"),
+    )
+    dash_app._dash_server_session_channel_registered = True  # type: ignore[attr-defined]

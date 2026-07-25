@@ -112,6 +112,25 @@ The `app_run_healthcheck` probe set gains two entries in `isolated` mode:
 
 In `in_process` mode both probes return `status: "not_applicable"`.
 
+## Browser session channel and the worker
+
+The browser session channel (local mode only — see
+`dash://meta/session-channel-guide`) deliberately does **not** touch the app's own HTTP
+listener. Its routes live on the control plane at `/__dash-server/session/...`, which
+matches no mount prefix and so falls through the dispatcher.
+
+That is not just tidiness. A worker serves its Dash app with
+`wsgiref.simple_server`, which is **single-threaded**: one held or slow request blocks
+every other request to that app. Putting the channel on the app's listener — or
+long-polling it — would let an agent's introspection stall the dashboard a user is
+reading. Short adaptive polling against the control plane keeps each request trivial, and
+the worker is not involved in the channel at all.
+
+The only thing the worker learns is whether to inject the client payload, via
+`DASH_SERVER_SESSION_CHANNEL` in its allow-listed environment. The control plane is the
+single decision point; the worker never re-derives the gate from `DASH_SERVER_MODE`,
+which is not passed into worker environments.
+
 ## Audit trail
 
 Every operational decision the runtime makes — `forkserver_miss`, `worker_adopted`, `worker_reaped`,

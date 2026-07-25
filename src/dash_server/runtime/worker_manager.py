@@ -198,6 +198,7 @@ class AppWorkerManager:
         enable_forkserver: bool = False,
         prewarm_packages: tuple[str, ...] = ("dash", "flask", "dash_server_runtime"),
         max_restarts_per_5_minutes: int = 5,
+        session_channel_enabled: bool = False,
         allowed_env_passthrough: tuple[str, ...] = (
             "EXA_PASSWORD",
             "EXA_TOKEN",
@@ -223,6 +224,11 @@ class AppWorkerManager:
         # forks workers from it. Falls back to spawn on any miss.
         self.enable_forkserver = enable_forkserver
         self.prewarm_packages = tuple(prewarm_packages)
+        # Browser session channel: the control plane is the single decision point, and
+        # tells the worker via `DASH_SERVER_SESSION_CHANNEL`. The worker never consults
+        # `DASH_SERVER_MODE` itself — it is not in the allow-listed worker env, and one
+        # decision point is what keeps the local-mode gate auditable.
+        self.session_channel_enabled = bool(session_channel_enabled)
         self.allowed_env_passthrough = tuple(allowed_env_passthrough)
         self._records: dict[str, WorkerRecord] = {}  # keyed by mount_path
         self._baselines: dict[str, _BaselineHandle] = {}  # python_executable → handle
@@ -746,6 +752,8 @@ class AppWorkerManager:
                 env[key] = value
         if self.pycache_root:
             env["PYTHONPYCACHEPREFIX"] = self.pycache_root
+        if self.session_channel_enabled:
+            env["DASH_SERVER_SESSION_CHANNEL"] = "1"
         # Phase 3.5a: the worker module lives in `dash_server_runtime`, which Phase 1 installs
         # into every per-app env. The env's site-packages is enough; no PYTHONPATH dance.
         # In editable dev installs the parent of the source tree is on sys.path automatically

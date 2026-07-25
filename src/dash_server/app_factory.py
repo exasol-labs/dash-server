@@ -40,6 +40,8 @@ from .public.blueprint import create_public_blueprint
 from .registry.sqlite_registry import SQLiteAppRegistry
 from .runtime.dispatcher import DynamicPrefixDispatcher
 from .runtime.service import AppRuntimeService
+from .session_channel import SessionChannelService, create_session_channel_blueprint
+from .session_channel.contract import BLUEPRINT_URL_PREFIX as SESSION_CHANNEL_BASE_PATH
 
 if TYPE_CHECKING:  # imported lazily inside _build_worker_manager to keep startup cheap
     from .runtime.worker_manager import AppWorkerManager
@@ -219,6 +221,69 @@ def _config_string_sequence(value: Any) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(str(item).strip() for item in value if str(item).strip())
     return ()
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "localhost.localdomain"})
+
+
+def _resolve_session_channel_gate(app: Flask) -> tuple[bool, str | None]:
+    """Decide whether the browser session channel is available, and why not.
+
+    The channel runs unauthenticated ephemeral JavaScript in a live tab, so it is
+    restricted to the one configuration where that is unambiguously safe: local mode,
+    where the person looking at the dashboard is the same person driving the MCP
+    client, on their own loopback-bound machine.
+
+    The loopback check is the non-obvious half. ``DASH_SERVER_MODE=local`` with
+    ``DASH_SERVER_HOST=0.0.0.0`` would publish an unauthenticated command channel to
+    the network, so that combination disables the channel unless an operator opts in
+    explicitly. Returns ``(enabled, disabled_reason)`` so the reason can be logged at
+    startup and returned to an agent instead of an unexplained 404.
+    """
+
+    if not coerce_bool(app.config.get("SESSION_CHANNEL_ENABLED"), default=True):
+        return False, "disabled_by_config"
+    if app.config.get("DASH_SERVER_MODE") != "local":
+        return False, "hosted_mode"
+
+    host = str(app.config.get("DASH_SERVER_HOST") or "").strip()
+    if host.lower() in _LOOPBACK_HOSTS or host.startswith("127."):
+        return True, None
+    if coerce_bool(app.config.get("SESSION_CHANNEL_ALLOW_NON_LOOPBACK")):
+        app.logger.warning(
+            "DASH_SERVER_SESSION_CHANNEL_ALLOW_NON_LOOPBACK=true is enabling the browser "
+            "session channel while the control plane is bound to %s. The channel runs "
+            "agent-supplied JavaScript in connected browser tabs and is unauthenticated "
+            "in local mode; anyone who can reach this host can drive it.",
+            host or "an unspecified host",
+        )
+        return True, None
+    return False, "non_loopback_bind"
+
+
+def _build_session_channel_service(app: Flask, diagnostics_service: DiagnosticsService) -> SessionChannelService:
+    enabled, disabled_reason = _resolve_session_channel_gate(app)
+    app.config["SESSION_CHANNEL_ENABLED"] = enabled
+    app.config["SESSION_CHANNEL_DISABLED_REASON"] = disabled_reason
+    if enabled:
+        app.logger.info(
+            "Browser session channel enabled at %s (local mode, loopback bind).",
+            SESSION_CHANNEL_BASE_PATH,
+        )
+    else:
+        app.logger.info("Browser session channel disabled: %s.", disabled_reason)
+    return SessionChannelService(
+        enabled=enabled,
+        disabled_reason=disabled_reason,
+        diagnostics_service=diagnostics_service,
+        max_sessions=int(app.config["SESSION_CHANNEL_MAX_SESSIONS"]),
+        stale_after_ms=int(app.config["SESSION_CHANNEL_STALE_AFTER_MS"]),
+        poll_interval_ms=int(app.config["SESSION_CHANNEL_POLL_INTERVAL_MS"]),
+        active_poll_interval_ms=int(app.config["SESSION_CHANNEL_ACTIVE_POLL_INTERVAL_MS"]),
+        command_timeout_seconds=int(app.config["SESSION_CHANNEL_COMMAND_TIMEOUT_SECONDS"]),
+        max_code_bytes=int(app.config["SESSION_CHANNEL_MAX_CODE_BYTES"]),
+        max_result_bytes=int(app.config["SESSION_CHANNEL_MAX_RESULT_BYTES"]),
+    )
 
 
 def _resolve_instance_path(test_config: dict[str, Any] | None, project_root: Path) -> str:
@@ -404,6 +469,8 @@ def _build_worker_manager(
     roots: Roots,
     diagnostics_service: DiagnosticsService,
     runtime_mode: str,
+    *,
+    session_channel_enabled: bool,
 ) -> AppWorkerManager | None:
     """Build the isolated-runtime worker manager, or ``None`` for in-process mode."""
 
@@ -433,6 +500,7 @@ def _build_worker_manager(
         enable_forkserver=prewarm_pool_size > 0,
         prewarm_packages=prewarm_packages,
         max_restarts_per_5_minutes=int(app.config["APP_WORKER_MAX_RESTARTS_PER_5_MINUTES"]),
+        session_channel_enabled=session_channel_enabled,
     )
     # Start the idle sweep so workers without traffic for APP_WORKER_IDLE_STOP_SECONDS
     # are stopped and persisted as `stopped_idle`. ensure_running re-spawns transparently
@@ -457,6 +525,7 @@ def _build_services(
     exasol_dashboard_service: ExasolDashboardService,
     worker_manager: AppWorkerManager | None,
     runtime_mode: str,
+    session_channel_service: SessionChannelService,
 ) -> tuple[IdentityService, AuthorizationService]:
     """Construct the runtime service, run bootstrap, and wire all app.extensions.
 
@@ -480,6 +549,7 @@ def _build_services(
         worker_manager=worker_manager,
         runtime_mode=runtime_mode,
         dependency_environment_service=dependency_environment_service,
+        session_channel_enabled=session_channel_service.enabled,
     )
     if not git_repo_service.has_commits():
         runtime_service.ensure_demo_app()
@@ -520,12 +590,14 @@ def _build_services(
     app.extensions["identity_service"] = identity_service
     app.extensions["authorization_service"] = authorization_service
     app.extensions["consumption_service"] = consumption_service
+    app.extensions["session_channel_service"] = session_channel_service
     app.extensions["mcp_server"] = MCPServer(
         runtime_service,
         git_repo_service,
         exasol_dashboard_service=exasol_dashboard_service,
         email_sender=email_sender,
         consumption_service=consumption_service,
+        session_channel_service=session_channel_service,
     )
     return identity_service, authorization_service
 
@@ -535,6 +607,8 @@ def _register_blueprints(
     dispatcher: DynamicPrefixDispatcher,
     identity_service: IdentityService,
     authorization_service: AuthorizationService,
+    *,
+    session_channel_enabled: bool,
 ) -> None:
     """Wire the dispatcher auth handler, the auth-context request hook, and blueprints."""
 
@@ -563,6 +637,10 @@ def _register_blueprints(
     app.register_blueprint(create_mcp_blueprint())
     app.register_blueprint(create_public_blueprint())
     app.register_blueprint(create_consumption_blueprint())
+    if session_channel_enabled:
+        # Not registered at all outside local mode. The blueprint's own views re-check
+        # the gate, so this is the outer of two redundant route-level defenses.
+        app.register_blueprint(create_session_channel_blueprint())
 
 
 def _create_flask_app(test_config: dict[str, Any] | None, project_root: Path) -> Flask:
@@ -632,6 +710,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     diagnostics_service = DiagnosticsService(roots.diagnostics_root)
 
+    # Stage: browser session channel gate. Resolved before the worker manager because
+    # the manager passes the decision into every worker's environment.
+    session_channel_service = _build_session_channel_service(app, diagnostics_service)
+
     # Stage: dependency layer + exasol + worker manager.
     dependency_installer, dependency_environment_service = _build_dependency_layer(
         app, roots, registry, diagnostics_service
@@ -640,7 +722,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     _bootstrap_exasol_profile(app, exasol_dashboard_service)
 
     runtime_mode = str(app.config["APP_RUNTIME_MODE"]).strip().lower()
-    worker_manager = _build_worker_manager(app, roots, diagnostics_service, runtime_mode)
+    worker_manager = _build_worker_manager(
+        app,
+        roots,
+        diagnostics_service,
+        runtime_mode,
+        session_channel_enabled=session_channel_service.enabled,
+    )
 
     # Stage: runtime service + auth/consumption/mcp services + extension wiring.
     identity_service, authorization_service = _build_services(
@@ -658,9 +746,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         exasol_dashboard_service=exasol_dashboard_service,
         worker_manager=worker_manager,
         runtime_mode=runtime_mode,
+        session_channel_service=session_channel_service,
     )
 
     # Stage: request hooks + blueprint registration.
-    _register_blueprints(app, dispatcher, identity_service, authorization_service)
+    _register_blueprints(
+        app,
+        dispatcher,
+        identity_service,
+        authorization_service,
+        session_channel_enabled=session_channel_service.enabled,
+    )
 
     return app

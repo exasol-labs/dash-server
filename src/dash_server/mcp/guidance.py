@@ -190,6 +190,33 @@ class GuidanceMixin:
                 "suggested_tools": ["app_collect_diagnostics", "app_inspect_traceback", "app_patch_file", "app_diff_draft_vs_artifact"],
                 "related_resources": ["dash://meta/app-authoring-guide", "dash://meta/workflows"],
             }
+        if category == "session_channel_session_gone":
+            return {
+                "next_step": (
+                    "Check which tabs are live and ask the user to open the dashboard if none "
+                    "are. Do not report a stale session's last known state as current."
+                ),
+                "suggested_tools": ["app_sessions_list", "app_get_status"],
+                "related_resources": ["dash://meta/session-channel-guide"],
+            }
+        if category == "session_channel_unavailable":
+            return {
+                "next_step": (
+                    "The browser session channel is a local-mode feature and is off here. "
+                    "Fall back to server-side signals: diagnostics, logs, and health probes."
+                ),
+                "suggested_tools": ["app_collect_diagnostics", "app_tail_logs", "app_run_healthcheck"],
+                "related_resources": ["dash://meta/session-channel-guide", "dash://runtime/status"],
+            }
+        if category in {"session_channel_timeout", "session_channel_busy"}:
+            return {
+                "next_step": (
+                    "Confirm the tab is still polling, then retry with a smaller command or a "
+                    "longer timeout_seconds."
+                ),
+                "suggested_tools": ["app_sessions_list", "app_session_eval_js"],
+                "related_resources": ["dash://meta/session-channel-guide"],
+            }
         if category == "app_conflict":
             return {
                 "next_step": "Choose a different app name or inspect the existing app before retrying.",

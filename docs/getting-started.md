@@ -186,11 +186,40 @@ curl -s http://127.0.0.1:5100/mcp \
   }'
 ```
 
+### 8. Ask the agent what is on your screen
+
+With the dashboard open in a browser tab, an agent can read its live state directly. This
+is the only way to see interaction state — Dash keeps current selections in the browser,
+not on the server.
+
+```bash
+curl -s http://127.0.0.1:5100/mcp \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+      "name": "app_session_eval_js",
+      "arguments": {"name": "demo", "code": "({page: ctx.page(), props: ctx.props()})"}
+    }
+  }'
+```
+
+If it reports `session_channel_session_gone`, no tab is open — open the dashboard first.
+Read `dash://meta/session-channel-guide` for the full `ctx` helper reference and recipes,
+including setting a filter and waiting for the app to settle in one call.
+
+This is a **local-mode feature**: it is unavailable in hosted mode, and it is disabled if
+the control plane is not bound to loopback. See
+[Hosted Mode](hosted-mode.md#what-hosted-mode-does-not-have-the-browser-session-channel).
+
 At that point you have verified:
 
 - the Exasol bootstrap path
 - the browser runtime
 - the MCP control plane
+- the browser session channel
 
 ## Isolated Instances
 

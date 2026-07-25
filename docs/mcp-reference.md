@@ -10,7 +10,7 @@ This is the practical reference for the current `dash-server` MCP surface.
 ## Main Tools
 
 <!-- BEGIN: auto-tools -->
-_51 tools registered. Each `tools/call` request must pass the tool name and the arguments defined by its `inputSchema`._
+_53 tools registered. Each `tools/call` request must pass the tool name and the arguments defined by its `inputSchema`._
 
 - **`app_acknowledge_data_layer_errors`** — Reset the `data_layer` healthcheck probe by acknowledging all currently recorded Exasol query failures. Use after fixing SQL in-place without promoting a new revision; the underlying `dash://apps/{name}/errors` ledger is preserved, but the probe and `app_collect_diagnostics` both filter past the new watermark.
 - **`app_build`** — Validate the draft workspace and create a new immutable revision with a stored source artifact. Use app_start_preview or app_promote_revision after this. force_clean only bypasses cached dependency-install state; it does not change source snapshotting.
@@ -43,6 +43,8 @@ _51 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`app_runtime_workers_list`** — Return the in-process snapshot of out-of-process workers and forkserver baselines, including aggregate RSS and p50 cold-start time. Available in isolated runtime mode.
 - **`app_runtime_workers_restart`** — Stop the worker at mount_path and re-spawn it from the persisted spec. Available in isolated runtime mode.
 - **`app_scaffold_from_schema`** — Introspect Exasol catalog metadata for a profile, choose analytically useful columns and relationship hints, and generate a tailored exasol-analytics scaffold with business SQL wired to the selected schema and table.
+- **`app_session_eval_js`** — Evaluate ephemeral JavaScript inside the browser session a user currently has open, and return a bounded result. This is the only way to read interaction state — current dropdown values, dcc.Store contents, client-side Plotly zoom/selection, what is actually visible — because Dash keeps that in the browser, not on the server. Use the injected `ctx` helpers rather than raw DOM work: ctx.props(ids), ctx.dom(ids), ctx.plots(), ctx.stores(), ctx.page(), ctx.setProps(id, props), ctx.waitForIdle(ms), ctx.summarize(value). A trailing expression is returned and `await` is allowed, so one call can set a filter, wait for the app to settle, and report the result. Read dash://meta/session-channel-guide for the full reference and recipes. Local mode only; a page-side exception comes back as ok=false with the failing line relative to the code you submitted.
+- **`app_sessions_list`** — List the browser tabs currently attached to hosted dashboards, newest poll first, with liveness and the prop-access tier each page reported. Use it to pick a session_id for app_session_eval_js, or to confirm the user actually has the dashboard open. Local mode only.
 - **`app_share_create_one_time_link`** — [hosted-mode] Create a single-use, manually shared dashboard access link. The raw token is returned only in the tool response and only a hash is stored.
 - **`app_share_explain_access`** — [hosted-mode] Explain whether a current or specified principal can access the live or preview dashboard and which grant or policy matched.
 - **`app_share_get`** — [hosted-mode] Return the app share policy, active grants, revoked grants, and sharing warnings.
@@ -68,7 +70,7 @@ _51 tools registered. Each `tools/call` request must pass the tool name and the 
 ## Main Resources
 
 <!-- BEGIN: auto-resources -->
-_17 server-wide resources plus the per-app pattern below ({{app}} matches any registered app name)._
+_18 server-wide resources plus the per-app pattern below ({{app}} matches any registered app name)._
 
 ### Server-wide
 
@@ -81,6 +83,7 @@ _17 server-wide resources plus the per-app pattern below ({{app}} matches any re
 - **`dash://meta/app-authoring-guide`** — Recommended create_dash_app factory structure, prefix rules, and common mistakes.
 - **`dash://meta/app-create-from-files-schema`** — Required fields, common mistakes, and a working example for app_create_from_files.
 - **`dash://meta/app-create-schema`** — Required bundle shape, common mistakes, and a working example for app_create.
+- **`dash://meta/session-channel-guide`** — The ctx helper reference, eval semantics, prop-access tiers, truncation contract, and recipes for app_session_eval_js. Read this before running JavaScript in a live dashboard tab.
 - **`dash://meta/workflows`** — Canonical tool sequences for creating, editing, validating, and deploying hosted Dash apps.
 - **`dash://repo/desired-state`** — Authoritative live and preview deployment intent parsed from the GitOps repository.
 - **`dash://repo/drift`** — Comparison between Git desired state and the observed runtime and cache state.
@@ -110,6 +113,7 @@ _17 server-wide resources plus the per-app pattern below ({{app}} matches any re
 - **`dash://apps/{app}/permissions`** — Declared filesystem, network, and env permissions for the app.
 - **`dash://apps/{app}/revisions`** — Immutable revisions for the app.
 - **`dash://apps/{app}/routes`** — Live and preview route bindings for the app.
+- **`dash://apps/{app}/sessions`** — Browser tabs currently attached to the app, with liveness and the prop-access tier each reported. Local mode only.
 - **`dash://apps/{app}/sharing`** — Share policy, active ACL grants, revoked ACL grants, and warnings.
 - **`dash://apps/{app}/status`** — Lifecycle state, runtime mount state, revision pointers, and draft workspace state.
 <!-- END: auto-resources -->

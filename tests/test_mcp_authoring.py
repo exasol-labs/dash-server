@@ -64,8 +64,9 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     assert app_deploy_draft["inputSchema"]["properties"]["deployment_target"]["enum"] == ["live", "preview"]
     assert app_deploy_draft["inputSchema"]["properties"]["force_clean"]["default"] is False
     app_tail_logs = next(tool for tool in tools if tool["name"] == "app_tail_logs")
-    # Phase 3.5d / Phase 4f added the worker channels; assert all six rather than the legacy
-    # four so a future channel rename or addition is loud, not silent.
+    # Phase 3.5d / Phase 4f added the worker channels and the session channel added
+    # `session.commands`; assert the full list rather than the legacy four so a future
+    # channel rename or addition is loud, not silent.
     assert app_tail_logs["inputSchema"]["properties"]["channel"]["enum"] == [
         "latest",
         "build",
@@ -73,6 +74,7 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
         "health",
         "worker",
         "worker.events",
+        "session.commands",
     ]
     app_run_healthcheck = next(tool for tool in tools if tool["name"] == "app_run_healthcheck")
     assert app_run_healthcheck["inputSchema"]["properties"]["target"]["enum"] == ["live", "preview"]

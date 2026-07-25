@@ -1487,6 +1487,76 @@ class HandlersMixin:
     # ---- Phase 4f: runtime / environment tools -------------------------------------
 
 
+    def _session_channel_or_error(self, tool_name: str) -> Any:
+        """Third of the three enforcement points for the local-mode-only channel.
+
+        Injection (``apply_hosted_footer``) and the blueprint routes are the other two.
+        A missing service means the server was constructed without one at all, which is
+        reported with the same category as an explicitly disabled channel so an agent
+        has one thing to branch on.
+        """
+
+        service = getattr(self, "session_channel_service", None)
+        if service is None:
+            raise DashServerError(
+                category="session_channel_unavailable",
+                summary="This server has no browser session channel configured.",
+                details={"tool": tool_name, "reason": "not_configured"},
+            )
+        service.require_enabled(tool_name=tool_name)
+        return service
+
+
+    def _tool_app_session_eval_js(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        service = self._session_channel_or_error("app_session_eval_js")
+        name = self._require_name(arguments)
+        # Validate the app before the session lookup so a typo reports "no such app"
+        # rather than the much more confusing "no live browser session".
+        self._require_existing_app(name, tool_name="app_session_eval_js")
+        session_id = arguments.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            raise self._field_error("app_session_eval_js", "session_id", "must be a string.")
+        payload = service.dispatch(
+            app_name=name,
+            code=arguments.get("code"),
+            session_id=session_id,
+            timeout_seconds=arguments.get("timeout_seconds"),
+            tool_name="app_session_eval_js",
+        )
+        session = payload.get("session", {})
+        if payload.get("ok"):
+            text = (
+                f"Evaluated {len(str(arguments.get('code') or ''))} chars in session "
+                f"{session.get('session_id')} ({session.get('mount_path')}) in "
+                f"{payload.get('duration_ms')}ms."
+            )
+        else:
+            error = payload.get("error") or {}
+            # A page-side exception is a *result*, not a transport error: the agent needs
+            # the message and the code-relative line to fix and retry in one hop.
+            text = (
+                f"The page reported {error.get('name', 'Error')}: {error.get('message', '')}"
+                + (f" (line {error['line']} of the submitted code)" if error.get("line") else "")
+            )
+        return self._tool_result("app_session_eval_js", text=text, structured_content=payload)
+
+
+    def _tool_app_sessions_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        service = self._session_channel_or_error("app_sessions_list")
+        name = arguments.get("name")
+        if name is not None and not isinstance(name, str):
+            raise self._field_error("app_sessions_list", "name", "must be a string.")
+        payload = service.list_sessions(app_name=name.strip() if isinstance(name, str) else None)
+        return self._tool_result(
+            "app_sessions_list",
+            text=(
+                f"{payload['live_count']} live browser session(s) of "
+                f"{len(payload['sessions'])} registered."
+            ),
+            structured_content=payload,
+        )
+
+
     def _tool_app_runtime_workers_list(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         payload = self._workers_payload()
         text = (

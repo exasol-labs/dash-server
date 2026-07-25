@@ -421,6 +421,44 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
          'related_resources': ['dash://meta/workflows']},
     ),
     ToolSpec(
+        name='app_session_eval_js',
+        handler='_tool_app_session_eval_js',
+        title='Run JavaScript in a live dashboard tab',
+        description=(
+            'Evaluate ephemeral JavaScript inside the browser session a user currently has '
+            'open, and return a bounded result. This is the only way to read interaction '
+            'state — current dropdown values, dcc.Store contents, client-side Plotly '
+            'zoom/selection, what is actually visible — because Dash keeps that in the '
+            'browser, not on the server. Use the injected `ctx` helpers rather than raw DOM '
+            'work: ctx.props(ids), ctx.dom(ids), ctx.plots(), ctx.stores(), ctx.page(), '
+            'ctx.setProps(id, props), ctx.waitForIdle(ms), ctx.summarize(value). A trailing '
+            'expression is returned and `await` is allowed, so one call can set a filter, '
+            'wait for the app to settle, and report the result. Read '
+            'dash://meta/session-channel-guide for the full reference and recipes. Local '
+            'mode only; a page-side exception comes back as ok=false with the failing line '
+            'relative to the code you submitted.'
+        ),
+        input_schema='_app_session_eval_js_schema',
+        guidance={'next_step': 'Read the returned value; if a component was missing, list sessions or widen the id list.',
+         'suggested_tools': ['app_sessions_list', 'app_session_eval_js', 'app_tail_logs'],
+         'related_resources': ['dash://meta/session-channel-guide', 'dash://apps/{app}/sessions']},
+    ),
+    ToolSpec(
+        name='app_sessions_list',
+        handler='_tool_app_sessions_list',
+        title='List live dashboard browser sessions',
+        description=(
+            'List the browser tabs currently attached to hosted dashboards, newest poll '
+            'first, with liveness and the prop-access tier each page reported. Use it to '
+            'pick a session_id for app_session_eval_js, or to confirm the user actually has '
+            'the dashboard open. Local mode only.'
+        ),
+        input_schema='_app_sessions_list_schema',
+        guidance={'next_step': 'Pick a live session and evaluate JavaScript in it.',
+         'suggested_tools': ['app_session_eval_js', 'app_get_status'],
+         'related_resources': ['dash://meta/session-channel-guide']},
+    ),
+    ToolSpec(
         name='app_runtime_workers_list',
         handler='_tool_app_runtime_workers_list',
         title='List runtime workers and baselines',

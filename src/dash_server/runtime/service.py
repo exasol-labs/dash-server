@@ -56,6 +56,7 @@ class AppRuntimeService:
         worker_manager: Any | None = None,
         runtime_mode: str = "in_process",
         dependency_environment_service: Any | None = None,
+        session_channel_enabled: bool = False,
     ) -> None:
         self.registry = registry
         self.dispatcher = dispatcher
@@ -73,6 +74,10 @@ class AppRuntimeService:
         self.worker_manager = worker_manager
         self.runtime_mode = runtime_mode
         self.dependency_environment_service = dependency_environment_service
+        # Whether in-process mounts inject the browser session channel. Resolved by
+        # `app_factory` (local mode + enabled + loopback bind); the mounter passes it
+        # to `apply_hosted_footer`, which is enforcement point one of three.
+        self.session_channel_enabled = bool(session_channel_enabled)
         if self.worker_manager is not None:
             # Stop the worker whenever the dispatcher unmounts its proxy. The dispatcher's
             # observer hook lets us layer this in without subclassing or monkey-patching.

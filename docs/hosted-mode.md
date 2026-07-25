@@ -248,6 +248,33 @@ Important current behavior:
 - hosted `viewer` does not automatically get preview access
 - hosted `/mcp` is denied to anonymous users, viewer-only users, and link principals
 
+## What Hosted Mode Does Not Have: The Browser Session Channel
+
+The browser session channel — `app_session_eval_js`, which runs ephemeral JavaScript in a
+user's live dashboard tab so an agent can read current selections and what is visible —
+is **unavailable in hosted mode** and cannot be switched on.
+
+Hosted pages contain none of its client code, its routes are not registered, and the tool
+returns `session_channel_unavailable` with `reason: "hosted_mode"`. That is deliberate,
+not an oversight, for two reasons:
+
+1. **It would be surveillance of a third party.** In local mode the person looking at the
+   dashboard is the person driving the MCP client, so inspecting "the session" means
+   inspecting your own tab. In hosted mode an operator would be reading and modifying
+   another named person's live browser session, which needs a consent model this
+   implementation does not have.
+2. **`/mcp` currently authenticates from the Flask session cookie alone** — no bearer
+   token, no CSRF token, and no `Origin` / `Sec-Fetch-Site` check — and dashboards are
+   served from the same origin as the control plane. Any JavaScript running in a
+   dashboard page can therefore call `/mcp` with the viewer's cookies at the viewer's
+   role. That exposure already exists for anyone who can deploy app code or land an XSS;
+   a hosted session channel would sit directly inside it.
+
+Hardening `/mcp` against same-origin browser callers is a prerequisite for ever
+supporting the channel in hosted mode. Until then, hosted debugging uses the
+server-side signals: `app_collect_diagnostics`, `app_tail_logs`, `app_inspect_traceback`,
+and `app_run_healthcheck`.
+
 ## Public Dashboard Policy
 
 Public anonymous dashboard access is off by default.

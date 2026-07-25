@@ -272,6 +272,37 @@ class Config:
         "DASH_SERVER_ALLOW_UNSAFE_INPROCESS", False
     )
 
+    # --- Browser session channel (see plans/live-dashboard-introspection-plan.md) ---
+    # Local-mode only. `SESSION_CHANNEL_ENABLED` defaults to True but is *ignored*
+    # outside local mode and when the control plane is not bound to loopback — the
+    # channel is unauthenticated by design, so `app_factory` resolves the effective
+    # value and records why it disabled itself.
+    SESSION_CHANNEL_ENABLED: bool = _env_bool("DASH_SERVER_SESSION_CHANNEL_ENABLED", True)
+    SESSION_CHANNEL_ALLOW_NON_LOOPBACK: bool = _env_bool(
+        "DASH_SERVER_SESSION_CHANNEL_ALLOW_NON_LOOPBACK", False
+    )
+    SESSION_CHANNEL_POLL_INTERVAL_MS: int = int(
+        os.environ.get("DASH_SERVER_SESSION_CHANNEL_POLL_INTERVAL_MS", "2000")
+    )
+    SESSION_CHANNEL_ACTIVE_POLL_INTERVAL_MS: int = int(
+        os.environ.get("DASH_SERVER_SESSION_CHANNEL_ACTIVE_POLL_INTERVAL_MS", "250")
+    )
+    SESSION_CHANNEL_STALE_AFTER_MS: int = int(
+        os.environ.get("DASH_SERVER_SESSION_CHANNEL_STALE_AFTER_MS", "6000")
+    )
+    SESSION_CHANNEL_MAX_SESSIONS: int = int(
+        os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_SESSIONS", "20")
+    )
+    SESSION_CHANNEL_COMMAND_TIMEOUT_SECONDS: int = int(
+        os.environ.get("DASH_SERVER_SESSION_CHANNEL_COMMAND_TIMEOUT_SECONDS", "10")
+    )
+    SESSION_CHANNEL_MAX_CODE_BYTES: int = int(
+        os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_CODE_BYTES", "16384")
+    )
+    SESSION_CHANNEL_MAX_RESULT_BYTES: int = int(
+        os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_RESULT_BYTES", str(256 * 1024))
+    )
+
     @staticmethod
     def default_app_environments_root(instance_path: str) -> str:
         return str(Path(instance_path) / "app_envs")

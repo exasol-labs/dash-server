@@ -109,6 +109,19 @@ class ResourcesMixin:
                 ),
             ),
             (
+                "dash://meta/session-channel-guide",
+                lambda _m: self._session_channel_guide_payload(),
+                _ServerResource(
+                    "session-channel-guide",
+                    "Browser session channel guide",
+                    (
+                        "The ctx helper reference, eval semantics, prop-access tiers, truncation "
+                        "contract, and recipes for app_session_eval_js. Read this before running "
+                        "JavaScript in a live dashboard tab."
+                    ),
+                ),
+            ),
+            (
                 "dash://repo/status",
                 lambda _m: self._repo_status_payload(),
                 _ServerResource(
@@ -273,6 +286,19 @@ class ResourcesMixin:
                     "{app}-routes",
                     "{app} routes",
                     "Live and preview route bindings for the app.",
+                ),
+            ),
+            (
+                re.compile(r"dash://apps/([a-z0-9-]+)/sessions"),
+                lambda m: self._app_sessions_payload(m.group(1)),
+                _AppResource(
+                    "/sessions",
+                    "{app}-sessions",
+                    "{app} browser sessions",
+                    (
+                        "Browser tabs currently attached to the app, with liveness and the "
+                        "prop-access tier each reported. Local mode only."
+                    ),
                 ),
             ),
             (
@@ -527,6 +553,28 @@ class ResourcesMixin:
     def _repo_status_payload(self) -> dict[str, Any]:
         payload = self.git_repo_service.status()
         payload["runtime_isolation"] = self._runtime_isolation_snapshot()
+        return payload
+
+
+    def _session_channel_guide_payload(self) -> dict[str, Any]:
+        """The ctx/eval reference, with this server's live channel settings folded in.
+
+        Readable even when the channel is disabled: an agent should be able to learn
+        why it cannot use the channel from the same place it learns how to.
+        """
+
+        from dash_server.session_channel.guide import session_channel_guide
+
+        service = getattr(self, "session_channel_service", None)
+        return session_channel_guide(service.status() if service is not None else None)
+
+
+    def _app_sessions_payload(self, app_name: str) -> dict[str, Any]:
+        service = getattr(self, "session_channel_service", None)
+        if service is None:
+            return {"app": app_name, "sessions": [], "live_count": 0, "channel": {"enabled": False}}
+        payload = service.list_sessions(app_name=app_name)
+        payload["app"] = app_name
         return payload
 
 

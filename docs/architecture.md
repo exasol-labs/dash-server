@@ -60,6 +60,8 @@ The current architecture is concentrated in these modules:
 | `src/dash_server/runtime/worker_proxy.py` | Loopback WSGI proxy from the dispatcher to isolated app workers | `WorkerProxyWSGIApp` |
 | `src/dash_server_runtime/worker/` | Minimal app-serving runtime installed in per-app environments | worker package |
 | `src/dash_server/consumption/` | Registered-output contract validation, policy, shared discovery service, and read-only web adapter | `ConsumptionService` |
+| `src/dash_server/session_channel/` | Browser session channel: tab registry, single-flight command queue, control-plane routes, agent guide | `SessionChannelService` |
+| `src/dash_server/dash_apps/assets/session_channel.js` | Page half of the session channel: poll loop, `ctx` helper library, bounded serializer | clientside callback body |
 | `src/dash_server/registry/sqlite_registry.py` | Local projection store for apps, revisions, and events | `SQLiteAppRegistry` |
 | `src/dash_server/registry/models.py` | Domain models for app, revision, exposure, and event rows | `HostedApp`, `AppRevision`, `AppEvent`, `AppManifest` |
 | `src/dash_server/workspace/service.py` | Draft workspace file operations, validation, import smoke check, snapshotting | `WorkspaceService` |
@@ -877,6 +879,42 @@ sequenceDiagram
 ```
 
 This preserves the current API shape while moving canonical durability into Git.
+
+## Browser Session Channel
+
+Dash keeps interaction state in the browser: current dropdown values, `selectedData`,
+`dcc.Store` contents, client-side Plotly zoom and selection, and what is actually
+visible. None of it reaches the server unless a callback happens to carry it, so no
+amount of server-side introspection can answer "what is the user looking at right now".
+
+The session channel closes that gap by running ephemeral JavaScript in the tab the user
+already has open. It has exactly one wire verb — evaluate this code, return a bounded
+result — exposed as `app_session_eval_js`, plus a `ctx` helper library shipped inside the
+page (`ctx.props`, `ctx.dom`, `ctx.plots`, `ctx.stores`, `ctx.page`, `ctx.setProps`,
+`ctx.waitForIdle`). `dash://meta/session-channel-guide` is the agent-facing reference.
+
+Two structural choices matter architecturally:
+
+- **The queue lives in the control plane, not in the app.** App names match
+  `^[a-z][a-z0-9-]*$`, so `/__dash-server/session/...` collides with no mount prefix and
+  `DynamicPrefixDispatcher` falls through to the control-plane Flask app. The page talks
+  directly to where the MCP handler runs. The consequence is that the app process is not
+  involved at all: no second listener inside the worker, no token, no worker-protocol
+  change, and identical behavior in `in_process` and `isolated` runtime mode.
+- **Local mode only.** The channel runs unauthenticated agent-supplied JavaScript in a
+  live tab, which is unambiguously safe only where the person looking at the dashboard is
+  the person driving the MCP client. The gate is enforced three times — at injection
+  (`apply_hosted_footer` receives an explicit flag, so a hosted page contains no channel
+  code), at the route (the blueprint is not registered, and its views re-check), and at
+  the tool (a structured `session_channel_unavailable`). Local mode with a non-loopback
+  bind also disables it, because that combination would publish the channel to the
+  network.
+
+Session state is in-memory and bounded, keyed per tab via `sessionStorage`, with
+`last_poll_at` as the authoritative liveness clock: a tab that stopped polling is
+reported gone rather than answered from its last known values. Every command is appended
+to the per-app `session.commands` diagnostics channel. Like all diagnostics, that audit
+trail is deliberately **not** Git-authoritative — it is an observation, not desired state.
 
 ## Diagnostics and Health
 

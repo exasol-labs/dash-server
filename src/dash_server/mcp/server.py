@@ -26,14 +26,24 @@ from dash_server.mcp.resources import ResourcesMixin
 from dash_server.mcp.schemas import SchemasMixin
 from dash_server.mcp.tool_specs import TOOL_SPECS
 from dash_server.runtime.service import AppRuntimeService
+from dash_server.session_channel import SessionChannelService
 
 
 class MCPServer(DispatchMixin, ResourcesMixin, SchemasMixin, GuidanceMixin, HandlersMixin):
     """MCP implementation for hosted Dash control-plane tools and resources."""
 
     protocol_version = "2025-06-18"
-    # Phase 3.5d added "worker" + "worker.events" for isolated-mode workers.
-    _log_channels = ("latest", "build", "runtime", "health", "worker", "worker.events")
+    # Phase 3.5d added "worker" + "worker.events" for isolated-mode workers;
+    # "session.commands" is the browser session channel's audit trail.
+    _log_channels = (
+        "latest",
+        "build",
+        "runtime",
+        "health",
+        "worker",
+        "worker.events",
+        "session.commands",
+    )
 
     def __init__(
         self,
@@ -42,12 +52,14 @@ class MCPServer(DispatchMixin, ResourcesMixin, SchemasMixin, GuidanceMixin, Hand
         exasol_dashboard_service: ExasolDashboardService | None = None,
         email_sender: InvitationEmailSender | None = None,
         consumption_service: ConsumptionService | None = None,
+        session_channel_service: SessionChannelService | None = None,
     ) -> None:
         self.runtime_service = runtime_service
         self.git_repo_service = git_repo_service
         self.exasol_dashboard_service = exasol_dashboard_service
         self.email_sender = email_sender
         self.consumption_service = consumption_service
+        self.session_channel_service = session_channel_service
         # Handler dict is derived from the single ToolSpec table so a tool cannot
         # exist in one structure but not the others.
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {

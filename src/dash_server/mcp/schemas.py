@@ -754,3 +754,50 @@ class SchemasMixin:
             "required": ["name"],
             "additionalProperties": False,
         }
+
+
+    def _app_session_eval_js_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Hosted app name."},
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "JavaScript to evaluate in the tab. A trailing expression is returned; "
+                        "`await` is allowed. Use the `ctx` helpers (ctx.props, ctx.dom, ctx.plots, "
+                        "ctx.stores, ctx.page, ctx.setProps, ctx.waitForIdle) — read "
+                        "dash://meta/session-channel-guide first."
+                    ),
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "Target tab, or 'auto' (default) for the most-recently-polled live "
+                        "session of this app. List candidates with app_sessions_list."
+                    ),
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Wall-clock deadline for the round trip. Default 10.",
+                },
+            },
+            "required": ["name", "code"],
+            "additionalProperties": False,
+        }
+
+
+    def _app_sessions_list_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Restrict to one app. Omit to list every registered tab.",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        }
