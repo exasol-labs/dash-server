@@ -4,7 +4,24 @@ Use this skill when you need to design, generate, patch, or review Dash dashboar
 
 Companion skill:
 
-- Read [pyexasol_skill.md](pyexasol_skill.md) when you need connector-specific details, placeholder syntax, bulk I/O, metadata helpers, or low-level connection tuning.
+- Read [pyexasol_skill.md](pyexasol_skill.md) when you need connector-specific details, placeholder syntax, bulk I/O, metadata helpers, or low-level connection tuning. **Note its scope banner:** inside a hosted dashboard you never open a connection yourself.
+
+## Currency and authority
+
+Verified against `dash-server` at Dash 4.4, pyexasol 2.3, plotly 6.9, dash-ag-grid 35.2 (July 25, 2026).
+
+This file is prose and can drift. The MCP resources are generated from the running code, so **when they disagree, the resource is right**:
+
+| Read this | For |
+| --- | --- |
+| `dash://meta/app-authoring-guide` | the required `create_dash_app` factory shape |
+| `dash://exasol/help/sql-placeholders` | the full placeholder table and failure modes |
+| `dash://exasol/help/dashboard-patterns` | which scaffold pattern emits real SQL vs demo stubs |
+| `dash://exasol/help/agent-workflow` | how to combine dash-server with a separate Exasol MCP server |
+| `dash://meta/session-channel-guide` | inspecting a live dashboard in the user's browser (local mode) |
+| `dash://meta/workflows` | the canonical create → validate → build → preview → promote sequence |
+
+Read the relevant resource before generating code; use this skill for design judgment.
 
 ## What this skill is for
 
@@ -38,9 +55,92 @@ Do not use Dash callbacks to simulate a database engine.
    - `requests_pathname_prefix=url_base_pathname.rstrip("/") + "/"`,
    - `app.callback`, not global `dash.callback`.
 4. Keep secrets out of app source, manifests, Git, logs, and visible UI.
-5. Use parameterized SQL through `pyexasol`, never string concatenation for values.
-6. Return only the columns and rows the component actually needs.
-7. Prefer one good query per visual state over shipping a giant raw dataset to Python and slicing it there.
+5. **Never call `pyexasol.connect(...)` in a hosted app.** Validation rejects it outright, along with `password=` / `access_token=` / `refresh_token=` assignments and `EXA_*` env reads. Hosted apps name a profile and go through the runtime helpers; the server owns the credential.
+6. **Use pyexasol format-style placeholders, never `:name`.** `:name` is not supported and fails at runtime with `Feature not supported: host parameter specification`. See *Parameterizing SQL* below.
+7. **Check `has_error(rows)` before iterating any query result.** The helpers never raise on a data-layer failure — they return an error envelope. See *The data-layer return contract* below.
+8. Return only the columns and rows the component actually needs.
+9. Prefer one good query per visual state over shipping a giant raw dataset to Python and slicing it there.
+
+## Start from a scaffold, not a blank file
+
+Hand-writing the four files is the slow path and gets the factory contract subtly wrong. Prefer, in this order:
+
+1. **`app_scaffold_from_schema`** — introspects the catalog, picks analytically useful columns and date columns, and emits **catalog-backed SQL** bound to a real schema. This is the right default when the user has a schema in mind.
+2. **`app_create_exasol_dashboard`** with `pattern="analytics-hub"` — the default multi-tab scaffold (system health, query history, and a business placeholder ready for your SQL).
+3. **`app_create_exasol_dashboard`** with `pattern="overview"` or `"kpi-trend"` — **demo-only.** Their generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers. Use them to look at layout shape, never as a starting point for real data. Replace every query before showing the result to a user.
+4. `app_create_from_files` — only when the dashboard genuinely does not fit a pattern.
+
+Check `dash://exasol/help/dashboard-patterns` for the current pattern list and which ones emit real SQL; the `sql_kind` field on each pattern says `real` or `demo_placeholder`.
+
+## The data-layer return contract
+
+This is the single most common way agent-generated Exasol dashboards go wrong, because the failure is silent.
+
+`query_rows` / `query_one` / `query_scalar` (and the generated `load_rows` / `load_row` / `load_scalar` wrappers) **never raise** when a query fails. They return a single-row envelope instead:
+
+```python
+[{"_error": "<message>"}]     # from load_rows / query_rows
+{"_error": "<message>"}       # from load_row / query_one
+```
+
+So this is a bug, and it renders the error message as if it were data:
+
+```python
+rows = load_rows(server, metadata, __file__, "queries/trend.sql")
+figure = px.line(rows, x="DAY", y="REVENUE")   # WRONG: no error check
+```
+
+Always branch first:
+
+```python
+from dash_server_runtime import has_error   # or the generated helper of the same name
+
+rows = load_rows(server, metadata, __file__, "queries/trend.sql")
+if has_error(rows):
+    return render_error_panel(rows[0]["_error"])
+# rows is now safe to iterate
+```
+
+Why the contract is shaped this way: a raising helper would turn one bad query into a Dash callback exception and a blank component, with the reason buried in server logs. The envelope keeps the callback path stable and puts the message where the user and the agent can both see it.
+
+Related platform behavior worth knowing:
+
+- Data-layer failures are recorded and surface as the `data_layer` probe in `app_run_healthcheck` and on `dash://apps/{name}/errors`.
+- After you fix SQL in place without promoting a new revision, call `app_acknowledge_data_layer_errors` to reset that probe. Otherwise the healthcheck keeps reporting the failure you already fixed.
+
+## Parameterizing SQL
+
+`dash-server` executes `queries/*.sql` through pyexasol's **client-side format-style** placeholders. `:name` bind parameters are not supported at all.
+
+| Syntax | Use for | Renders as |
+| --- | --- | --- |
+| `{x}` or `{x!s}` | string literal | `'EMEA'` (single-quoted) |
+| `{x!d}` | validated integer/decimal | `1234`, unquoted |
+| `{x!f}` | validated float | `1.23`, unquoted |
+| `{x!i}` | safe identifier | `SALES` |
+| `{x!q}` | quoted identifier — use for reserved words | `"DAY"` |
+| `{x!r}` | raw SQL fragment | verbatim; **never** with user input |
+
+```sql
+-- queries/trend.sql
+SELECT TRUNC(order_ts, 'DD') AS DAY, SUM(revenue) AS REVENUE
+FROM SALES
+WHERE order_ts >= ADD_DAYS(CURRENT_TIMESTAMP, -{days!d})
+  AND region = {region!s}
+GROUP BY 1 ORDER BY 1
+```
+
+```python
+rows = load_rows(server, metadata, __file__, "queries/trend.sql",
+                 params={"days": 30, "region": "EMEA"})
+```
+
+Two traps:
+
+- **An empty Python string renders as SQL `NULL`**, so `region = {region!s}` with `region=""` matches nothing rather than matching empty-string rows. Branch on empty/None in Python instead of passing it through.
+- **Declared parameters and used placeholders must match exactly.** Validation fails a registered output whose SQL uses an undeclared parameter *or* declares one the SQL never uses.
+
+`dash://exasol/help/sql-placeholders` has the full table and the rendered examples.
 
 ## Default architecture for an Exasol-backed Dash app
 
@@ -293,6 +393,22 @@ If the query is slow or expensive:
 - cache by filter arguments
 - or use Dash background callbacks when the UX truly benefits
 
+### Where a cache actually lives (read before relying on one)
+
+A module-level dict or `functools.lru_cache` in a hosted app is **not** a durable cache, and how not-durable depends on the server's runtime mode:
+
+- **`isolated` mode** (the hosted default): the app runs in a per-app worker process. The cache is per worker, so it is empty after every worker start — and workers are **idle-stopped after `APP_WORKER_IDLE_STOP_SECONDS` (default 600s)** and re-spawned on the next request. A dashboard nobody has opened for ten minutes starts cold. Worker restarts (crash, `app_runtime_workers_restart`, promote) clear it too.
+- **`in_process` mode** (the local-dev default): the cache lives in the control-plane process and survives as long as the server does — which makes a cache look far more effective in local development than it will be in hosted mode.
+
+Consequences for design:
+
+- Treat an in-process cache as a *within-session* optimization for repeated identical filters, never as a way to make first paint fast.
+- Make first paint fast with SQL and grain, not with a warm cache.
+- Never cache anything correctness-critical or user-specific in module state: in `in_process` mode all users of the app share that process.
+- Size caches explicitly (`lru_cache(maxsize=…)`). An unbounded dict in a long-lived worker is a memory leak; worker RSS is visible on `dash://runtime/workers` (isolated mode only — that resource errors in `in_process` mode, which is the local default).
+
+See `docs/runtime-modes.md` for the full matrix.
+
 ### Good refresh patterns
 
 - explicit `Refresh` button for operational dashboards
@@ -367,7 +483,9 @@ Good use cases:
 
 ## Grid guidance
 
-For new dashboards, prefer `dash-ag-grid`.
+For new dashboards, prefer `dash-ag-grid` (verified available at 35.2). `dash.dash_table` still imports under Dash 4.4, but AG Grid is the maintained high-performance path.
+
+**Declare it in `requirements.txt`.** Under `per_app` dependency isolation each app gets its own environment built from its own requirements, so an undeclared `dash_ag_grid` import fails the import smoke check at validation time rather than at runtime. The same applies to `pandas`, `plotly` extras, and anything else beyond the base runtime.
 
 Default AG Grid choices:
 
@@ -402,20 +520,67 @@ Use Python for:
 - light display formatting
 - interaction wiring
 
+## Debugging a dashboard that is already running
+
+Do not debug by adding `print()`, rebuilding, and promoting. That costs several round-trips and puts a junk revision in permanent history. Use the platform's inspection surface instead.
+
+### Server-side signals
+
+- `app_run_healthcheck` — route, layout, dependency, asset, and `data_layer` probes; in isolated mode also `worker_alive` and `worker_http`.
+- `app_collect_diagnostics` / `app_inspect_traceback` — captured errors with parsed tracebacks and attribution.
+- `app_tail_logs` — channels: `latest`, `build`, `runtime`, `health`, `worker`, `worker.events`, `session.commands`.
+- `dash://apps/{name}/errors` and `/callback-failures` — the failure ledgers, including the `_error` envelopes described above.
+
+### The user's live browser session (local mode only)
+
+Dash keeps interaction state in the browser, so no server-side signal can tell you what the user has selected. `app_session_eval_js` runs ephemeral JavaScript in their open tab:
+
+```js
+// what is selected right now, including components no callback reads
+ctx.props(['region-filter', 'date-range', 'metric-toggle'])
+```
+
+```js
+// chart looks blank: is it an empty trace, a client-side exception, or scrolled out of view?
+({plots: ctx.plots(), chart: ctx.dom(['revenue-chart']).nodes['revenue-chart']})
+```
+
+```js
+// what happens if the region changes — sets the real prop and lets Dash react
+await ctx.setProps('region-filter', {value: ['APAC']});
+const fired = await ctx.waitForIdle(3000);
+({fired, plots: ctx.plots()})
+```
+
+Use `app_sessions_list` to find the tab. Read `dash://meta/session-channel-guide` for the full `ctx` reference before writing the code — it is the API surface, and guessing a helper name costs a round trip. This is unavailable in hosted mode; there, fall back to the server-side signals above.
+
+## Registered outputs (governed export)
+
+If the user wants to download, schedule, or share a dataset or view from the dashboard, do not hand-roll a CSV button. Declare it in the manifest's `consumption.outputs` contract and let the platform own execution, limits, and audit:
+
+- `kind: "dataset"` — sourced from a `queries/*.sql` file, exported as `csv` / `xlsx`.
+- `kind: "view"` — sourced from an app-relative Dash route, rendered as `pdf` / `png` / `pptx`.
+- Each output declares `classification` (`public` … `restricted`), a JSON-Schema `parameters` block, and optional `limits` (`max_rows`, `max_bytes`).
+
+Two rules that trip up generated manifests: dataset sources must be `queries/*.sql` under a declared Exasol datasource alias, and the SQL's placeholders must match the declared `parameters` **exactly** in both directions. Then use `app_outputs_list` / `app_export_create` / `export_get`, and see `docs/consumption.md`.
+
 ## Review checklist for agent-generated Exasol dashboards
 
 Before shipping, check:
 
 1. Does every query run only inside callbacks or explicit refresh helpers?
-2. Are all user-driven values parameterized?
-3. Is Exasol doing the aggregation instead of Python?
-4. Are returned result sets small enough for the target component?
-5. Does each visual answer a distinct question?
-6. Is the default page fast enough on first load?
-7. Are slow outputs wrapped with loading feedback?
-8. Are secrets absent from source, manifests, logs, and visible text?
-9. If using `dash-server`, does `create_dash_app()` follow the required hosted pattern?
-10. Would a human be able to patch the SQL and callback flow without reverse-engineering magic?
+2. Are all user-driven values parameterized with `{x!s}` / `{x!d}` style placeholders — and no `:name` anywhere?
+3. **Does every query result go through `has_error(...)` before it is iterated or rendered?**
+4. Is Exasol doing the aggregation instead of Python?
+5. Are returned result sets small enough for the target component?
+6. Does each visual answer a distinct question?
+7. Is the default page fast enough on first load *without* a warm cache?
+8. Are slow outputs wrapped with loading feedback?
+9. Are secrets absent from source, manifests, logs, and visible text — and is there no `pyexasol.connect` call anywhere in the app?
+10. Does `create_dash_app()` follow the required hosted pattern (`dash://meta/app-authoring-guide`)?
+11. Is every third-party import declared in `requirements.txt`?
+12. If the scaffold came from `overview` or `kpi-trend`, has every `FROM DUAL` demo query been replaced with real SQL?
+13. Would a human be able to patch the SQL and callback flow without reverse-engineering magic?
 
 ## Default build recipe
 

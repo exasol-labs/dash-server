@@ -29,6 +29,7 @@ from dash_server.dash_apps.branding import apply_hosted_footer
 from dash_server.dash_apps.callback_isolation import finalize_dash_app_callbacks
 from dash_server.exasol.runtime import (
     execute_profile_query,
+    has_error,
     query_one,
     query_rows,
     query_scalar,
@@ -39,6 +40,10 @@ __all__ = [
     "apply_hosted_footer",
     "execute_profile_query",
     "finalize_dash_app_callbacks",
+    # `has_error` belongs to the same contract as the query helpers: they never raise on a
+    # data-layer failure, they return `[{"_error": ...}]`. Without it exported here, the
+    # documented-preferred import path could not supply the check that contract requires.
+    "has_error",
     "query_one",
     "query_rows",
     "query_scalar",

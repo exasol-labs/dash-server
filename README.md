@@ -270,6 +270,22 @@ For local Claude Desktop, you can bridge that HTTP endpoint with `mcp-remote`:
 - Architecture: [docs/architecture.md](docs/architecture.md)
 - Runtime modes — per-app runtime isolation (dependency environments + process isolation): [docs/runtime-modes.md](docs/runtime-modes.md)
 
+## Agent Skills
+
+Design guidance for the agent doing the building, rather than for the operator running the
+server. Load the relevant one into your agent's context before it authors a dashboard:
+
+- Exasol-backed Dash dashboards — architecture, chart and SQL patterns, the data-layer
+  return contract, caching under runtime isolation, and a review checklist:
+  [skills/exasol_dash_skill.md](skills/exasol_dash_skill.md)
+- PyExasol itself — placeholders, bulk export/import, metadata helpers, parallel transport.
+  Standalone-code guidance; note its scope banner, because hosted apps never open their own
+  connection: [skills/pyexasol_skill.md](skills/pyexasol_skill.md)
+
+Both are prose and can drift. The MCP resources (`dash://meta/app-authoring-guide`,
+`dash://exasol/help/*`, `dash://meta/session-channel-guide`) are generated from the running
+code, so **when a skill and a resource disagree, the resource is right.**
+
 ## Running Tests
 
 ```bash

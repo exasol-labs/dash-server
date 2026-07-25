@@ -2,6 +2,29 @@
 
 Use this skill when you need to write Python code that talks directly to Exasol through `pyexasol`, especially when you care about performance, bulk data transfer, Exasol-specific SQL formatting, metadata inspection, UDF log capture, or multi-process parallel I/O.
 
+Verified against pyexasol 2.3 (July 25, 2026).
+
+## Scope: do not apply the connection patterns inside a hosted dashboard
+
+This skill covers **standalone** Python that owns its own Exasol connection: scripts, notebooks, ETL, authoring-time exploration.
+
+**Inside a `dash-server` hosted app, you never open a connection.** The server owns the profile and the secret; the app names a profile and calls the runtime helpers. Every connection pattern below — including the canonical one — would be *rejected by validation* in a hosted app, which fails on:
+
+- any `pyexasol.connect(...)` call in app source,
+- `password=` / `access_token=` / `refresh_token=` / `saas_pat=` assignments,
+- reads of `EXA_`/`EXASOL_`-prefixed credential env vars (`_DSN`, `_USER`, `_PASS`, `_PASSWORD`, `_PAT`, `_ACCESS_TOKEN`, `_REFRESH_TOKEN`),
+- credential keys (`dsn`, `user`, `password`, `secret`, …) embedded in the manifest's `data_sources.primary` instead of a `profile` reference.
+
+That is a deliberate boundary, not an obstacle to work around: it is what keeps credentials out of app source, manifests, Git, and prompts.
+
+For hosted dashboards read [exasol_dash_skill.md](exasol_dash_skill.md) and use:
+
+```python
+from dash_server_runtime import has_error, query_one, query_rows, query_scalar
+```
+
+What is still worth reading here for hosted work: the **placeholder formatter** (the same syntax `queries/*.sql` uses), Exasol SQL and type guidance, and `.meta` helpers for authoring-time schema exploration.
+
 ## What PyExasol is best at
 
 - Direct Exasol access from Python with low overhead over the Exasol WebSocket protocol.
@@ -43,13 +66,17 @@ pip install pyexasol[ujson]
 
 ## Canonical connection pattern
 
+Standalone code only — see the scope banner. Read credentials from the environment or a secret store rather than literals, even in throwaway scripts.
+
 ```python
+import os
+
 import pyexasol
 
 with pyexasol.connect(
-    dsn="host:8563",
-    user="my_user",
-    password="my_password",
+    dsn=os.environ["EXA_DSN"],
+    user=os.environ["EXA_USER"],
+    password=os.environ["EXA_PASSWORD"],
     schema="MY_SCHEMA",
     compression=True,
 ) as C:
@@ -222,6 +249,10 @@ for row in stmt:
 ## SQL formatting: use PyExasol placeholders
 
 PyExasol has an Exasol-aware formatter. Prefer it to manual string interpolation.
+
+**These are client-side format-style placeholders, not driver bind parameters.** `:name` style is not supported and fails with `Feature not supported: host parameter specification`. This is the same syntax `dash-server` uses in `queries/*.sql`.
+
+Also note: an empty Python string passed to `{x!s}` renders as SQL `NULL`, so `col = {x!s}` with `x=""` matches nothing rather than matching empty-string rows. Branch on empty/None in Python.
 
 ### Placeholder types
 
@@ -519,7 +550,7 @@ This is one of PyExasol’s most important advanced capabilities.
 
 - One PyExasol connection == one Exasol session.
 - One session can run only one SQL query at a time.
-- `threadsafety == 1`.
+- `ExaConnection.threadsafety == 1` (DBAPI level 1: the module is thread-safe, connections are not). Note there is no `pyexasol.threadsafety` module attribute — it lives on the connection class and on `pyexasol.db2`.
 - Do **not** share a connection across threads.
 - For real parallelism, use **multiple processes**.
 
