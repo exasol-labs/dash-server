@@ -1,0 +1,40 @@
+{#
+  Shared shell and styling for the consumption pages. Child templates provide
+  the page title, any extra <head> markup, the per-page main column width, the
+  page-specific style rules, and the body. The design tokens plus the shell
+  rules (body/main/a/code) live here once so the three pages no longer each
+  carry their own copy.
+#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% block head_extra %}{% endblock %}
+    <title>{% block title %}{% endblock %}</title>
+    <style>
+      :root {
+        --page: #f5efe3;
+        --panel: #fffaf2;
+        --border: rgba(73, 52, 33, 0.18);
+        --text: #211b17;
+        --muted: #6b5d52;
+        --accent: #0f766e;
+        --main-width: {% block main_width %}1000px{% endblock %};
+      }
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--text);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+      main { width: min(var(--main-width), calc(100vw - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      a { color: var(--accent); font-weight: 700; }
+      code { overflow-wrap: anywhere; }
+{% block styles %}{% endblock %}
+    </style>
+  </head>
+  <body>
+{% block body %}{% endblock %}
+  </body>
+</html>

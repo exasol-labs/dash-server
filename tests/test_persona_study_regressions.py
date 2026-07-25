@@ -15,12 +15,11 @@ import pytest
 from dash_server.app_factory import create_app
 from dash_server.gitops.repo_service import GitRepoService
 
-pytestmark = pytest.mark.slow
-
 
 # -- BUG-001: instance-path override -----------------------------------------
 
 
+@pytest.mark.slow
 def test_bug_001_instance_path_via_test_config(tmp_path: Path) -> None:
     """`create_app({"INSTANCE_PATH": d})` lands all derived state under `d`."""
 
@@ -35,6 +34,7 @@ def test_bug_001_instance_path_via_test_config(tmp_path: Path) -> None:
     assert (instance_dir / "artifacts").is_dir()
 
 
+@pytest.mark.slow
 def test_bug_001_instance_path_via_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`DASH_SERVER_INSTANCE_PATH` is honored when no test_config override is set."""
 
@@ -45,6 +45,7 @@ def test_bug_001_instance_path_via_env_var(tmp_path: Path, monkeypatch: pytest.M
     assert (instance_dir / "dash_server.sqlite3").exists()
 
 
+@pytest.mark.slow
 def test_bug_001_cli_flag_threads_into_create_app() -> None:
     """`dash-server --instance-path` is wired through argparse → create_app.
 
@@ -75,6 +76,7 @@ def test_bug_001_cli_accepts_port_from_env(monkeypatch: pytest.MonkeyPatch) -> N
 # -- BUG-016: idempotent GitOps backfill -------------------------------------
 
 
+@pytest.mark.slow
 def test_bug_016_commit_managed_update_no_op_when_index_is_empty(tmp_path: Path) -> None:
     """`_commit_managed_update` must not raise when `git add` leaves the index empty.
 
@@ -141,6 +143,7 @@ def test_bug_016_commit_managed_update_no_op_when_index_is_empty(tmp_path: Path)
     assert again is True
 
 
+@pytest.mark.slow
 def test_bug_016_app_factory_boots_even_when_backfill_is_a_noop(tmp_path: Path) -> None:
     """`create_app` succeeds when the GitOps repo already has the backfill content.
 
@@ -163,6 +166,7 @@ def test_bug_016_app_factory_boots_even_when_backfill_is_a_noop(tmp_path: Path) 
 # -- BUG sub-bug: deduped related_resources --------------------------------
 
 
+@pytest.mark.slow
 def test_phase0_related_resources_deduped_in_error_guidance(tmp_path: Path) -> None:
     """A tool_validation_error whose `help_resource` is the default `workflows` URI
     must not produce `["dash://meta/workflows", "dash://meta/workflows"]`.
@@ -195,6 +199,7 @@ def test_phase0_related_resources_deduped_in_error_guidance(tmp_path: Path) -> N
 # -- Phase 1 — diagnostics coherence cluster --------------------------------
 
 
+@pytest.mark.slow
 def test_bug_002_004_sql_smoke_probe_appears_in_healthcheck(tmp_path: Path) -> None:
     """`app_run_healthcheck` includes a `sql_smoke` probe.
 
@@ -214,6 +219,7 @@ def test_bug_002_004_sql_smoke_probe_appears_in_healthcheck(tmp_path: Path) -> N
     )
 
 
+@pytest.mark.slow
 def test_bug_004_collect_diagnostics_surfaces_latest_data_layer_error(tmp_path: Path) -> None:
     """`app_collect_diagnostics` returns `latest_data_layer_error` so the tool and the
     `dash://apps/{name}/errors` resource never disagree.
@@ -252,6 +258,7 @@ def test_bug_004_collect_diagnostics_surfaces_latest_data_layer_error(tmp_path: 
     ), payload["suggested_recovery_steps"]
 
 
+@pytest.mark.slow
 def test_bug_005_data_layer_probe_filters_by_revision_and_watermark(tmp_path: Path) -> None:
     """Old-revision data-layer errors don't keep the `data_layer` probe red after a
     promote. The new `app_acknowledge_data_layer_errors` tool clears stuck probes
@@ -387,6 +394,7 @@ def test_bug_009_kpi_trend_scaffold_quotes_reserved_value_alias() -> None:
             assert "AS VALUE " not in sql and "AS VALUE\n" not in sql, sql
 
 
+@pytest.mark.slow
 def test_bug_010_app_create_from_files_forwards_data_sources(tmp_path: Path) -> None:
     """`app_create_from_files` writes a manifest with `data_sources` populated when
     the caller supplies one. Pre-fix the argument was silently dropped and every
@@ -466,6 +474,7 @@ def _put_broken_python(server: Any, name: str) -> None:
     )
 
 
+@pytest.mark.slow
 def test_bug_013_app_validate_sets_iserror_true_on_failure(tmp_path: Path) -> None:
     """`app_validate` must set `result.isError = true` when validation fails so
     clients routing on `isError` correctly classify the result."""
@@ -488,6 +497,7 @@ def test_bug_013_app_validate_sets_iserror_true_on_failure(tmp_path: Path) -> No
     assert structured["error"]["category"] == "workspace_validation_error"
 
 
+@pytest.mark.slow
 def test_bug_014_app_validate_returns_top_level_summary(tmp_path: Path) -> None:
     """Successful and failing `app_validate` runs both expose
     `validation_summary.{valid, error_count, warning_count}` so agents can branch
@@ -511,6 +521,7 @@ def test_bug_014_app_validate_returns_top_level_summary(tmp_path: Path) -> None:
     assert "warning_count" in summary
 
 
+@pytest.mark.slow
 def test_bug_011_exasol_profile_create_local_default_no_overwrite(tmp_path: Path) -> None:
     """Calling `exasol_profile_create_local` twice with the same name and no
     `overwrite` flag fails the second call rather than silently rewriting."""

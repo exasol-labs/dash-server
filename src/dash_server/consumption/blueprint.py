@@ -63,12 +63,14 @@ def create_consumption_blueprint() -> Blueprint:
     def create_export(name: str):
         service = current_app.extensions["consumption_service"]
         auth_context = current_auth_context()
+        output_id = request.form.get("output_id", "")
         try:
             service.verify_csrf_token(request.form.get("_csrf", ""), auth_context, f"create:{name}")
-            parameters = _form_parameters(request.form)
+            parameter_types = _output_parameter_types(service, name, output_id, auth_context)
+            parameters = _form_parameters(request.form, parameter_types)
             payload = service.create_export(
                 name,
-                request.form.get("output_id", ""),
+                output_id,
                 request.form.get("format", "csv"),
                 parameters,
                 auth_context,
@@ -130,14 +132,33 @@ def create_consumption_blueprint() -> Blueprint:
     return blueprint
 
 
-def _form_parameters(form: Any) -> dict[str, Any]:
+def _output_parameter_types(
+    service: Any,
+    app_name: str,
+    output_id: str,
+    auth_context: Any,
+) -> dict[str, str]:
+    """Resolve each declared parameter's type from the server-side output contract.
+
+    The form is submitted by the client, so the parameter *types* must come from
+    the registered output schema rather than any client-supplied hint. Undeclared
+    parameters map to no type and are left uncoerced (the service's schema
+    validation rejects them via additionalProperties=false).
+    """
+
+    payload = service.get_output(app_name, output_id, auth_context)
+    properties = payload["output"].get("parameters", {}).get("properties", {})
+    return {name: schema.get("type", "string") for name, schema in properties.items()}
+
+
+def _form_parameters(form: Any, parameter_types: dict[str, str]) -> dict[str, Any]:
     parameters: dict[str, Any] = {}
     for key in form:
         if not key.startswith("param__"):
             continue
         name = key.removeprefix("param__")
         raw_value = form.get(key)
-        type_name = form.get(f"type__{name}", "string")
+        type_name = parameter_types.get(name, "string")
         if raw_value in (None, ""):
             continue
         if type_name == "integer":

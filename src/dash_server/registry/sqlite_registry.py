@@ -10,7 +10,18 @@ from typing import Any
 from dash_server.db import ensure_column, open_connection
 from dash_server.timestamps import now_iso
 
-from .models import AppEvent, AppManifest, AppRevision, HostedApp
+from .models import (
+    AclEntry,
+    AppEvent,
+    AppManifest,
+    AppRevision,
+    Group,
+    HostedApp,
+    Invitation,
+    RegistryUser,
+    ShareLink,
+    SharePolicy,
+)
 
 # Numbered registry schema ledger. The single version-1 step folds every
 # previously guarded ``_ensure_column`` ALTER into one idempotent set recorded
@@ -41,6 +52,13 @@ class SQLiteAppRegistry:
         "network": {"mode": "inherit"},
         "env": {"mode": "inherit"},
     }
+
+    # The only ``apps.*`` columns that may be interpolated into
+    # ``get_revision_by_pointer``'s JOIN. Guards the one interpolated column name
+    # against arbitrary SQL identifiers.
+    _REVISION_POINTER_COLUMNS = frozenset(
+        {"current_revision_id", "preview_revision_id", "rollback_revision_id"}
+    )
 
     def __init__(self, db_path: str) -> None:
         self.db_path = Path(db_path)
@@ -393,26 +411,7 @@ class SQLiteAppRegistry:
     def get_revision_by_number(self, app_name: str, revision_number: int) -> AppRevision | None:
         with self._connect() as connection:
             row = connection.execute(
-                """
-                SELECT
-                    id,
-                    app_name,
-                    revision_number,
-                    manifest_json,
-                    bundle_json,
-                    lifecycle_state,
-                    artifact_path,
-                    source_hash,
-                    dependency_lock_hash,
-                    commit_sha,
-                    git_tag,
-                    git_branch,
-                    release_manifest_path,
-                    rollout_metadata_json,
-                    created_at
-                FROM app_revisions
-                WHERE app_name = ? AND revision_number = ?
-                """,
+                self._revision_select_sql("WHERE app_name = ? AND revision_number = ?"),
                 (app_name, revision_number),
             ).fetchone()
         return self._row_to_revision(row) if row else None
@@ -420,27 +419,7 @@ class SQLiteAppRegistry:
     def list_revisions(self, app_name: str) -> list[AppRevision]:
         with self._connect() as connection:
             rows = connection.execute(
-                """
-                SELECT
-                    id,
-                    app_name,
-                    revision_number,
-                    manifest_json,
-                    bundle_json,
-                    lifecycle_state,
-                    artifact_path,
-                    source_hash,
-                    dependency_lock_hash,
-                    commit_sha,
-                    git_tag,
-                    git_branch,
-                    release_manifest_path,
-                    rollout_metadata_json,
-                    created_at
-                FROM app_revisions
-                WHERE app_name = ?
-                ORDER BY revision_number
-                """,
+                self._revision_select_sql("WHERE app_name = ? ORDER BY revision_number"),
                 (app_name,),
             ).fetchall()
         return [self._row_to_revision(row) for row in rows]
@@ -448,17 +427,12 @@ class SQLiteAppRegistry:
     def list_events(self, app_name: str) -> list[AppEvent]:
         with self._connect() as connection:
             rows = connection.execute(
-                """
-                SELECT id, app_name, event_type, revision_id, data_json, created_at
-                FROM app_events
-                WHERE app_name = ?
-                ORDER BY id
-                """,
+                self._event_select_sql("WHERE app_name = ? ORDER BY id"),
                 (app_name,),
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
-    def upsert_principal_user(self, principal: Any, *, user_type: str = "internal") -> dict[str, Any] | None:
+    def upsert_principal_user(self, principal: Any, *, user_type: str = "internal") -> RegistryUser | None:
         principal_id = getattr(principal, "principal_id", None)
         issuer = getattr(principal, "issuer", None)
         subject = getattr(principal, "subject", None)
@@ -516,7 +490,7 @@ class SQLiteAppRegistry:
             connection.commit()
         return self.get_user_by_principal_id(str(principal_id))
 
-    def get_user_by_principal_id(self, principal_id: str) -> dict[str, Any] | None:
+    def get_user_by_principal_id(self, principal_id: str) -> RegistryUser | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -549,7 +523,7 @@ class SQLiteAppRegistry:
         display_name: str | None = None,
         source: str = "local",
         email: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> Group:
         with self._connect() as connection:
             connection.execute(
                 """
@@ -577,7 +551,7 @@ class SQLiteAppRegistry:
         assert group is not None
         return group
 
-    def get_share_policy(self, app_name: str) -> dict[str, Any]:
+    def get_share_policy(self, app_name: str) -> SharePolicy:
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -598,17 +572,17 @@ class SQLiteAppRegistry:
             ).fetchone()
         if row:
             return self._row_to_share_policy(row)
-        return {
-            "app_name": app_name,
-            "link_scope": "restricted",
-            "allowed_domain": None,
-            "default_link_role": "viewer",
-            "allow_preview_link": False,
-            "public_catalog_visible": False,
-            "external_sharing_enabled": False,
-            "updated_by_principal_id": None,
-            "updated_at": None,
-        }
+        return SharePolicy(
+            app_name=app_name,
+            link_scope="restricted",
+            allowed_domain=None,
+            default_link_role="viewer",
+            allow_preview_link=False,
+            public_catalog_visible=False,
+            external_sharing_enabled=False,
+            updated_by_principal_id=None,
+            updated_at=None,
+        )
 
     def upsert_share_policy(
         self,
@@ -621,7 +595,7 @@ class SQLiteAppRegistry:
         public_catalog_visible: bool = False,
         external_sharing_enabled: bool = False,
         updated_by_principal_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> SharePolicy:
         with self._connect() as connection:
             connection.execute(
                 """
@@ -671,7 +645,7 @@ class SQLiteAppRegistry:
         scope: str = "live",
         created_by_principal_id: str | None = None,
         expires_at: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> AclEntry:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -702,7 +676,7 @@ class SQLiteAppRegistry:
         assert grant is not None
         return grant
 
-    def get_acl_entry(self, grant_id: int) -> dict[str, Any] | None:
+    def get_acl_entry(self, grant_id: int) -> AclEntry | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -724,7 +698,7 @@ class SQLiteAppRegistry:
             ).fetchone()
         return self._row_to_acl_entry(row) if row else None
 
-    def list_acl_entries(self, app_name: str, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+    def list_acl_entries(self, app_name: str, *, include_revoked: bool = False) -> list[AclEntry]:
         where = "WHERE app_name = ?"
         if not include_revoked:
             where += " AND revoked_at IS NULL"
@@ -757,7 +731,7 @@ class SQLiteAppRegistry:
         grant_id: int | None = None,
         principal_type: str | None = None,
         principal_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[AclEntry]:
         clauses = ["app_name = ?", "revoked_at IS NULL"]
         values: list[Any] = [app_name]
         if grant_id is not None:
@@ -820,7 +794,7 @@ class SQLiteAppRegistry:
         recipient_email: str | None = None,
         recipient_note: str | None = None,
         created_by_principal_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> ShareLink:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -855,7 +829,7 @@ class SQLiteAppRegistry:
         assert link is not None
         return link
 
-    def get_share_link(self, link_id: int) -> dict[str, Any] | None:
+    def get_share_link(self, link_id: int) -> ShareLink | None:
         with self._connect() as connection:
             row = connection.execute(
                 self._share_link_select_sql("WHERE id = ?"),
@@ -863,7 +837,7 @@ class SQLiteAppRegistry:
             ).fetchone()
         return self._row_to_share_link(row) if row else None
 
-    def get_share_link_by_hash(self, token_hash: str) -> dict[str, Any] | None:
+    def get_share_link_by_hash(self, token_hash: str) -> ShareLink | None:
         with self._connect() as connection:
             row = connection.execute(
                 self._share_link_select_sql("WHERE token_hash = ?"),
@@ -871,7 +845,7 @@ class SQLiteAppRegistry:
             ).fetchone()
         return self._row_to_share_link(row) if row else None
 
-    def list_share_links(self, app_name: str, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+    def list_share_links(self, app_name: str, *, include_revoked: bool = False) -> list[ShareLink]:
         where = "WHERE app_name = ?"
         if not include_revoked:
             where += " AND revoked_at IS NULL"
@@ -882,7 +856,7 @@ class SQLiteAppRegistry:
             ).fetchall()
         return [self._row_to_share_link(row) for row in rows]
 
-    def mark_share_link_redeemed(self, link_id: int) -> dict[str, Any] | None:
+    def mark_share_link_redeemed(self, link_id: int) -> ShareLink | None:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -900,7 +874,7 @@ class SQLiteAppRegistry:
                 return None
         return self.get_share_link(link_id)
 
-    def revoke_share_link(self, link_id: int) -> dict[str, Any] | None:
+    def revoke_share_link(self, link_id: int) -> ShareLink | None:
         link = self.get_share_link(link_id)
         if link is None:
             return None
@@ -915,7 +889,7 @@ class SQLiteAppRegistry:
             )
             connection.commit()
         self.revoke_app_access(
-            link["app_name"],
+            link.app_name,
             principal_type="link",
             principal_id=f"share_link:{link_id}",
         )
@@ -934,7 +908,7 @@ class SQLiteAppRegistry:
         message: str | None = None,
         delivery_status: str = "pending_manual_delivery",
         created_by_principal_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> Invitation:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -971,7 +945,7 @@ class SQLiteAppRegistry:
         assert invitation is not None
         return invitation
 
-    def get_invitation(self, invitation_id: int) -> dict[str, Any] | None:
+    def get_invitation(self, invitation_id: int) -> Invitation | None:
         with self._connect() as connection:
             row = connection.execute(
                 self._invitation_select_sql("WHERE id = ?"),
@@ -979,7 +953,7 @@ class SQLiteAppRegistry:
             ).fetchone()
         return self._row_to_invitation(row) if row else None
 
-    def get_invitation_by_hash(self, token_hash: str) -> dict[str, Any] | None:
+    def get_invitation_by_hash(self, token_hash: str) -> Invitation | None:
         with self._connect() as connection:
             row = connection.execute(
                 self._invitation_select_sql("WHERE token_hash = ?"),
@@ -987,7 +961,7 @@ class SQLiteAppRegistry:
             ).fetchone()
         return self._row_to_invitation(row) if row else None
 
-    def list_invitations(self, app_name: str, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+    def list_invitations(self, app_name: str, *, include_revoked: bool = False) -> list[Invitation]:
         where = "WHERE app_name = ?"
         if not include_revoked:
             where += " AND revoked_at IS NULL"
@@ -1003,7 +977,7 @@ class SQLiteAppRegistry:
         invitation_id: int,
         *,
         accepted_principal_id: str,
-    ) -> dict[str, Any] | None:
+    ) -> Invitation | None:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -1023,7 +997,7 @@ class SQLiteAppRegistry:
                 return None
         return self.get_invitation(invitation_id)
 
-    def attach_invitation_grant(self, invitation_id: int, grant_id: int) -> dict[str, Any] | None:
+    def attach_invitation_grant(self, invitation_id: int, grant_id: int) -> Invitation | None:
         with self._connect() as connection:
             connection.execute(
                 """
@@ -1044,7 +1018,7 @@ class SQLiteAppRegistry:
         delivery_provider: str | None = None,
         delivery_message_id: str | None = None,
         delivery_error: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> Invitation | None:
         with self._connect() as connection:
             connection.execute(
                 """
@@ -1068,7 +1042,7 @@ class SQLiteAppRegistry:
             connection.commit()
         return self.get_invitation(invitation_id)
 
-    def revoke_invitation(self, invitation_id: int) -> dict[str, Any] | None:
+    def revoke_invitation(self, invitation_id: int) -> Invitation | None:
         invitation = self.get_invitation(invitation_id)
         if invitation is None:
             return None
@@ -1083,9 +1057,9 @@ class SQLiteAppRegistry:
                 (invitation_id,),
             )
             connection.commit()
-        grant_id = invitation.get("grant_id")
+        grant_id = invitation.grant_id
         if isinstance(grant_id, int):
-            self.revoke_app_access(invitation["app_name"], grant_id=grant_id)
+            self.revoke_app_access(invitation.app_name, grant_id=grant_id)
         return self.get_invitation(invitation_id)
 
     def create_app(
@@ -1557,11 +1531,7 @@ class SQLiteAppRegistry:
             event_id = _last_row_id(cursor)
             connection.commit()
             row = connection.execute(
-                """
-                SELECT id, app_name, event_type, revision_id, data_json, created_at
-                FROM app_events
-                WHERE id = ?
-                """,
+                self._event_select_sql("WHERE id = ?"),
                 (event_id,),
             ).fetchone()
         assert row is not None
@@ -1579,15 +1549,13 @@ class SQLiteAppRegistry:
         payload = data or {}
         with self._connect() as connection:
             existing = connection.execute(
-                """
-                SELECT id, app_name, event_type, revision_id, data_json, created_at
-                FROM app_events
-                WHERE app_name = ? AND event_type = ?
+                self._event_select_sql(
+                    """WHERE app_name = ? AND event_type = ?
                   AND ((revision_id = ?) OR (revision_id IS NULL AND ? IS NULL))
                   AND data_json = ? AND (? IS NULL OR created_at = ?)
                 ORDER BY id
-                LIMIT 1
-                """,
+                LIMIT 1"""
+                ),
                 (
                     app_name,
                     event_type,
@@ -1620,40 +1588,22 @@ class SQLiteAppRegistry:
             event_id = _last_row_id(cursor)
             connection.commit()
             row = connection.execute(
-                """
-                SELECT id, app_name, event_type, revision_id, data_json, created_at
-                FROM app_events
-                WHERE id = ?
-                """,
+                self._event_select_sql("WHERE id = ?"),
                 (event_id,),
             ).fetchone()
         assert row is not None
         return self._row_to_event(row)
 
     def get_revision_by_pointer(self, app_name: str, pointer_column: str) -> AppRevision | None:
+        # pointer_column is interpolated into the JOIN, so it must be one of the
+        # known apps.* revision pointers — never caller-controlled free text.
+        if pointer_column not in self._REVISION_POINTER_COLUMNS:
+            raise ValueError(f"Unknown revision pointer column: {pointer_column!r}")
         with self._connect() as connection:
             row = connection.execute(
-                f"""
-                SELECT
-                    app_revisions.id,
-                    app_revisions.app_name,
-                    app_revisions.revision_number,
-                    app_revisions.manifest_json,
-                    app_revisions.bundle_json,
-                    app_revisions.lifecycle_state,
-                    app_revisions.artifact_path,
-                    app_revisions.source_hash,
-                    app_revisions.dependency_lock_hash,
-                    app_revisions.commit_sha,
-                    app_revisions.git_tag,
-                    app_revisions.git_branch,
-                    app_revisions.release_manifest_path,
-                    app_revisions.rollout_metadata_json,
-                    app_revisions.created_at
-                FROM app_revisions
-                JOIN apps ON apps.{pointer_column} = app_revisions.id
-                WHERE apps.name = ?
-                """,
+                self._revision_select_sql(
+                    f"JOIN apps ON apps.{pointer_column} = app_revisions.id WHERE apps.name = ?"
+                ),
                 (app_name,),
             ).fetchone()
         return self._row_to_revision(row) if row else None
@@ -1661,26 +1611,7 @@ class SQLiteAppRegistry:
     def _get_revision_by_id(self, revision_id: int) -> AppRevision | None:
         with self._connect() as connection:
             row = connection.execute(
-                """
-                SELECT
-                    id,
-                    app_name,
-                    revision_number,
-                    manifest_json,
-                    bundle_json,
-                    lifecycle_state,
-                    artifact_path,
-                    source_hash,
-                    dependency_lock_hash,
-                    commit_sha,
-                    git_tag,
-                    git_branch,
-                    release_manifest_path,
-                    rollout_metadata_json,
-                    created_at
-                FROM app_revisions
-                WHERE id = ?
-                """,
+                self._revision_select_sql("WHERE id = ?"),
                 (revision_id,),
             ).fetchone()
         return self._row_to_revision(row) if row else None
@@ -1758,6 +1689,40 @@ class SQLiteAppRegistry:
                 ).fetchone()
             connection.commit()
         return self._row_to_revision(row)
+
+    def _revision_select_sql(self, suffix: str) -> str:
+        # Columns are qualified with ``app_revisions.`` so the same builder serves
+        # both the single-table reads and ``get_revision_by_pointer``'s JOIN
+        # against ``apps`` (which shares ``id``/``app_name`` column names). The
+        # two Phase-4a env columns are intentionally omitted here — ``_row_to_revision``
+        # probes ``row.keys()`` and backfills them for pre-migration databases.
+        return f"""
+            SELECT
+                app_revisions.id,
+                app_revisions.app_name,
+                app_revisions.revision_number,
+                app_revisions.manifest_json,
+                app_revisions.bundle_json,
+                app_revisions.lifecycle_state,
+                app_revisions.artifact_path,
+                app_revisions.source_hash,
+                app_revisions.dependency_lock_hash,
+                app_revisions.commit_sha,
+                app_revisions.git_tag,
+                app_revisions.git_branch,
+                app_revisions.release_manifest_path,
+                app_revisions.rollout_metadata_json,
+                app_revisions.created_at
+            FROM app_revisions
+            {suffix}
+        """
+
+    def _event_select_sql(self, suffix: str) -> str:
+        return f"""
+            SELECT id, app_name, event_type, revision_id, data_json, created_at
+            FROM app_events
+            {suffix}
+        """
 
     def _app_select_sql(self, suffix: str) -> str:
         return f"""
@@ -1900,109 +1865,109 @@ class SQLiteAppRegistry:
             created_at=row["created_at"],
         )
 
-    def _row_to_user(self, row: sqlite3.Row) -> dict[str, Any] | None:
+    def _row_to_user(self, row: sqlite3.Row) -> RegistryUser | None:
         if row is None:
             return None
-        return {
-            "id": row["id"],
-            "principal_id": row["principal_id"],
-            "issuer": row["issuer"],
-            "subject": row["subject"],
-            "email": row["email"],
-            "email_normalized": row["email_normalized"],
-            "email_verified": bool(row["email_verified"]),
-            "display_name": row["display_name"],
-            "user_type": row["user_type"],
-            "status": row["status"],
-            "tenant_id": row["tenant_id"],
-            "last_login_at": row["last_login_at"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        return RegistryUser(
+            id=row["id"],
+            principal_id=row["principal_id"],
+            issuer=row["issuer"],
+            subject=row["subject"],
+            email=row["email"],
+            email_normalized=row["email_normalized"],
+            email_verified=bool(row["email_verified"]),
+            display_name=row["display_name"],
+            user_type=row["user_type"],
+            status=row["status"],
+            tenant_id=row["tenant_id"],
+            last_login_at=row["last_login_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
-    def _row_to_group(self, row: sqlite3.Row) -> dict[str, Any] | None:
+    def _row_to_group(self, row: sqlite3.Row) -> Group | None:
         if row is None:
             return None
-        return {
-            "id": row["id"],
-            "external_id": row["external_id"],
-            "display_name": row["display_name"],
-            "email": row["email"],
-            "source": row["source"],
-            "status": row["status"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        return Group(
+            id=row["id"],
+            external_id=row["external_id"],
+            display_name=row["display_name"],
+            email=row["email"],
+            source=row["source"],
+            status=row["status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
-    def _row_to_share_policy(self, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "app_name": row["app_name"],
-            "link_scope": row["link_scope"],
-            "allowed_domain": row["allowed_domain"],
-            "default_link_role": row["default_link_role"],
-            "allow_preview_link": bool(row["allow_preview_link"]),
-            "public_catalog_visible": bool(row["public_catalog_visible"]),
-            "external_sharing_enabled": bool(row["external_sharing_enabled"]),
-            "updated_by_principal_id": row["updated_by_principal_id"],
-            "updated_at": row["updated_at"],
-        }
+    def _row_to_share_policy(self, row: sqlite3.Row) -> SharePolicy:
+        return SharePolicy(
+            app_name=row["app_name"],
+            link_scope=row["link_scope"],
+            allowed_domain=row["allowed_domain"],
+            default_link_role=row["default_link_role"],
+            allow_preview_link=bool(row["allow_preview_link"]),
+            public_catalog_visible=bool(row["public_catalog_visible"]),
+            external_sharing_enabled=bool(row["external_sharing_enabled"]),
+            updated_by_principal_id=row["updated_by_principal_id"],
+            updated_at=row["updated_at"],
+        )
 
-    def _row_to_acl_entry(self, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "id": row["id"],
-            "app_name": row["app_name"],
-            "principal_type": row["principal_type"],
-            "principal_id": row["principal_id"],
-            "role": row["role"],
-            "scope": row["scope"],
-            "created_by_principal_id": row["created_by_principal_id"],
-            "created_at": row["created_at"],
-            "expires_at": row["expires_at"],
-            "revoked_at": row["revoked_at"],
-        }
+    def _row_to_acl_entry(self, row: sqlite3.Row) -> AclEntry:
+        return AclEntry(
+            id=row["id"],
+            app_name=row["app_name"],
+            principal_type=row["principal_type"],
+            principal_id=row["principal_id"],
+            role=row["role"],
+            scope=row["scope"],
+            created_by_principal_id=row["created_by_principal_id"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+            revoked_at=row["revoked_at"],
+        )
 
-    def _row_to_share_link(self, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "id": row["id"],
-            "app_name": row["app_name"],
-            "token_hash": row["token_hash"],
-            "scope": row["scope"],
-            "role": row["role"],
-            "recipient_email": row["recipient_email"],
-            "recipient_note": row["recipient_note"],
-            "expires_at": row["expires_at"],
-            "max_uses": row["max_uses"],
-            "use_count": row["use_count"],
-            "created_by_principal_id": row["created_by_principal_id"],
-            "created_at": row["created_at"],
-            "redeemed_at": row["redeemed_at"],
-            "revoked_at": row["revoked_at"],
-        }
+    def _row_to_share_link(self, row: sqlite3.Row) -> ShareLink:
+        return ShareLink(
+            id=row["id"],
+            app_name=row["app_name"],
+            token_hash=row["token_hash"],
+            scope=row["scope"],
+            role=row["role"],
+            recipient_email=row["recipient_email"],
+            recipient_note=row["recipient_note"],
+            expires_at=row["expires_at"],
+            max_uses=row["max_uses"],
+            use_count=row["use_count"],
+            created_by_principal_id=row["created_by_principal_id"],
+            created_at=row["created_at"],
+            redeemed_at=row["redeemed_at"],
+            revoked_at=row["revoked_at"],
+        )
 
-    def _row_to_invitation(self, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "id": row["id"],
-            "app_name": row["app_name"],
-            "token_hash": row["token_hash"],
-            "recipient_email": row["recipient_email"],
-            "email_normalized": row["email_normalized"],
-            "scope": row["scope"],
-            "role": row["role"],
-            "message": row["message"],
-            "status": row["status"],
-            "delivery_status": row["delivery_status"],
-            "delivery_provider": row["delivery_provider"],
-            "delivery_message_id": row["delivery_message_id"],
-            "delivery_error": row["delivery_error"],
-            "expires_at": row["expires_at"],
-            "accepted_principal_id": row["accepted_principal_id"],
-            "grant_id": row["grant_id"],
-            "created_by_principal_id": row["created_by_principal_id"],
-            "created_at": row["created_at"],
-            "sent_at": row["sent_at"],
-            "accepted_at": row["accepted_at"],
-            "revoked_at": row["revoked_at"],
-        }
+    def _row_to_invitation(self, row: sqlite3.Row) -> Invitation:
+        return Invitation(
+            id=row["id"],
+            app_name=row["app_name"],
+            token_hash=row["token_hash"],
+            recipient_email=row["recipient_email"],
+            email_normalized=row["email_normalized"],
+            scope=row["scope"],
+            role=row["role"],
+            message=row["message"],
+            status=row["status"],
+            delivery_status=row["delivery_status"],
+            delivery_provider=row["delivery_provider"],
+            delivery_message_id=row["delivery_message_id"],
+            delivery_error=row["delivery_error"],
+            expires_at=row["expires_at"],
+            accepted_principal_id=row["accepted_principal_id"],
+            grant_id=row["grant_id"],
+            created_by_principal_id=row["created_by_principal_id"],
+            created_at=row["created_at"],
+            sent_at=row["sent_at"],
+            accepted_at=row["accepted_at"],
+            revoked_at=row["revoked_at"],
+        )
 
     def _connect(self):
         return open_connection(self.db_path)

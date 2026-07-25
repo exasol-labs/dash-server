@@ -1,22 +1,14 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ admin.app }} export jobs</title>
-    <style>
-      body { margin: 0; background: #f5efe3; color: #211b17; font-family: "Avenir Next", "Segoe UI", sans-serif; }
-      main { width: min(960px, calc(100vw - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
-      a { color: #0f766e; font-weight: 700; }
+{% extends "consumption_base.html" %}
+{% block title %}{{ admin.app }} export jobs{% endblock %}
+{% block main_width %}960px{% endblock %}
+{% block styles %}
       table { width: 100%; margin-top: 1.5rem; border-collapse: collapse; background: #fffaf2; border: 1px solid rgba(73,52,33,.18); border-radius: 16px; }
       th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid rgba(73,52,33,.12); overflow-wrap: anywhere; }
       caption { text-align: left; padding: .4rem 0; color: #6b5d52; }
       .empty { color: #6b5d52; }
-      code { overflow-wrap: anywhere; }
       .meta { color: #6b5d52; }
-    </style>
-  </head>
-  <body>
+{% endblock %}
+{% block body %}
     <main>
       <nav>
         <a href="/manage/apps/{{ admin.app }}/consumption">Back to outputs</a>
@@ -54,5 +46,4 @@
         <p class="empty">No export jobs recorded for this app.</p>
       {% endif %}
     </main>
-  </body>
-</html>
+{% endblock %}

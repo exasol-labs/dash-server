@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
-from dash_server.auth import AuthContext, AuthorizationService, Principal
+from dash_server.auth import AuthContext, AuthorizationService
 from dash_server.exceptions import DashServerError
 from dash_server.exasol.service import ExasolDashboardService
 from dash_server.registry.models import AppRevision
@@ -25,6 +25,7 @@ from .contract import consumption_contract_hash, normalize_consumption_contract
 from .coordinator import LocalJobCoordinator
 from .execution import ExasolDatasetExecutor
 from .formats import get_dataset_format
+from .jobs import ConsumptionJobRunner
 from .models import (
     ConsumptionArtifact,
     ConsumptionExecutionContext,
@@ -40,7 +41,6 @@ from .security import (
 from .store import ConsumptionStore, now_iso
 
 
-_LEASE_TTL_SECONDS = 120
 _COORDINATOR_STALE_SECONDS = 300
 
 
@@ -79,8 +79,9 @@ class ConsumptionService:
         self._preflighted: set[tuple[str, int, str, str]] = set()
         self._preflight_lock = Lock()
         self.instance_id = str(uuid4())
+        self._job_runner = ConsumptionJobRunner(self)
         self.coordinator = LocalJobCoordinator(
-            self._run_job,
+            self._job_runner.run,
             max_workers=self.policy.max_concurrent_jobs,
         )
 
@@ -96,70 +97,8 @@ class ConsumptionService:
             stale_after_seconds=_COORDINATOR_STALE_SECONDS,
             is_pid_alive=_pid_alive,
         )
-        self._recover_incomplete_jobs()
+        self._job_runner.recover_incomplete_jobs()
         self.run_maintenance()
-
-    def _recover_incomplete_jobs(self) -> None:
-        """Strand nothing across restarts: requeue or fail-close leftover work."""
-        for job in self.store.list_incomplete_jobs():
-            if job.status == "queued":
-                self.coordinator.submit(job.id)
-                continue
-            if job.status == "cancel_requested":
-                self.store.transition_job(
-                    job.id,
-                    expected=("cancel_requested",),
-                    status="cancelled",
-                    progress={"phase": "cancelled"},
-                )
-                self.store.record_audit(
-                    "export.cancelled",
-                    actor_principal_id=job.run_as_principal_id,
-                    app_name=job.app_name,
-                    job_id=job.id,
-                    decision="allowed",
-                    details={"reason": "reconciled_after_restart"},
-                )
-                continue
-            # A running job at claim time was stranded by a previous process.
-            if job.attempt_count < self.policy.max_attempts:
-                requeued = self.store.transition_job(
-                    job.id,
-                    expected=("running",),
-                    status="queued",
-                    progress={"phase": "requeued", "rows": 0, "bytes": 0},
-                )
-                if requeued:
-                    self.store.record_audit(
-                        "export.requeued",
-                        actor_principal_id=job.run_as_principal_id,
-                        app_name=job.app_name,
-                        job_id=job.id,
-                        decision="allowed",
-                        details={"reason": "stranded_by_restart", "attempt_count": job.attempt_count},
-                    )
-                    self.coordinator.submit(job.id)
-                continue
-            failed = self.store.transition_job(
-                job.id,
-                expected=("running",),
-                status="failed",
-                progress={"phase": "failed"},
-                error={
-                    "category": "consumption_job_stranded",
-                    "summary": "The export was interrupted by a server restart and has no attempts left.",
-                    "details": {"attempt_count": job.attempt_count},
-                },
-            )
-            if failed:
-                self.store.record_audit(
-                    "export.failed",
-                    actor_principal_id=job.run_as_principal_id,
-                    app_name=job.app_name,
-                    job_id=job.id,
-                    decision="failed",
-                    details={"category": "consumption_job_stranded"},
-                )
 
     def run_maintenance(self) -> dict[str, int]:
         """Expire artifacts, prune retained rows, and refresh the coordinator heartbeat."""
@@ -536,222 +475,8 @@ class ConsumptionService:
         return job.app_name if job is not None else None
 
     def _run_job(self, job_id: str) -> None:
-        while self._run_job_attempt(job_id) == "retry":
-            pass
-
-    def _lease_expiry(self) -> str:
-        expiry = datetime.now(timezone.utc) + timedelta(seconds=_LEASE_TTL_SECONDS)
-        return to_iso(expiry)
-
-    def _run_job_attempt(self, job_id: str) -> str | None:
-        if not self.store.transition_job(
-            job_id,
-            expected=("queued",),
-            status="running",
-            progress={"phase": "querying", "rows": 0, "bytes": 0},
-            lease_owner=self.instance_id,
-            lease_expires_at=self._lease_expiry(),
-        ):
-            return None
-        temporary_path: Path | None = None
-        job = self.store.get_job(job_id)
-        if job is None:
-            return None
-        audit_job = job
-        try:
-            encoded = self.store.get_encoded_parameters(job_id)
-            if encoded is None:
-                raise RuntimeError("Stored export parameters are missing.")
-            parameters = self.parameter_codec.decode(encoded)
-            job = self.store.get_job(job_id, decoded_parameters=parameters)
-            assert job is not None
-            revision = self.registry.get_revision_by_number(job.app_name, job.revision_number)
-            if revision is None:
-                raise DashServerError(
-                    category="app_revision_not_found",
-                    summary="The pinned app revision is unavailable.",
-                    details={"app": job.app_name, "revision_number": job.revision_number},
-                )
-            self._verify_job_contract(job, revision)
-            auth_context = self._context_for_job(job_id)
-            self._authorize_execution(job, auth_context)
-            if self.executor is None:
-                raise DashServerError(
-                    category="consumption_executor_unavailable",
-                    summary="The Exasol export executor is not configured.",
-                    details={},
-                )
-            export_format = get_dataset_format(job.requested_format)
-            if export_format is None:
-                raise DashServerError(
-                    category="consumption_format_unavailable",
-                    summary=f"Format {job.requested_format!r} has no registered dataset writer.",
-                    details={"format": job.requested_format},
-                )
-            stream = self.executor.stream(
-                revision,
-                job.output,
-                parameters,
-                cancelled=lambda: self.store.is_cancel_requested(job_id),
-            )
-            temporary_path = self.artifact_store.temporary_path(job_id)
-            current_limits = self._effective_limits(job.output)
-            limits = {
-                "max_rows": min(job.effective_limits["max_rows"], current_limits["max_rows"]),
-                "max_bytes": min(job.effective_limits["max_bytes"], current_limits["max_bytes"]),
-            }
-            provenance = {
-                "app": job.app_name,
-                "output_id": job.output_id,
-                "output_title": job.output.get("title"),
-                "revision_number": job.revision_number,
-                "contract_hash": job.output_contract_hash,
-                "policy_version": job.policy_version,
-                "generated_at": now_iso(),
-                "format": job.requested_format,
-                "classification": str(job.output.get("classification", "internal")),
-                "parameters": redact_parameters(parameters),
-                "effective_limits": limits,
-            }
-
-            def _report_progress(rows: int, bytes_written: int) -> None:
-                self.store.update_progress(
-                    job_id,
-                    {"phase": "writing", "rows": rows, "bytes": bytes_written},
-                    lease_owner=self.instance_id,
-                    lease_expires_at=self._lease_expiry(),
-                )
-
-            result = export_format.writer(
-                temporary_path,
-                columns=stream.columns,
-                batches=stream.batches,
-                max_rows=limits["max_rows"],
-                max_bytes=limits["max_bytes"],
-                cancelled=lambda: self.store.is_cancel_requested(job_id),
-                provenance=provenance,
-                on_progress=_report_progress,
-            )
-            if self.store.is_cancel_requested(job_id):
-                raise DashServerError(
-                    category="consumption_job_cancelled",
-                    summary="Export cancellation was requested.",
-                    details={},
-                )
-            filename = f"{job.app_name}-{job.output_id}.{export_format.extension}"
-            storage_key = self.artifact_store.publish(job.id, temporary_path, filename)
-            temporary_path = None
-            created_at = datetime.now(timezone.utc)
-            artifact = ConsumptionArtifact(
-                id=str(uuid4()),
-                job_id=job.id,
-                storage_key=storage_key,
-                content_type=export_format.content_type,
-                filename=filename,
-                sha256=result["sha256"],
-                byte_size=result["byte_size"],
-                row_count=result["row_count"],
-                classification=str(job.output.get("classification", "internal")),
-                created_at=to_iso(created_at),
-                expires_at=to_iso(created_at + timedelta(seconds=self.policy.artifact_ttl_seconds)),
-            )
-            self.store.create_artifact(artifact)
-            completed = self.store.transition_job(
-                job_id,
-                expected=("running",),
-                status="succeeded",
-                progress={
-                    "phase": "complete",
-                    "rows": artifact.row_count,
-                    "bytes": artifact.byte_size,
-                },
-            )
-            if not completed:
-                self.artifact_store.delete(artifact.storage_key)
-                self.store.mark_artifact_deleted(artifact.id)
-                self.store.transition_job(
-                    job_id,
-                    expected=("cancel_requested",),
-                    status="cancelled",
-                    progress={"phase": "cancelled"},
-                )
-                self.store.record_audit(
-                    "export.cancelled",
-                    actor_principal_id=audit_job.run_as_principal_id,
-                    app_name=audit_job.app_name,
-                    job_id=audit_job.id,
-                    decision="allowed",
-                )
-                return None
-            self.store.record_audit(
-                "export.succeeded",
-                actor_principal_id=audit_job.run_as_principal_id,
-                app_name=audit_job.app_name,
-                job_id=audit_job.id,
-                artifact_id=artifact.id,
-                decision="allowed",
-                details={"rows": artifact.row_count, "bytes": artifact.byte_size},
-            )
-        except DashServerError as exc:
-            cancelled = exc.category == "consumption_job_cancelled"
-            self.store.transition_job(
-                job_id,
-                expected=("running", "cancel_requested"),
-                status="cancelled" if cancelled else "failed",
-                progress={"phase": "cancelled" if cancelled else "failed"},
-                error={"category": exc.category, "summary": exc.summary, "details": exc.details},
-            )
-            self.store.record_audit(
-                "export.cancelled" if cancelled else "export.failed",
-                actor_principal_id=audit_job.run_as_principal_id,
-                app_name=audit_job.app_name,
-                job_id=audit_job.id,
-                decision="allowed" if cancelled else "failed",
-                details={"category": exc.category},
-            )
-        except Exception as exc:
-            # Unexpected failures are the retryable class; structured domain
-            # errors above are deterministic and never retried.
-            if audit_job.attempt_count < self.policy.max_attempts and not self.store.is_cancel_requested(job_id):
-                retried = self.store.transition_job(
-                    job_id,
-                    expected=("running",),
-                    status="queued",
-                    progress={"phase": "requeued", "rows": 0, "bytes": 0},
-                )
-                if retried:
-                    self.store.record_audit(
-                        "export.retried",
-                        actor_principal_id=audit_job.run_as_principal_id,
-                        app_name=audit_job.app_name,
-                        job_id=audit_job.id,
-                        decision="allowed",
-                        details={"attempt_count": audit_job.attempt_count, "reason": type(exc).__name__},
-                    )
-                    return "retry"
-            self.store.transition_job(
-                job_id,
-                expected=("running", "cancel_requested"),
-                status="failed",
-                progress={"phase": "failed"},
-                error={
-                    "category": "consumption_internal_error",
-                    "summary": "The export failed unexpectedly.",
-                    "details": {"reason": type(exc).__name__, "attempt_count": audit_job.attempt_count},
-                },
-            )
-            self.store.record_audit(
-                "export.failed",
-                actor_principal_id=audit_job.run_as_principal_id,
-                app_name=audit_job.app_name,
-                job_id=audit_job.id,
-                decision="failed",
-                details={"category": "consumption_internal_error", "reason": type(exc).__name__},
-            )
-        finally:
-            if temporary_path is not None:
-                self.artifact_store.discard(temporary_path)
-        return None
+        """Coordinator runner; delegates to the extracted job runner."""
+        self._job_runner.run(job_id)
 
     def _authorized_revision(self, name: str, auth_context: AuthContext):
         app = self.registry.get_app(name)
@@ -943,45 +668,6 @@ class ConsumptionService:
                 http_status=decision.status_code,
             )
         return job
-
-    def _authorize_execution(self, job: ConsumptionJob, auth_context: AuthContext) -> None:
-        authorized = self._authorized_job(job.id, auth_context)
-        if authorized.run_as_principal_id != auth_context.principal.principal_id:
-            raise DashServerError(
-                category="consumption_authorization_denied",
-                summary="The export execution principal no longer matches the queued job.",
-                details={},
-            )
-
-    def _context_for_job(self, job_id: str) -> AuthContext:
-        payload = self.store.get_context(job_id)
-        if payload is None:
-            raise RuntimeError("Consumption job context is missing.")
-        return AuthContext(
-            mode=str(payload.get("mode", "hosted")),
-            auth_enabled=bool(payload.get("auth_enabled", True)),
-            provider=str(payload.get("provider", "disabled")),
-            principal=Principal.from_dict(payload.get("principal", {})),
-        )
-
-    def _verify_job_contract(self, job: ConsumptionJob, revision: AppRevision) -> None:
-        consumption, contract_hash = self._revision_contract(revision)
-        if contract_hash != job.output_contract_hash:
-            raise DashServerError(
-                category="consumption_contract_hash_mismatch",
-                summary="The pinned job contract no longer matches its immutable revision.",
-                details={"job_id": job.id},
-            )
-        declared = next(
-            (item for item in (consumption or {}).get("outputs", []) if item["id"] == job.output_id),
-            None,
-        )
-        if declared is None or declared != job.output:
-            raise DashServerError(
-                category="consumption_contract_hash_mismatch",
-                summary="The pinned output declaration no longer matches the job snapshot.",
-                details={"job_id": job.id, "output_id": job.output_id},
-            )
 
     def _job_payload(self, job: ConsumptionJob) -> dict[str, Any]:
         current = self.store.get_job(job.id) or job

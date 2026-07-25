@@ -303,6 +303,7 @@ def build_dash_wsgi_app(
         revision_number=revision_number,
         app_name=manifest.name,
         has_consumption_outputs=bool((manifest.consumption or {}).get("outputs")),
+        wrap=True,
     )
     return server
 

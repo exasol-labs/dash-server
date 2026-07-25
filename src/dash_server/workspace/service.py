@@ -29,7 +29,6 @@ from dash_server.dash_apps.factory import (
     validate_bundle,
     validate_manifest_payload,
 )
-from dash_server.consumption import validate_consumption_sources
 from dash_server_runtime.worker._app_loader import load_app_module
 from dash_server.artifacts_io import (
     APP_ENTRYPOINT_FILENAME,
@@ -43,6 +42,10 @@ from dash_server.paths import safe_join
 from dash_server.gitops import GitWorktreeService
 from dash_server.imports import isolated_local_imports
 from dash_server.registry.models import AppManifest
+from dash_server.workspace.validation_pipeline import (
+    ValidationContext,
+    run_pipeline,
+)
 
 
 class WorkspaceService:
@@ -53,9 +56,6 @@ class WorkspaceService:
     _app_filename = APP_ENTRYPOINT_FILENAME
     _requirements_filename = REQUIREMENTS_FILENAME
     _patch_preview_context_lines = 3
-    _exasol_env_pattern = re.compile(
-        r"\b(?:EXA|EXASOL)_(?:DSN|USER|PASS|PASSWORD|PAT|ACCESS_TOKEN|REFRESH_TOKEN)\b"
-    )
 
     def __init__(
         self,
@@ -277,9 +277,42 @@ class WorkspaceService:
         python_files = {
             path: content for path, content in files.items() if path.endswith(".py")
         }
+        parsed_trees, syntax_errors = self._parse_python_files(python_files)
+
+        context = ValidationContext(
+            service=self,
+            app_name=app_name,
+            mount_path=mount_path,
+            force_clean=force_clean,
+            files=files,
+            manifest=manifest,
+            requirements=requirements,
+            python_files=python_files,
+            parsed_trees=parsed_trees,
+            syntax_errors=syntax_errors,
+        )
+        reports, is_valid = run_pipeline(context)
+        return {
+            "app": app_name,
+            "candidate_version": self.draft_summary(app_name)["candidate_version"],
+            "manifest": manifest.to_dict(),
+            **reports,
+            "is_valid": is_valid,
+        }
+
+    def _parse_python_files(
+        self,
+        python_files: dict[str, str],
+    ) -> tuple[dict[str, ast.AST], list[dict[str, Any]]]:
+        """Parse each ``.py`` file, collecting ASTs and syntax errors.
+
+        The returned ``parsed_trees`` preserves ``python_files`` iteration order
+        for files that parsed cleanly; files with syntax errors are recorded in
+        ``syntax_errors`` and omitted from the trees.
+        """
+
         parsed_trees: dict[str, ast.AST] = {}
         syntax_errors: list[dict[str, Any]] = []
-        lint_warnings: list[dict[str, Any]] = []
         for relative_path, content in python_files.items():
             try:
                 tree = ast.parse(content, filename=relative_path)
@@ -293,110 +326,7 @@ class WorkspaceService:
                 )
                 continue
             parsed_trees[relative_path] = tree
-            lint_warnings.extend(self._lint_tree(tree, relative_path))
-        callback_report = self._default_callback_report()
-        cross_module_symbols = self._default_cross_module_symbol_report(
-            syntax_errors=syntax_errors,
-        )
-        if not syntax_errors:
-            cross_module_symbols = self._cross_module_symbol_report(parsed_trees)
-
-        dependency_install = self._default_dependency_install_status(
-            syntax_errors=syntax_errors,
-            invalid_requirements=requirements["invalid"],
-            requirements=requirements["entries"],
-        )
-        if cross_module_symbols["status"] == "failed":
-            dependency_install = {
-                "status": "skipped",
-                "requirements": requirements["entries"],
-                "notes": "Skipped dependency install because local cross-module symbol validation failed.",
-            }
-        elif not syntax_errors and not requirements["invalid"]:
-            dependency_install = self._ensure_dependencies(
-                app_name,
-                requirements["entries"],
-                force_clean=force_clean,
-            )
-
-        import_result = {
-            "status": "skipped",
-            "error": None,
-            "traceback": None,
-        }
-        if not syntax_errors:
-            if cross_module_symbols["status"] == "failed":
-                import_result = {
-                    "status": "skipped",
-                    "category": "cross_module_symbols_failed",
-                    "error": "Skipped import smoke check because local cross-module symbol validation failed.",
-                    "traceback": None,
-                }
-            elif dependency_install["status"] == "failed":
-                import_result = {
-                    "status": "skipped",
-                    "category": "environment_missing_dependency",
-                    "error": "Dependency install failed before import smoke check.",
-                    "traceback": None,
-                }
-            else:
-                import_result = self._import_smoke_check(
-                    app_name,
-                    manifest,
-                    declared_packages=requirements["packages"],
-                    dependency_install=dependency_install,
-                    mount_path=mount_path,
-                )
-                imported_callbacks = import_result.get("callbacks")
-                if isinstance(imported_callbacks, dict):
-                    callback_report = imported_callbacks
-        credential_safety = self._credential_safety_report(
-            files,
-            manifest,
-            python_files=python_files,
-        )
-        exasol_validation = self._exasol_validation_report(
-            files,
-            manifest,
-            python_files=python_files,
-        )
-        consumption_validation = validate_consumption_sources(
-            manifest.consumption,
-            files=files,
-        )
-        is_valid = (
-            not syntax_errors
-            and cross_module_symbols["status"] != "failed"
-            and not requirements["invalid"]
-            and dependency_install["status"] != "failed"
-            and import_result.get("status") == "passed"
-            and callback_report["status"] != "failed"
-            and credential_safety["status"] != "failed"
-            and exasol_validation["status"] != "failed"
-            and consumption_validation["status"] != "failed"
-        )
-        return {
-            "app": app_name,
-            "candidate_version": self.draft_summary(app_name)["candidate_version"],
-            "manifest": manifest.to_dict(),
-            "requirements": requirements,
-            "lint": {
-                "status": "passed" if not lint_warnings else "passed_with_warnings",
-                "warnings": lint_warnings,
-            },
-            "syntax": {
-                "status": "passed" if not syntax_errors else "failed",
-                "errors": syntax_errors,
-            },
-            "cross_module_symbols": cross_module_symbols,
-            "imports": import_result,
-            "callbacks": callback_report,
-            "credential_safety": credential_safety,
-            "exasol": exasol_validation,
-            "consumption": consumption_validation,
-            "dependency_install": dependency_install,
-            "is_valid": is_valid,
-        }
+        return parsed_trees, syntax_errors
 
     def draft_summary(self, app_name: str) -> dict[str, Any]:
         state = self._read_state(app_name)
@@ -578,335 +508,6 @@ class WorkspaceService:
         bounded_offset = max(0, min(offset, len(text)))
         return text.count("\n", 0, bounded_offset) + 1
 
-    def _default_cross_module_symbol_report(
-        self,
-        *,
-        syntax_errors: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        if syntax_errors:
-            return {
-                "status": "skipped",
-                "issues": [],
-                "warnings": [],
-                "notes": "Skipped local cross-module symbol checks because Python syntax validation failed.",
-            }
-        return {
-            "status": "passed",
-            "issues": [],
-            "warnings": [],
-            "notes": "Validated direct local module imports and aliased local module attribute access.",
-        }
-
-    def _cross_module_symbol_report(
-        self,
-        trees: dict[str, ast.AST],
-    ) -> dict[str, Any]:
-        module_to_path, path_to_module = self._local_module_index(trees.keys())
-        module_analysis = {
-            path: self._analyze_local_module(tree)
-            for path, tree in trees.items()
-        }
-        issues: list[dict[str, Any]] = []
-        warnings: list[dict[str, Any]] = []
-        seen_issues: set[tuple[str, int | None, str, str]] = set()
-        seen_warnings: set[tuple[str, int | None, str]] = set()
-        for relative_path, tree in trees.items():
-            references, reference_warnings = self._collect_cross_module_references(
-                tree,
-                relative_path=relative_path,
-                current_module=path_to_module.get(relative_path),
-                module_to_path=module_to_path,
-            )
-            for warning in reference_warnings:
-                warning_key = (
-                    warning["path"],
-                    warning.get("line"),
-                    warning["message"],
-                )
-                if warning_key not in seen_warnings:
-                    seen_warnings.add(warning_key)
-                    warnings.append(warning)
-            for reference in references:
-                target_info = module_analysis.get(reference["target_path"])
-                if target_info is None:
-                    continue
-                symbol = reference["symbol"]
-                if symbol in target_info["defined_symbols"]:
-                    continue
-                if target_info["analysis_limited"]:
-                    warning = {
-                        "path": reference["path"],
-                        "line": reference["line"],
-                        "message": (
-                            f"Skipped strict check for {reference['target_module']}.{symbol} because "
-                            f"{reference['target_path']} uses conditional or dynamic top-level bindings."
-                        ),
-                    }
-                    warning_key = (
-                        warning["path"],
-                        warning.get("line"),
-                        warning["message"],
-                    )
-                    if warning_key not in seen_warnings:
-                        seen_warnings.add(warning_key)
-                        warnings.append(warning)
-                    continue
-                issue = {
-                    "path": reference["path"],
-                    "line": reference["line"],
-                    "message": (
-                        f"{reference['target_module']}.{symbol} is referenced but not defined in "
-                        f"{reference['target_path']}."
-                    ),
-                    "symbol": symbol,
-                    "reference": reference["reference"],
-                    "target_path": reference["target_path"],
-                }
-                issue_key = (
-                    issue["path"],
-                    issue["line"],
-                    issue["message"],
-                    issue["reference"],
-                )
-                if issue_key not in seen_issues:
-                    seen_issues.add(issue_key)
-                    issues.append(issue)
-        status = "failed" if issues else "passed_with_warnings" if warnings else "passed"
-        return {
-            "status": status,
-            "issues": issues,
-            "warnings": warnings,
-            "notes": "Validated direct local module imports and aliased local module attribute access.",
-        }
-
-    def _local_module_index(
-        self,
-        paths: Any,
-    ) -> tuple[dict[str, str], dict[str, str]]:
-        module_to_path: dict[str, str] = {}
-        path_to_module: dict[str, str] = {}
-        for relative_path in sorted(str(path) for path in paths):
-            module_name = self._module_name_from_path(relative_path)
-            if module_name is None:
-                continue
-            module_to_path[module_name] = relative_path
-            path_to_module[relative_path] = module_name
-        return module_to_path, path_to_module
-
-    def _module_name_from_path(self, relative_path: str) -> str | None:
-        path = Path(relative_path)
-        if path.suffix != ".py":
-            return None
-        parts = list(path.with_suffix("").parts)
-        if not parts:
-            return None
-        if parts[-1] == "__init__":
-            parts = parts[:-1]
-        if not parts:
-            return None
-        return ".".join(parts)
-
-    def _analyze_local_module(self, tree: ast.AST) -> dict[str, Any]:
-        defined_symbols: set[str] = set()
-        analysis_limited = False
-        control_flow_nodes: tuple[type[ast.AST], ...] = (
-            ast.If,
-            ast.Try,
-            ast.For,
-            ast.AsyncFor,
-            ast.While,
-            ast.With,
-            ast.AsyncWith,
-        )
-        match_node = getattr(ast, "Match", None)
-        if isinstance(match_node, type):
-            control_flow_nodes = (*control_flow_nodes, match_node)
-        for node in getattr(tree, "body", []):
-            if self._is_docstring_expr(node) or isinstance(node, ast.Pass):
-                continue
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                defined_symbols.add(node.name)
-                if node.name == "__getattr__":
-                    analysis_limited = True
-                continue
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    defined_symbols.update(self._assignment_target_names(target))
-                continue
-            if isinstance(node, ast.AnnAssign):
-                defined_symbols.update(self._assignment_target_names(node.target))
-                continue
-            if isinstance(node, ast.AugAssign):
-                defined_symbols.update(self._assignment_target_names(node.target))
-                continue
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    binding_name = alias.asname or alias.name.split(".", 1)[0]
-                    if binding_name:
-                        defined_symbols.add(binding_name)
-                continue
-            if isinstance(node, ast.ImportFrom):
-                if any(alias.name == "*" for alias in node.names):
-                    analysis_limited = True
-                    continue
-                for alias in node.names:
-                    binding_name = alias.asname or alias.name
-                    if binding_name:
-                        defined_symbols.add(binding_name)
-                continue
-            if isinstance(node, control_flow_nodes):
-                analysis_limited = True
-        return {
-            "defined_symbols": defined_symbols,
-            "analysis_limited": analysis_limited,
-        }
-
-    def _assignment_target_names(self, target: ast.AST) -> set[str]:
-        names: set[str] = set()
-        if isinstance(target, ast.Name):
-            names.add(target.id)
-            return names
-        if isinstance(target, (ast.Tuple, ast.List)):
-            for item in target.elts:
-                names.update(self._assignment_target_names(item))
-        return names
-
-    def _is_docstring_expr(self, node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        )
-
-    def _collect_cross_module_references(
-        self,
-        tree: ast.AST,
-        *,
-        relative_path: str,
-        current_module: str | None,
-        module_to_path: dict[str, str],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        references: list[dict[str, Any]] = []
-        warnings: list[dict[str, Any]] = []
-        import_aliases: dict[str, str] = {}
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if "." in alias.name and alias.asname is None and alias.name in module_to_path:
-                        warnings.append(
-                            {
-                                "path": relative_path,
-                                "line": getattr(node, "lineno", None),
-                                "message": (
-                                    f"Skipped strict local symbol checks for dotted import {alias.name!r}; "
-                                    "add an explicit alias to enable module attribute validation."
-                                ),
-                            }
-                        )
-                        continue
-                    target_module = alias.name if alias.name in module_to_path else None
-                    if target_module is None:
-                        continue
-                    binding_name = alias.asname or alias.name
-                    import_aliases[binding_name] = target_module
-                continue
-
-            if not isinstance(node, ast.ImportFrom):
-                continue
-
-            resolved_module = self._resolve_local_import_module(
-                module=node.module,
-                level=node.level,
-                current_module=current_module,
-                current_path=relative_path,
-                module_to_path=module_to_path,
-            )
-            if resolved_module is None:
-                continue
-            if any(alias.name == "*" for alias in node.names):
-                warnings.append(
-                    {
-                        "path": relative_path,
-                        "line": getattr(node, "lineno", None),
-                        "message": (
-                            f"Skipped strict local symbol checks for wildcard import from {resolved_module}."
-                        ),
-                    }
-                )
-                continue
-            if node.module is None:
-                warnings.append(
-                    {
-                        "path": relative_path,
-                        "line": getattr(node, "lineno", None),
-                        "message": (
-                            "Skipped strict local symbol checks for relative import without an explicit module name."
-                        ),
-                    }
-                )
-                continue
-            for alias in node.names:
-                references.append(
-                    {
-                        "path": relative_path,
-                        "line": getattr(node, "lineno", None),
-                        "reference": alias.asname or alias.name,
-                        "symbol": alias.name,
-                        "target_module": resolved_module,
-                        "target_path": module_to_path[resolved_module],
-                    }
-                )
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load):
-                continue
-            if not isinstance(node.value, ast.Name):
-                continue
-            target_module = import_aliases.get(node.value.id)
-            if target_module is None:
-                continue
-            references.append(
-                {
-                    "path": relative_path,
-                    "line": getattr(node, "lineno", None),
-                    "reference": f"{node.value.id}.{node.attr}",
-                    "symbol": node.attr,
-                    "target_module": target_module,
-                    "target_path": module_to_path[target_module],
-                }
-            )
-        return references, warnings
-
-    def _resolve_local_import_module(
-        self,
-        *,
-        module: str | None,
-        level: int,
-        current_module: str | None,
-        current_path: str,
-        module_to_path: dict[str, str],
-    ) -> str | None:
-        if level == 0:
-            return module if module in module_to_path else None
-        if current_module is None:
-            return None
-        if current_path.endswith("__init__.py"):
-            current_package = current_module
-        else:
-            current_package = current_module.rpartition(".")[0]
-        if not current_package:
-            return None
-        package_parts = current_package.split(".")
-        ascents = max(level - 1, 0)
-        if ascents > len(package_parts):
-            return None
-        base_parts = package_parts[: len(package_parts) - ascents] if ascents else package_parts
-        if module:
-            base_parts = [*base_parts, *module.split(".")]
-        candidate = ".".join(part for part in base_parts if part)
-        return candidate if candidate in module_to_path else None
-
     def _import_smoke_check(
         self,
         app_name: str,
@@ -967,7 +568,7 @@ class WorkspaceService:
                     },
                 )
                 if isinstance(created, Dash):
-                    apply_hosted_footer(created)
+                    apply_hosted_footer(created, wrap=True)
                     finalize_dash_app_callbacks(created)
             except Exception as exc:
                 return self._import_failure_result(
@@ -1410,249 +1011,6 @@ def create_dash_app(server, url_base_pathname, metadata):
                 )
 
         return warnings
-
-    def _credential_safety_report(
-        self,
-        files: dict[str, str],
-        manifest: AppManifest,
-        *,
-        python_files: dict[str, str],
-    ) -> dict[str, Any]:
-        findings: list[dict[str, Any]] = []
-        raw_data_sources = manifest.data_sources if isinstance(manifest.data_sources, dict) else None
-        if isinstance(raw_data_sources, dict):
-            primary = raw_data_sources.get("primary")
-            if isinstance(primary, dict) and primary.get("kind") == "exasol":
-                forbidden_keys = sorted(
-                    key
-                    for key in primary
-                    if key
-                    in {
-                        "dsn",
-                        "user",
-                        "password",
-                        "access_token",
-                        "refresh_token",
-                        "saas_pat",
-                        "secret",
-                        "secret_ref",
-                    }
-                )
-                if forbidden_keys:
-                    findings.append(
-                        {
-                            "path": self._manifest_filename,
-                            "message": (
-                                "Exasol data_sources must reference a server-side profile and must not embed "
-                                f"credential keys: {', '.join(forbidden_keys)}."
-                            ),
-                        }
-                    )
-
-        for relative_path, content in python_files.items():
-            if "pyexasol.connect" in content:
-                findings.append(
-                    {
-                        "path": relative_path,
-                        "message": (
-                            "Hosted apps must not call pyexasol.connect(...) directly. "
-                            "Use a server-side Exasol profile and runtime helper instead."
-                        ),
-                    }
-                )
-            if self._exasol_env_pattern.search(content):
-                findings.append(
-                    {
-                        "path": relative_path,
-                        "message": (
-                            "Hosted apps must not read EXA_/EXASOL_ credential environment variables directly. "
-                            "Bind an Exasol profile and let the server resolve credentials."
-                        ),
-                    }
-                )
-            if re.search(r"\b(?:password|access_token|refresh_token|saas_pat)\s*=", content):
-                findings.append(
-                    {
-                        "path": relative_path,
-                        "message": (
-                            "Hosted app source appears to define database credential parameters directly. "
-                            "Move Exasol credentials into the server-side profile configuration."
-                        ),
-                    }
-                )
-
-        status = "failed" if findings else "passed"
-        return {"status": status, "findings": findings}
-
-    def _exasol_validation_report(
-        self,
-        files: dict[str, str],
-        manifest: AppManifest,
-        *,
-        python_files: dict[str, str],
-    ) -> dict[str, Any]:
-        if not self._is_exasol_workspace(manifest):
-            return {"status": "not_applicable", "issues": []}
-
-        issues: list[dict[str, Any]] = []
-        exasol_query_calls = {
-            "execute_profile_query",
-            "query_rows",
-            "query_one",
-            "query_scalar",
-            "load_rows",
-            "load_row",
-            "load_scalar",
-        }
-
-        for relative_path, content in python_files.items():
-            if "import pyexasol" in content or "from pyexasol" in content:
-                issues.append(
-                    {
-                        "level": "warning",
-                        "path": relative_path,
-                        "message": "Exasol-backed hosted apps should rely on the server helper path instead of importing pyexasol directly.",
-                    }
-                )
-            try:
-                tree = ast.parse(content, filename=relative_path)
-            except SyntaxError:
-                continue
-            for node in tree.body:
-                call = self._top_level_call(node)
-                if call is None:
-                    continue
-                if self._call_matches_names(call.func, exasol_query_calls):
-                    issues.append(
-                        {
-                            "level": "error",
-                            "path": relative_path,
-                            "line": getattr(call, "lineno", None),
-                            "message": "Do not execute Exasol queries at import time. Run them inside callbacks or explicit request handlers.",
-                        }
-                    )
-
-        # Common Exasol reserved words that bite scaffold authors when used as bare AS aliases.
-        # Exasol's full reserved list is much larger; these are the ones we've actually
-        # seen trip up persona-1 / persona-2 / persona-3 SQL.
-        reserved_alias_words = {
-            "DAY", "MONTH", "YEAR", "HOUR", "MINUTE", "SECOND",
-            "ORDER", "GROUP", "LEVEL", "USER", "TIMESTAMP", "DATE",
-            "TYPE", "VALUE", "ROW", "RANK", "COUNT",
-        }
-        reserved_alias_re = re.compile(
-            r"\bAS\s+(" + "|".join(sorted(reserved_alias_words)) + r")\b",
-            re.IGNORECASE,
-        )
-
-        for relative_path, content in files.items():
-            if not relative_path.startswith("queries/") or not relative_path.endswith(".sql"):
-                continue
-            normalized = content.upper()
-            for match in reserved_alias_re.finditer(content):
-                issues.append(
-                    {
-                        "level": "warning",
-                        "path": relative_path,
-                        "line": content[: match.start()].count("\n") + 1,
-                        "message": (
-                            f"AS {match.group(1).upper()} uses an Exasol reserved word as a bare alias. "
-                            f'Quote it: AS "{match.group(1).upper()}".'
-                        ),
-                    }
-                )
-            if "SELECT *" in normalized:
-                issues.append(
-                    {
-                        "level": "warning",
-                        "path": relative_path,
-                        "message": "Avoid SELECT * in Exasol query files. Select only the columns the dashboard needs.",
-                    }
-                )
-            stripped = content.strip()
-            if ";" in stripped[:-1]:
-                issues.append(
-                    {
-                        "level": "warning",
-                        "path": relative_path,
-                        "message": "Prefer one statement per Exasol SQL file.",
-                    }
-                )
-            from_clause = " " + re.sub(r"\s+", " ", normalized).strip() + " "
-            # Skip the "no LIMIT or aggregation" warning for single-row scalar queries
-            # that come only from DUAL (e.g. the scaffold's placeholder
-            # `SELECT 1240 AS ACTIVE_CUSTOMERS FROM DUAL`).
-            only_from_dual = (
-                " FROM DUAL " in from_clause
-                and " JOIN " not in from_clause
-                and " UNION " not in from_clause
-            )
-            if (
-                " FROM " in from_clause
-                and " LIMIT " not in from_clause
-                and " GROUP BY " not in from_clause
-                and not any(token in normalized for token in ("COUNT(", "SUM(", "AVG(", "MIN(", "MAX("))
-                and not only_from_dual
-            ):
-                issues.append(
-                    {
-                        "level": "warning",
-                        "path": relative_path,
-                        "message": "This query does not declare LIMIT or obvious aggregation. Ensure Exasol is doing bounded or aggregated work before returning rows.",
-                    }
-                )
-
-        # Dead SQL detection: queries/*.sql files that no .py file references.
-        sql_files = {p for p in files if p.startswith("queries/") and p.endswith(".sql")}
-        if sql_files:
-            referenced: set[str] = set()
-            for relative_path, content in files.items():
-                if relative_path.endswith(".py"):
-                    for sql_path in sql_files:
-                        if sql_path in content:
-                            referenced.add(sql_path)
-            for sql_path in sorted(sql_files - referenced):
-                issues.append(
-                    {
-                        "level": "info",
-                        "path": sql_path,
-                        "message": (
-                            f"{sql_path} is not referenced by any .py file in the workspace. "
-                            "Delete unused SQL files with app_delete_file to keep the workspace tidy."
-                        ),
-                    }
-                )
-
-        if any(issue["level"] == "error" for issue in issues):
-            status = "failed"
-        elif any(issue["level"] == "warning" for issue in issues):
-            status = "passed_with_warnings"
-        else:
-            status = "passed"
-        return {"status": status, "issues": issues}
-
-    def _is_exasol_workspace(self, manifest: AppManifest) -> bool:
-        data_sources = manifest.data_sources if isinstance(manifest.data_sources, dict) else {}
-        primary = data_sources.get("primary")
-        return bool(
-            manifest.template == "exasol-analytics"
-            or (isinstance(primary, dict) and primary.get("kind") == "exasol")
-        )
-
-    def _top_level_call(self, node: ast.stmt) -> ast.Call | None:
-        value = None
-        if isinstance(node, (ast.Expr, ast.Assign, ast.AnnAssign)):
-            value = node.value
-        if isinstance(value, ast.Call):
-            return value
-        return None
-
-    def _call_matches_names(self, func: ast.AST, allowed_names: set[str]) -> bool:
-        if isinstance(func, ast.Name):
-            return func.id in allowed_names
-        if isinstance(func, ast.Attribute):
-            return func.attr in allowed_names
-        return False
 
     def _call_function_name(self, func: ast.AST) -> str:
         if isinstance(func, ast.Attribute):

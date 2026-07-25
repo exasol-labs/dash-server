@@ -10,7 +10,7 @@ from dash_server.timestamps import parse_iso8601
 import json
 from typing import Any
 
-from dash_server.registry.models import HostedApp
+from dash_server.registry.models import AclEntry, HostedApp, SharePolicy
 from dash_server.registry.sqlite_registry import SQLiteAppRegistry
 
 from .capabilities import ROLE_CAPABILITIES
@@ -180,7 +180,7 @@ class AuthorizationService:
                 target,
                 reason="public_dashboard",
                 effective_role="viewer",
-                matched_policy=public_policy,
+                matched_policy=public_policy.to_dict(),
             )
         if not auth_context.principal.is_authenticated:
             return self._deny(auth_context, target, status_code=401, reason="authentication_required")
@@ -192,8 +192,8 @@ class AuthorizationService:
                 auth_context,
                 target,
                 reason="matched_grant",
-                effective_role=matched_grant["role"],
-                matched_grant=matched_grant,
+                effective_role=matched_grant.role,
+                matched_grant=matched_grant.to_dict(),
             )
         return self._deny(auth_context, target, status_code=403, reason="missing_capability")
 
@@ -213,7 +213,7 @@ class AuthorizationService:
                 target,
                 reason="public_catalog",
                 effective_role="viewer",
-                matched_policy=public_policy,
+                matched_policy=public_policy.to_dict(),
             )
         if not auth_context.principal.is_authenticated:
             return self._deny(auth_context, target, status_code=401, reason="authentication_required")
@@ -225,8 +225,8 @@ class AuthorizationService:
                 auth_context,
                 target,
                 reason="matched_grant",
-                effective_role=matched_grant["role"],
-                matched_grant=matched_grant,
+                effective_role=matched_grant.role,
+                matched_grant=matched_grant.to_dict(),
             )
         matched_policy = self._authenticated_catalog_policy(auth_context.principal, app)
         if matched_policy is not None:
@@ -234,8 +234,8 @@ class AuthorizationService:
                 auth_context,
                 target,
                 reason="matched_share_policy",
-                effective_role=matched_policy["default_link_role"],
-                matched_policy=matched_policy,
+                effective_role=matched_policy.default_link_role,
+                matched_policy=matched_policy.to_dict(),
             )
         return self._deny(auth_context, target, status_code=403, reason="missing_discover_capability")
 
@@ -260,8 +260,8 @@ class AuthorizationService:
                 auth_context,
                 target,
                 reason="matched_grant",
-                effective_role=matched_grant["role"],
-                matched_grant=matched_grant,
+                effective_role=matched_grant.role,
+                matched_grant=matched_grant.to_dict(),
             )
         return self._deny(auth_context, target, status_code=403, reason="missing_preview_capability")
 
@@ -282,29 +282,29 @@ class AuthorizationService:
             revision_number=revision_number,
         )
 
-    def _public_live_policy(self, app: HostedApp) -> dict[str, Any] | None:
+    def _public_live_policy(self, app: HostedApp) -> SharePolicy | None:
         if not self.public_dashboards_enabled or app.auth_policy == "required":
             return None
         policy = self.registry.get_share_policy(app.name)
-        if app.visibility != "public" and policy["link_scope"] != "public":
+        if app.visibility != "public" and policy.link_scope != "public":
             return None
-        if policy["link_scope"] != "public":
+        if policy.link_scope != "public":
             return None
         return policy
 
-    def _public_catalog_policy(self, app: HostedApp) -> dict[str, Any] | None:
+    def _public_catalog_policy(self, app: HostedApp) -> SharePolicy | None:
         policy = self._public_live_policy(app)
-        if policy is None or not policy["public_catalog_visible"]:
+        if policy is None or not policy.public_catalog_visible:
             return None
         return policy
 
-    def _authenticated_catalog_policy(self, principal: Principal, app: HostedApp) -> dict[str, Any] | None:
+    def _authenticated_catalog_policy(self, principal: Principal, app: HostedApp) -> SharePolicy | None:
         policy = self.registry.get_share_policy(app.name)
-        if policy["link_scope"] == "organization" and principal.tenant_id:
+        if policy.link_scope == "organization" and principal.tenant_id:
             return policy
-        allowed_domain = policy.get("allowed_domain")
+        allowed_domain = policy.allowed_domain
         if (
-            policy["link_scope"] == "domain"
+            policy.link_scope == "domain"
             and isinstance(allowed_domain, str)
             and allowed_domain
             and principal.email
@@ -328,13 +328,13 @@ class AuthorizationService:
         principal: Principal,
         app: HostedApp,
         capability: str,
-    ) -> dict[str, Any] | None:
+    ) -> AclEntry | None:
         for grant in self.registry.list_acl_entries(app.name):
-            if grant["principal_type"] == "link" and capability == "dashboard.discover":
+            if grant.principal_type == "link" and capability == "dashboard.discover":
                 continue
             if not self._grant_scope_matches(grant, capability):
                 continue
-            if capability not in self._role_capabilities.get(grant["role"], set()):
+            if capability not in self._role_capabilities.get(grant.role, set()):
                 continue
             if self._grant_expired(grant):
                 continue
@@ -342,8 +342,8 @@ class AuthorizationService:
                 return grant
         return None
 
-    def _grant_scope_matches(self, grant: dict[str, Any], capability: str) -> bool:
-        scope = grant["scope"]
+    def _grant_scope_matches(self, grant: AclEntry, capability: str) -> bool:
+        scope = grant.scope
         if scope == "all":
             return True
         if capability == "dashboard.discover":
@@ -354,17 +354,17 @@ class AuthorizationService:
             return scope in {"preview", "all"}
         return scope in {"manage", "all"}
 
-    def _grant_expired(self, grant: dict[str, Any]) -> bool:
-        expires_at = parse_iso8601(grant.get("expires_at"))
+    def _grant_expired(self, grant: AclEntry) -> bool:
+        expires_at = parse_iso8601(grant.expires_at)
         if expires_at is None:
             return False
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         return expires_at <= datetime.now(timezone.utc)
 
-    def _grant_matches_principal(self, grant: dict[str, Any], principal: Principal) -> bool:
-        principal_type = grant["principal_type"]
-        principal_id = grant["principal_id"]
+    def _grant_matches_principal(self, grant: AclEntry, principal: Principal) -> bool:
+        principal_type = grant.principal_type
+        principal_id = grant.principal_id
         if principal_type == "user":
             return principal_id == principal.principal_id
         if principal_type == "group":

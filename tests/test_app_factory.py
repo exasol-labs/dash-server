@@ -13,9 +13,8 @@ import pytest
 from dash_server.app_factory import create_app
 from dash_server.dash_apps.branding import apply_hosted_footer
 
-pytestmark = pytest.mark.slow
 
-
+@pytest.mark.slow
 def test_create_app_builds_flask_app(app):
     assert app.name == "dash_server.app_factory"
     assert "dispatcher" in app.extensions
@@ -29,6 +28,7 @@ def test_create_app_builds_flask_app(app):
     assert "authorization_service" in app.extensions
 
 
+@pytest.mark.slow
 def test_hosted_chrome_layout_marker_prevents_duplicate_wrapping():
     dash_app = Dash(__name__, server=Flask("chrome-dedup"))
     existing_layout = html.Div(
@@ -140,6 +140,7 @@ def _start_demo_preview(client) -> None:
     assert preview_response.status_code == 200
 
 
+@pytest.mark.slow
 def test_hosted_mode_rejects_missing_secret_key(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["SECRET_KEY"] = None
@@ -148,6 +149,7 @@ def test_hosted_mode_rejects_missing_secret_key(tmp_path):
         create_app(config)
 
 
+@pytest.mark.slow
 def test_hosted_mode_rejects_insecure_cookie_config(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["SESSION_COOKIE_SECURE"] = False
@@ -156,6 +158,7 @@ def test_hosted_mode_rejects_insecure_cookie_config(tmp_path):
         create_app(config)
 
 
+@pytest.mark.slow
 def test_hosted_mode_rejects_disabled_auth(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["DASH_SERVER_AUTH_ENABLED"] = False
@@ -164,6 +167,7 @@ def test_hosted_mode_rejects_disabled_auth(tmp_path):
         create_app(config)
 
 
+@pytest.mark.slow
 def test_hosted_mode_accepts_secure_baseline_config(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     auth_context = app.extensions["auth_context"]
@@ -176,6 +180,7 @@ def test_hosted_mode_accepts_secure_baseline_config(tmp_path):
     assert auth_context.principal.is_authenticated is False
 
 
+@pytest.mark.slow
 def test_hosted_mode_rejects_oidc_without_provider_settings(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["DASH_SERVER_AUTH_PROVIDER"] = "oidc"
@@ -184,6 +189,7 @@ def test_hosted_mode_rejects_oidc_without_provider_settings(tmp_path):
         create_app(config)
 
 
+@pytest.mark.slow
 def test_hosted_trusted_proxy_whoami_resolves_request_principal(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -208,6 +214,7 @@ def test_hosted_trusted_proxy_whoami_resolves_request_principal(tmp_path):
     assert principal["is_authenticated"] is True
 
 
+@pytest.mark.slow
 def test_hosted_dispatcher_denies_anonymous_dashboard_endpoints(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -228,6 +235,7 @@ def test_hosted_dispatcher_denies_anonymous_dashboard_endpoints(tmp_path):
         assert payload["error"]["details"]["capability"] == "dashboard.view_live"
 
 
+@pytest.mark.slow
 def test_hosted_dispatcher_allows_granted_live_dashboard_without_flask_before_request(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     app.extensions["runtime_service"].registry.grant_app_access(
@@ -251,6 +259,7 @@ def test_hosted_dispatcher_allows_granted_live_dashboard_without_flask_before_re
     assert "Demo Dashboard" in json.dumps(response.get_json())
 
 
+@pytest.mark.slow
 def test_hosted_authenticated_user_without_grant_cannot_view_restricted_dashboard(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -263,6 +272,7 @@ def test_hosted_authenticated_user_without_grant_cannot_view_restricted_dashboar
     assert payload["error"]["details"]["matched_grant"] is None
 
 
+@pytest.mark.slow
 def test_hosted_bootstrap_admin_can_view_restricted_and_preview_routes_without_grant(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["DASH_SERVER_BOOTSTRAP_ADMIN_PRINCIPAL_IDS"] = ("trusted_proxy:user-123",)
@@ -322,6 +332,7 @@ def test_hosted_bootstrap_admin_can_view_restricted_and_preview_routes_without_g
     assert "admin" in whoami.get_json()["auth"]["principal"]["roles"]
 
 
+@pytest.mark.slow
 def test_hosted_group_grant_allows_live_dashboard_and_revoke_blocks_immediately(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -355,6 +366,7 @@ def test_hosted_group_grant_allows_live_dashboard_and_revoke_blocks_immediately(
     assert denied.status_code == 403
 
 
+@pytest.mark.slow
 def test_app_share_grants_are_not_written_to_git_desired_state(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -377,6 +389,7 @@ def test_app_share_grants_are_not_written_to_git_desired_state(tmp_path):
     assert "app_acl_entries" not in desired_state
 
 
+@pytest.mark.slow
 def test_app_share_explain_access_reports_matched_grant(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -405,6 +418,7 @@ def test_app_share_explain_access_reports_matched_grant(tmp_path):
     assert payload["decision"]["matched_grant"]["principal_id"] == "trusted_proxy:user-123"
 
 
+@pytest.mark.slow
 def test_hosted_mcp_coarse_gate_denies_anonymous_viewer_and_link_principals(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -447,6 +461,7 @@ def test_hosted_mcp_coarse_gate_denies_anonymous_viewer_and_link_principals(tmp_
     assert link_mcp.get_json()["error"]["data"]["principal_type"] == "link"
 
 
+@pytest.mark.slow
 def test_hosted_app_owner_grant_allows_scoped_sharing_mcp_tools(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     app.extensions["runtime_service"].registry.grant_app_access(
@@ -504,6 +519,7 @@ def test_hosted_app_owner_grant_allows_scoped_sharing_mcp_tools(tmp_path):
     assert tools_list.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
 
 
+@pytest.mark.slow
 def test_hosted_app_owner_can_list_files_and_delete_but_editor_cannot(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     registry = app.extensions["runtime_service"].registry
@@ -553,6 +569,7 @@ def test_hosted_app_owner_can_list_files_and_delete_but_editor_cannot(tmp_path):
     assert registry.get_app("demo") is None
 
 
+@pytest.mark.slow
 def test_hosted_app_viewer_grant_cannot_use_scoped_sharing_mcp_tools(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     app.extensions["runtime_service"].registry.grant_app_access(
@@ -580,6 +597,7 @@ def test_hosted_app_viewer_grant_cannot_use_scoped_sharing_mcp_tools(tmp_path):
     assert response.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
 
 
+@pytest.mark.slow
 def test_hosted_public_dashboard_does_not_allow_scoped_sharing_mcp_tools(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED"] = True
@@ -605,6 +623,7 @@ def test_hosted_public_dashboard_does_not_allow_scoped_sharing_mcp_tools(tmp_pat
     assert response.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
 
 
+@pytest.mark.slow
 def test_one_time_link_can_be_redeemed_once_and_grants_url_only_session(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -651,6 +670,7 @@ def test_one_time_link_can_be_redeemed_once_and_grants_url_only_session(tmp_path
     assert second_redeem.get_json()["error"]["category"] == "share_link_used"
 
 
+@pytest.mark.slow
 def test_one_time_preview_link_redirects_to_active_preview(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -672,6 +692,7 @@ def test_one_time_preview_link_redirects_to_active_preview(tmp_path):
     assert live_response.status_code == 403
 
 
+@pytest.mark.slow
 def test_one_time_link_revoke_blocks_redeemed_session(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -699,6 +720,7 @@ def test_one_time_link_revoke_blocks_redeemed_session(tmp_path):
     assert second_client_response.get_json()["error"]["category"] == "share_link_revoked"
 
 
+@pytest.mark.slow
 def test_expired_one_time_link_cannot_be_redeemed(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     token = "expired-token"
@@ -718,6 +740,7 @@ def test_expired_one_time_link_cannot_be_redeemed(tmp_path):
     assert response.get_json()["error"]["category"] == "share_link_expired"
 
 
+@pytest.mark.slow
 def test_one_time_links_are_not_written_to_git_desired_state(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -736,6 +759,7 @@ def test_one_time_links_are_not_written_to_git_desired_state(tmp_path):
     assert "one_time_link" not in desired_state
 
 
+@pytest.mark.slow
 def test_external_invitation_acceptance_creates_verified_user_grant_and_catalog_access(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -778,12 +802,13 @@ def test_external_invitation_acceptance_creates_verified_user_grant_and_catalog_
     assert b"Demo Dashboard" in homepage.data
     assert second_accept.status_code == 410
     assert second_accept.get_json()["error"]["category"] == "invitation_used"
-    assert accepted_invitation["status"] == "accepted"
-    assert isinstance(accepted_invitation["grant_id"], int)
-    assert user["user_type"] == "external"
-    assert user["email_verified"] is True
+    assert accepted_invitation.status == "accepted"
+    assert isinstance(accepted_invitation.grant_id, int)
+    assert user.user_type == "external"
+    assert user.email_verified is True
 
 
+@pytest.mark.slow
 def test_external_invitation_console_email_provider_marks_delivery_sent(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["DASH_SERVER_EMAIL_PROVIDER"] = "console"
@@ -808,6 +833,7 @@ def test_external_invitation_console_email_provider_marks_delivery_sent(tmp_path
     assert delivery["error"] is None
 
 
+@pytest.mark.slow
 def test_external_invitation_smtp_delivery_success_uses_mock_service(tmp_path, monkeypatch):
     class CapturingSMTP:
         instances = []
@@ -897,6 +923,7 @@ def test_external_invitation_smtp_delivery_success_uses_mock_service(tmp_path, m
     assert "Please review the hosted dashboard." in plain_body
 
 
+@pytest.mark.slow
 def test_external_invitation_smtp_delivery_failure_is_visible(tmp_path, monkeypatch):
     class FailingSMTP:
         def __init__(self, *args, **kwargs):
@@ -949,6 +976,7 @@ def test_external_invitation_smtp_delivery_failure_is_visible(tmp_path, monkeypa
     assert "smtp unavailable" in delivery["error"]
 
 
+@pytest.mark.slow
 def test_hosted_email_provider_requires_secure_smtp_config(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config.update(
@@ -967,6 +995,7 @@ def test_hosted_email_provider_requires_secure_smtp_config(tmp_path):
         create_app(config)
 
 
+@pytest.mark.slow
 def test_external_preview_invitation_grants_preview_only(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -995,6 +1024,7 @@ def test_external_preview_invitation_grants_preview_only(tmp_path):
     assert live_response.status_code == 403
 
 
+@pytest.mark.slow
 def test_external_invitation_revoke_blocks_pending_and_accepted_access(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1033,6 +1063,7 @@ def test_external_invitation_revoke_blocks_pending_and_accepted_access(tmp_path)
     assert blocked.status_code == 403
 
 
+@pytest.mark.slow
 def test_expired_external_invitation_cannot_be_accepted(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     token = "expired-invitation"
@@ -1053,6 +1084,7 @@ def test_expired_external_invitation_cannot_be_accepted(tmp_path):
     assert response.get_json()["error"]["category"] == "invitation_expired"
 
 
+@pytest.mark.slow
 def test_external_invitations_are_not_written_to_git_desired_state(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1071,6 +1103,7 @@ def test_external_invitations_are_not_written_to_git_desired_state(tmp_path):
     assert "external@example.test" not in desired_state
 
 
+@pytest.mark.slow
 def test_hosted_dispatcher_allows_anonymous_public_dashboard_only_when_policy_allows(tmp_path):
     denied_config = _hosted_mode_test_config(tmp_path / "denied")
     denied_app = create_app(denied_config)
@@ -1097,6 +1130,7 @@ def test_hosted_dispatcher_allows_anonymous_public_dashboard_only_when_policy_al
     assert "Demo Dashboard" in json.dumps(allowed_response.get_json())
 
 
+@pytest.mark.slow
 def test_public_dashboard_requires_app_policy_and_tenant_policy(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED"] = True
@@ -1114,6 +1148,7 @@ def test_public_dashboard_requires_app_policy_and_tenant_policy(tmp_path):
     assert allowed.status_code == 200
 
 
+@pytest.mark.slow
 def test_hosted_catalog_hides_restricted_dashboard_from_anonymous_viewer(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1126,6 +1161,7 @@ def test_hosted_catalog_hides_restricted_dashboard_from_anonymous_viewer(tmp_pat
     assert b"No dashboards are visible for this viewer." in homepage.data
 
 
+@pytest.mark.slow
 def test_hosted_catalog_shows_public_dashboard_only_with_public_policy(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config["DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED"] = True
@@ -1143,6 +1179,7 @@ def test_hosted_catalog_shows_public_dashboard_only_with_public_policy(tmp_path)
     assert b"public_catalog" in visible.data
 
 
+@pytest.mark.slow
 def test_domain_share_policy_requires_allowed_domain(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1156,6 +1193,7 @@ def test_domain_share_policy_requires_allowed_domain(tmp_path):
     assert result["structuredContent"]["error"]["details"]["field"] == "allowed_domain"
 
 
+@pytest.mark.slow
 def test_hosted_catalog_domain_policy_matches_only_allowed_domain(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1200,6 +1238,7 @@ def test_hosted_catalog_domain_policy_matches_only_allowed_domain(tmp_path):
     assert same_domain_live.status_code == 403
 
 
+@pytest.mark.slow
 def test_hosted_catalog_shows_direct_and_group_grants_and_hides_after_revoke(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1242,6 +1281,7 @@ def test_hosted_catalog_shows_direct_and_group_grants_and_hides_after_revoke(tmp
     assert b"Demo Dashboard" not in hidden_after_group_revoke.data
 
 
+@pytest.mark.slow
 def test_hosted_catalog_hides_preview_link_without_preview_access(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1266,6 +1306,7 @@ def test_hosted_catalog_hides_preview_link_without_preview_access(tmp_path):
     assert b"Open preview" not in viewer_homepage.data
 
 
+@pytest.mark.slow
 def test_hosted_catalog_hides_live_link_for_preview_only_access(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1296,6 +1337,7 @@ def test_hosted_catalog_hides_live_link_for_preview_only_access(tmp_path):
     assert preview_response.status_code == 200
 
 
+@pytest.mark.slow
 def test_hosted_dispatcher_blocks_preview_for_anonymous_and_viewer_principals(tmp_path):
     app = create_app(_hosted_mode_test_config(tmp_path))
     client = app.test_client()
@@ -1356,6 +1398,7 @@ def test_hosted_dispatcher_blocks_preview_for_anonymous_and_viewer_principals(tm
     assert viewer_response.get_json()["error"]["details"]["reason"] == "missing_preview_capability"
 
 
+@pytest.mark.slow
 def test_hosted_oidc_testing_callback_validates_state_and_nonce(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config.update(
@@ -1405,6 +1448,7 @@ def test_hosted_oidc_testing_callback_validates_state_and_nonce(tmp_path):
     assert principal["groups"] == ["sales"]
 
 
+@pytest.mark.slow
 def test_hosted_oidc_testing_callback_rejects_bad_nonce(tmp_path):
     config = _hosted_mode_test_config(tmp_path)
     config.update(
@@ -1463,6 +1507,7 @@ def test_create_app_bootstraps_gitops_repo_and_demo_worktree(app):
     assert len(status["head_commit"]) == 40
 
 
+@pytest.mark.slow
 def test_demo_dash_route_is_reachable(client):
     response = client.get("/apps/demo")
     layout_response = client.get("/apps/demo/_dash-layout")
@@ -1482,6 +1527,7 @@ def test_demo_dash_route_is_reachable(client):
     assert '"href": "/"' in layout_text
 
 
+@pytest.mark.slow
 def test_root_dashboard_catalog_lists_live_and_preview_routes(tmp_path):
     config = {
         "TESTING": True,
@@ -1619,6 +1665,7 @@ def test_create_app_bootstraps_exasol_profile_from_server_config(tmp_path):
     assert profile_payload["secret_ref"] == {"provider": "env", "key": "EXA_PASSWORD"}
 
 
+@pytest.mark.slow
 def test_create_app_bootstraps_existing_workspace_artifacts(tmp_path):
     config = {
         "TESTING": True,
@@ -1671,6 +1718,7 @@ def test_create_app_bootstraps_existing_workspace_artifacts(tmp_path):
     assert Path(draft["workspace_path"]).exists()
 
 
+@pytest.mark.slow
 def test_git_desired_preview_state_survives_restart(tmp_path):
     config = {
         "TESTING": True,
@@ -1775,6 +1823,7 @@ def test_git_desired_preview_state_survives_restart(tmp_path):
     assert "sales" in repo_status["desired_preview_apps"]
 
 
+@pytest.mark.slow
 def test_create_app_survives_broken_persisted_artifact_during_bootstrap(tmp_path):
     config = {
         "TESTING": True,
@@ -1843,6 +1892,7 @@ def test_create_app_survives_broken_persisted_artifact_during_bootstrap(tmp_path
     assert latest_error["category"] == "route_misconfiguration"
 
 
+@pytest.mark.slow
 def test_create_app_rebuilds_registry_cache_from_git_after_registry_deletion(tmp_path):
     config = {
         "TESTING": True,
@@ -1956,6 +2006,7 @@ def test_create_app_rebuilds_registry_cache_from_git_after_registry_deletion(tmp
     assert len(revisions) == 2
 
 
+@pytest.mark.slow
 def test_create_app_rebuilds_unpublished_built_revision_history_from_git_after_registry_deletion(tmp_path):
     config = {
         "TESTING": True,
@@ -2048,6 +2099,7 @@ def test_create_app_rebuilds_unpublished_built_revision_history_from_git_after_r
     assert len(rebuilt_revision.commit_sha) == 40
 
 
+@pytest.mark.slow
 def test_create_app_rebuilds_canonical_events_from_git_after_registry_deletion(tmp_path):
     config = {
         "TESTING": True,
@@ -2172,117 +2224,140 @@ def test_create_app_rebuilds_canonical_events_from_git_after_registry_deletion(t
     assert "rolled_back" in event_types
 
 
-def test_startup_reconcile_applies_external_git_desired_state_commit(tmp_path):
-    config = {
-        "TESTING": True,
-        "REGISTRY_DB_PATH": str(tmp_path / "registry.sqlite3"),
-        "ARTIFACTS_ROOT": str(tmp_path / "artifacts"),
-        "WORKSPACES_ROOT": str(tmp_path / "workspaces"),
-        "DIAGNOSTICS_ROOT": str(tmp_path / "diagnostics"),
-        "GITOPS_REPO_PATH": str(tmp_path / "gitops-repo"),
-    }
-    first_app = create_app(config)
-    client = first_app.test_client()
+@pytest.mark.slow
+class TestStartupReconcileFromExternalGitCommit:
+    """Decomposition of ``test_startup_reconcile_applies_external_git_desired_
+    state_commit``.
 
-    create_response = client.post(
-        "/mcp",
-        json={
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "app_create",
-                "arguments": {
-                    "bundle": {
-                        "manifest": {
-                            "name": "deals",
-                            "title": "Deals Dashboard v1",
-                            "route": "/apps/deals",
-                            "description": "Deals dashboard created through the Stage 4 MCP control plane.",
-                            "template": "metric-cards",
-                        },
-                        "dashboard": {
-                            "headline": "Deals Dashboard v1",
-                            "summary": "Initial live revision.",
-                            "metrics": [
-                                {"label": "Revenue", "value": "$900K"},
-                                {"label": "Conversion", "value": "3.8%"},
-                            ],
-                        },
-                    }
+    The build -> external git promote-commit -> restart end-to-end path runs
+    once in the class-scoped ``reconciled`` fixture; the focused tests assert
+    the two facets of the outcome (the promoted revision is served, and the
+    current-revision pointer advanced) against the captured payloads.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def reconciled(tmp_path_factory):
+        tmp_path = tmp_path_factory.mktemp("startup_reconcile")
+        config = {
+            "TESTING": True,
+            "REGISTRY_DB_PATH": str(tmp_path / "registry.sqlite3"),
+            "ARTIFACTS_ROOT": str(tmp_path / "artifacts"),
+            "WORKSPACES_ROOT": str(tmp_path / "workspaces"),
+            "DIAGNOSTICS_ROOT": str(tmp_path / "diagnostics"),
+            "GITOPS_REPO_PATH": str(tmp_path / "gitops-repo"),
+        }
+        first_app = create_app(config)
+        client = first_app.test_client()
+
+        create_response = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "app_create",
+                    "arguments": {
+                        "bundle": {
+                            "manifest": {
+                                "name": "deals",
+                                "title": "Deals Dashboard v1",
+                                "route": "/apps/deals",
+                                "description": "Deals dashboard created through the Stage 4 MCP control plane.",
+                                "template": "metric-cards",
+                            },
+                            "dashboard": {
+                                "headline": "Deals Dashboard v1",
+                                "summary": "Initial live revision.",
+                                "metrics": [
+                                    {"label": "Revenue", "value": "$900K"},
+                                    {"label": "Conversion", "value": "3.8%"},
+                                ],
+                            },
+                        }
+                    },
                 },
             },
-        },
-    )
-    created = create_response.get_json()["result"]["structuredContent"]
+        )
+        created = create_response.get_json()["result"]["structuredContent"]
 
-    build_response = client.post(
-        "/mcp",
-        json={
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "app_build",
-                "arguments": {
-                    "name": "deals",
-                    "bundle": {
-                        "manifest": {
-                            "name": "deals",
-                            "title": "Deals Dashboard v2",
-                            "route": "/apps/deals",
-                            "description": "Deals dashboard created through the Stage 4 MCP control plane.",
-                            "template": "metric-cards",
-                        },
-                        "dashboard": {
-                            "headline": "Deals Dashboard v2",
-                            "summary": "Promoted by an external Git change.",
-                            "metrics": [
-                                {"label": "Revenue", "value": "$1.4M"},
-                                {"label": "Conversion", "value": "4.2%"},
-                            ],
+        build_response = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "app_build",
+                    "arguments": {
+                        "name": "deals",
+                        "bundle": {
+                            "manifest": {
+                                "name": "deals",
+                                "title": "Deals Dashboard v2",
+                                "route": "/apps/deals",
+                                "description": "Deals dashboard created through the Stage 4 MCP control plane.",
+                                "template": "metric-cards",
+                            },
+                            "dashboard": {
+                                "headline": "Deals Dashboard v2",
+                                "summary": "Promoted by an external Git change.",
+                                "metrics": [
+                                    {"label": "Revenue", "value": "$1.4M"},
+                                    {"label": "Conversion", "value": "4.2%"},
+                                ],
+                            },
                         },
                     },
                 },
             },
-        },
-    )
-    built = build_response.get_json()["result"]["structuredContent"]["revision"]
+        )
+        built = build_response.get_json()["result"]["structuredContent"]["revision"]
 
-    repo_root = Path(first_app.extensions["git_repo_service"].repo_root)
-    live_path = repo_root / "desired-state" / "live" / "deals.yaml"
-    desired_live = live_path.read_text()
-    desired_live = desired_live.replace("targetRevision: r000001", "targetRevision: r000002")
-    desired_live = desired_live.replace(created["current_revision"]["commit_sha"], built["commit_sha"])
-    desired_live = desired_live.replace(created["current_revision"]["git_tag"], built["git_tag"])
-    desired_live = desired_live.replace(
-        created["current_revision"]["release_manifest_path"],
-        built["release_manifest_path"],
-    )
-    live_path.write_text(desired_live)
-    subprocess.run(
-        ["git", "-C", str(repo_root), "add", "--", "desired-state/live/deals.yaml"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo_root), "commit", "-m", "external: promote deals r000002"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+        repo_root = Path(first_app.extensions["git_repo_service"].repo_root)
+        live_path = repo_root / "desired-state" / "live" / "deals.yaml"
+        desired_live = live_path.read_text()
+        desired_live = desired_live.replace("targetRevision: r000001", "targetRevision: r000002")
+        desired_live = desired_live.replace(created["current_revision"]["commit_sha"], built["commit_sha"])
+        desired_live = desired_live.replace(created["current_revision"]["git_tag"], built["git_tag"])
+        desired_live = desired_live.replace(
+            created["current_revision"]["release_manifest_path"],
+            built["release_manifest_path"],
+        )
+        live_path.write_text(desired_live)
+        subprocess.run(
+            ["git", "-C", str(repo_root), "add", "--", "desired-state/live/deals.yaml"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "commit", "-m", "external: promote deals r000002"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
-    second_app = create_app(config)
-    second_client = second_app.test_client()
-    live_layout = second_client.get("/apps/deals/_dash-layout")
-    status = second_app.extensions["runtime_service"].get_app_status("deals")
+        second_app = create_app(config)
+        second_client = second_app.test_client()
+        live_layout = second_client.get("/apps/deals/_dash-layout")
+        status = second_app.extensions["runtime_service"].get_app_status("deals")
+        return {
+            "live_layout_status": live_layout.status_code,
+            "live_layout_json": live_layout.get_json(),
+            "status": status,
+        }
 
-    assert live_layout.status_code == 200
-    assert "Deals Dashboard v2" in json.dumps(live_layout.get_json())
-    assert status["current_revision"]["revision_number"] == 2
+    def test_promoted_revision_is_served_after_restart(self, reconciled):
+        assert reconciled["live_layout_status"] == 200
+        assert "Deals Dashboard v2" in json.dumps(reconciled["live_layout_json"])
+
+    def test_current_revision_pointer_advances_to_two(self, reconciled):
+        assert reconciled["status"]["current_revision"]["revision_number"] == 2
 
 
+@pytest.mark.slow
 def test_single_app_mutation_reconciles_only_that_app(app, client):
     """Wave 1 gate: exposure changes must not re-resolve or re-mount unrelated apps."""
     for name in ("iso-a", "iso-b"):

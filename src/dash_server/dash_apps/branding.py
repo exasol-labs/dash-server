@@ -1,6 +1,7 @@
 """Shared branding helpers for hosted Dash apps."""
 
 from __future__ import annotations
+from pathlib import Path
 from typing import Any
 
 from dash import Dash, Input, Output, State, dcc, html
@@ -9,6 +10,10 @@ from flask import jsonify
 _EXASOL_URL = "https://www.exasol.com/"
 _FOOTER_HEIGHT_PX = 32
 _REFRESH_INTERVAL_MS = 2000
+
+# Single source of truth for the `__dash-server` element ids the hosted chrome
+# injects. The auto-refresh clientside callback (see `hosted_refresh.js`) binds
+# to these; keeping them here avoids the ids drifting between Python and JS.
 _REFRESH_INTERVAL_ID = "__dash-server-refresh-interval"
 _REFRESH_META_ID = "__dash-server-refresh-meta"
 _REFRESH_NOOP_ID = "__dash-server-refresh-noop"
@@ -16,6 +21,12 @@ _STATUS_ROUTE = "/__dash-server/status"
 _HOSTED_CHROME_ID = "__dash-server-hosted-chrome"
 _CATALOG_LINK_ID = "__dash-server-catalog-link"
 _EXPORTS_LINK_ID = "__dash-server-exports-link"
+
+# The auto-refresh clientside callback body lives in a dedicated assets file so
+# it is version-controlled, lint/test-visible, and read exactly once at import
+# time rather than re-parsed from an embedded literal on every registration.
+_REFRESH_JS_PATH = Path(__file__).with_name("assets") / "hosted_refresh.js"
+_REFRESH_CLIENTSIDE_JS = _REFRESH_JS_PATH.read_text(encoding="utf-8")
 
 
 def apply_hosted_footer(
@@ -25,14 +36,26 @@ def apply_hosted_footer(
     revision_number: int | None = None,
     app_name: str | None = None,
     has_consumption_outputs: bool = False,
+    wrap: bool = True,
 ) -> None:
-    """Wrap a Dash app layout with the standard hosted-app footer once."""
+    """Wrap a Dash app layout with the standard hosted-app footer once.
+
+    Wrapping is gated on the explicit ``wrap`` flag supplied by the caller — the
+    call site decides whether the app should receive hosted chrome rather than
+    branding inferring it from a layout tree-walk. Idempotence is guarded
+    explicitly: a marker attribute stashed on the Dash app records that chrome
+    was applied, and a layout whose root already carries the hosted-chrome id is
+    left untouched (an O(1) root check, not a recursive scan of ``children``).
+    """
+
+    if not wrap:
+        return
 
     if getattr(dash_app, "_dash_server_footer_applied", False):
         return
 
     original_layout = dash_app.layout
-    if not callable(original_layout) and _contains_component_id(original_layout, _HOSTED_CHROME_ID):
+    if not callable(original_layout) and _is_hosted_chrome(original_layout):
         dash_app._dash_server_footer_applied = True  # type: ignore[attr-defined]
         return
 
@@ -79,7 +102,7 @@ def _with_footer(
     app_name: str | None,
     has_consumption_outputs: bool,
 ) -> Any:
-    if _contains_component_id(content, _HOSTED_CHROME_ID):
+    if _is_hosted_chrome(content):
         return content
 
     children: list[Any] = []
@@ -177,19 +200,19 @@ def _with_footer(
     )
 
 
-def _contains_component_id(component: Any, component_id: str) -> bool:
-    """Return whether a Dash component tree already contains platform chrome."""
+def _is_hosted_chrome(component: Any) -> bool:
+    """Return whether ``component`` is *already* a hosted-chrome wrapper.
 
-    if component is None:
-        return False
+    The wrapper `_with_footer` builds always carries `_HOSTED_CHROME_ID` on its
+    root ``Div``, so an O(1) root-id check reliably detects a previously wrapped
+    layout. This deliberately replaces the old recursive `children` walk, which
+    was fragile: it descended only into ``children`` and missed components that
+    store layout in other props.
+    """
+
     if isinstance(component, (list, tuple)):
-        return any(_contains_component_id(child, component_id) for child in component)
-    if getattr(component, "id", None) == component_id:
-        return True
-    children = getattr(component, "children", None)
-    if children is component:
         return False
-    return _contains_component_id(children, component_id)
+    return getattr(component, "id", None) == _HOSTED_CHROME_ID
 
 
 def _register_refresh_status_route(
@@ -221,33 +244,7 @@ def _register_refresh_clientside_callback(dash_app: Dash) -> None:
         return
 
     dash_app.clientside_callback(
-        """
-        function(nIntervals, meta) {
-          if (!meta || typeof meta.mount_path !== "string" || typeof meta.revision_number !== "number") {
-            return "";
-          }
-          var statusUrl = meta.mount_path.replace(/\\/$/, "") + "/__dash-server/status";
-          fetch(statusUrl, {credentials: "same-origin", cache: "no-store"})
-            .then(function(response) {
-              if (!response.ok) {
-                return null;
-              }
-              return response.json();
-            })
-            .then(function(payload) {
-              if (!payload || typeof payload.revision_number !== "number") {
-                return;
-              }
-              if (payload.revision_number !== meta.revision_number) {
-                window.location.reload();
-              }
-            })
-            .catch(function() {
-              return null;
-            });
-          return "";
-        }
-        """,
+        _REFRESH_CLIENTSIDE_JS,
         Output(_REFRESH_NOOP_ID, "children"),
         Input(_REFRESH_INTERVAL_ID, "n_intervals"),
         State(_REFRESH_META_ID, "data"),

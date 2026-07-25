@@ -6,8 +6,6 @@ from typing import Any
 
 import pytest
 
-pytestmark = pytest.mark.slow
-
 
 def _call_mcp(client, method: str, params: dict[str, Any], request_id: int = 1):
     return client.post(
@@ -177,6 +175,7 @@ class _SqlSmokeFakePyExasolModule:
         return connection
 
 
+@pytest.mark.slow
 def test_exasol_profile_create_validate_and_resources(app, client) -> None:
     fake_module = _FakePyExasolModule()
     app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
@@ -242,6 +241,7 @@ def test_exasol_profile_create_validate_and_resources(app, client) -> None:
     assert "dash://exasol/help/agent-workflow" in validation_payload["guidance"]["related_resources"]
 
 
+@pytest.mark.slow
 def test_app_create_exasol_dashboard_creates_live_querying_app(app, client) -> None:
     fake_module = _FakePyExasolModule()
     app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
@@ -348,6 +348,7 @@ def test_app_create_exasol_dashboard_creates_live_querying_app(app, client) -> N
     assert "analytics-prod" in profile_list_response.get_json()["result"]["structuredContent"]["profiles"][0]["name"]
 
 
+@pytest.mark.slow
 def test_exasol_authoring_guidance_and_validation_block_embedded_credentials(client) -> None:
     authoring_guide = _resource_json(client, "dash://meta/app-authoring-guide", request_id=30)
     assert any(
@@ -417,6 +418,7 @@ def test_exasol_authoring_guidance_and_validation_block_embedded_credentials(cli
     assert any("EXA_/EXASOL_" in message for message in messages)
 
 
+@pytest.mark.slow
 def test_exasol_patterns_help_and_kpi_trend_scaffold(app, client) -> None:
     fake_module = _FakePyExasolModule()
     app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
@@ -490,6 +492,7 @@ def test_exasol_patterns_help_and_kpi_trend_scaffold(app, client) -> None:
     assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
+@pytest.mark.slow
 def test_app_scaffold_from_schema_generates_schema_specific_bundle(app, client) -> None:
     fake_module = _RoutingFakePyExasolModule()
     app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
@@ -569,6 +572,7 @@ def test_app_scaffold_from_schema_generates_schema_specific_bundle(app, client) 
     assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
+@pytest.mark.slow
 def test_exasol_validation_flags_import_time_queries_and_risky_sql(client) -> None:
     create_response = _call_mcp(
         client,
@@ -868,6 +872,7 @@ def test_bug007_preview_path_accepts_both_bare_and_r000_form() -> None:
     assert match is not None and match.group(2) == "42"
 
 
+@pytest.mark.slow
 def test_bug008_unknown_tool_argument_returns_invalid_arguments_error(app, client) -> None:
     """BUG-008 regression: unknown arguments to tools/call must produce -32602, not be silently dropped."""
     response = _call_mcp(
@@ -887,6 +892,7 @@ def test_bug008_unknown_tool_argument_returns_invalid_arguments_error(app, clien
     assert "target" in error["summary"] or "deployment_target" in error["summary"]
 
 
+@pytest.mark.slow
 def test_bug008_camel_case_force_clean_is_rejected(app, client) -> None:
     response = _call_mcp(
         client,
@@ -947,6 +953,7 @@ def test_data_layer_error_recording_with_rate_limit(tmp_path) -> None:
     assert third is not None
 
 
+@pytest.mark.slow
 def test_data_layer_probe_marks_health_degraded_when_errors_present(tmp_path, monkeypatch) -> None:
     """BUG-002 + diagnostics cross-cutting: app_run_healthcheck reports degraded when data_layer
     errors exist."""
@@ -970,6 +977,7 @@ def test_data_layer_probe_marks_health_degraded_when_errors_present(tmp_path, mo
     assert "REVENUEZ" in (probe["details"].get("latest_error") or "")
 
 
+@pytest.mark.slow
 def test_sql_placeholders_help_resource_is_reachable(app, client) -> None:
     payload = _resource_json(client, "dash://exasol/help/sql-placeholders", request_id=910)
     assert payload["resource"] == "dash://exasol/help/sql-placeholders"
@@ -1067,6 +1075,7 @@ def _sql_smoke_probe(preflight: dict[str, Any]) -> dict[str, Any]:
     return next(probe for probe in preflight["probes"] if probe.get("name") == "sql_smoke")
 
 
+@pytest.mark.slow
 def test_parameterized_sql_without_smoke_params_blocks_live_deploy(app, client) -> None:
     fake_module = _SqlSmokeFakePyExasolModule()
     app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
@@ -1095,6 +1104,7 @@ def test_parameterized_sql_without_smoke_params_blocks_live_deploy(app, client) 
     assert not any(connection.executions for connection in fake_module.connections)
 
 
+@pytest.mark.slow
 def test_parameterized_sql_smoke_params_exercise_query_and_catch_bad_column(app, client) -> None:
     fake_module = _SqlSmokeFakePyExasolModule()
     app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
@@ -1124,6 +1134,7 @@ def test_parameterized_sql_smoke_params_exercise_query_and_catch_bad_column(app,
     assert executions[0][1] == {"agent_id": "agent-001"}
 
 
+@pytest.mark.slow
 def test_exasol_helper_auto_seeded_for_exasol_analytics_template(client) -> None:
     """BUG-004 regression: app_create_from_files with template=exasol-analytics auto-injects dash_server_exasol.py."""
     response = _call_mcp(

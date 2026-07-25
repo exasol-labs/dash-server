@@ -1,10 +1,18 @@
-"""Flask application factory for dash-server."""
+"""Flask application factory for dash-server.
+
+``create_app`` reads top-to-bottom as an ordered list of named stages
+(``_resolve_roots`` → dependency layer → worker manager → services →
+blueprints); each stage's inputs are explicit in its signature so the
+load-bearing construction order is visible rather than implied by statement
+position.
+"""
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from flask import Flask, g
 
@@ -23,6 +31,7 @@ from .consumption.blueprint import create_consumption_blueprint
 from .dependencies import DependencyEnvironmentService, DependencyInstaller
 from .diagnostics import DiagnosticsService
 from .exasol import ExasolDashboardService
+from .exceptions import DashServerError
 from .gitops import GitRepoService, GitWorktreeService
 from .mailer import InvitationEmailSender
 from .mcp.blueprint import create_mcp_blueprint
@@ -32,11 +41,28 @@ from .registry.sqlite_registry import SQLiteAppRegistry
 from .runtime.dispatcher import DynamicPrefixDispatcher
 from .runtime.service import AppRuntimeService
 
+if TYPE_CHECKING:  # imported lazily inside _build_worker_manager to keep startup cheap
+    from .runtime.worker_manager import AppWorkerManager
+
+
+def _startup_error(summary: str) -> DashServerError:
+    """Build a structured startup-validation failure (P1 error vocabulary).
+
+    These are raised before ``create_app`` returns, so they abort startup and
+    their wire codes are never rendered; routing them through
+    :class:`DashServerError` keeps the message text intact while unifying the
+    error surface. A handful of sibling validations still raise plain
+    ``RuntimeError`` where existing tests assert ``pytest.raises(RuntimeError)``
+    on the message — those are marked inline.
+    """
+
+    return DashServerError(category="startup_configuration_error", summary=summary)
+
 
 def _configure_deployment_mode(app: Flask) -> AuthContext:
-    mode = str(app.config.get("DASH_SERVER_MODE", "local")).strip().lower()
+    mode = str(app.config["DASH_SERVER_MODE"]).strip().lower()
     if mode not in DEPLOYMENT_MODES:
-        raise RuntimeError("DASH_SERVER_MODE must be either 'local' or 'hosted'.")
+        raise _startup_error("DASH_SERVER_MODE must be either 'local' or 'hosted'.")
     app.config["DASH_SERVER_MODE"] = mode
 
     configured_auth_enabled = app.config.get("DASH_SERVER_AUTH_ENABLED")
@@ -52,14 +78,15 @@ def _configure_deployment_mode(app: Flask) -> AuthContext:
     else:
         provider = str(configured_provider).strip().lower()
     if provider not in AUTH_PROVIDERS:
-        raise RuntimeError("DASH_SERVER_AUTH_PROVIDER must be disabled, oidc, or trusted_proxy.")
+        raise _startup_error("DASH_SERVER_AUTH_PROVIDER must be disabled, oidc, or trusted_proxy.")
     app.config["DASH_SERVER_AUTH_PROVIDER"] = provider
 
     if mode == "hosted":
         if not auth_enabled:
+            # RuntimeError kept: test asserts pytest.raises(RuntimeError, match="DASH_SERVER_AUTH_ENABLED").
             raise RuntimeError("Hosted mode requires DASH_SERVER_AUTH_ENABLED=true.")
         if provider == "disabled":
-            raise RuntimeError("Hosted mode requires DASH_SERVER_AUTH_PROVIDER to be oidc or trusted_proxy.")
+            raise _startup_error("Hosted mode requires DASH_SERVER_AUTH_PROVIDER to be oidc or trusted_proxy.")
         _validate_hosted_mode_config(app)
         _validate_hosted_auth_provider_config(app)
 
@@ -68,21 +95,23 @@ def _configure_deployment_mode(app: Flask) -> AuthContext:
 
 def _validate_hosted_mode_config(app: Flask) -> None:
     if not app.config.get("SECRET_KEY"):
+        # RuntimeError kept: test asserts pytest.raises(RuntimeError, match="SECRET_KEY").
         raise RuntimeError("Hosted mode requires SECRET_KEY or DASH_SERVER_SECRET_KEY.")
     session_cookie_secure = coerce_bool(app.config.get("SESSION_COOKIE_SECURE"))
     app.config["SESSION_COOKIE_SECURE"] = session_cookie_secure
     if not session_cookie_secure:
+        # RuntimeError kept: test asserts pytest.raises(RuntimeError, match="SESSION_COOKIE_SECURE").
         raise RuntimeError("Hosted mode requires SESSION_COOKIE_SECURE=true.")
     session_cookie_httponly = coerce_bool(app.config.get("SESSION_COOKIE_HTTPONLY"), default=True)
     app.config["SESSION_COOKIE_HTTPONLY"] = session_cookie_httponly
     if not session_cookie_httponly:
-        raise RuntimeError("Hosted mode requires SESSION_COOKIE_HTTPONLY=true.")
+        raise _startup_error("Hosted mode requires SESSION_COOKIE_HTTPONLY=true.")
     same_site = app.config.get("SESSION_COOKIE_SAMESITE")
     if not isinstance(same_site, str) or same_site.lower() not in SAMESITE_VALUES:
-        raise RuntimeError("Hosted mode requires SESSION_COOKIE_SAMESITE to be Lax, Strict, or None.")
+        raise _startup_error("Hosted mode requires SESSION_COOKIE_SAMESITE to be Lax, Strict, or None.")
     public_base_url = app.config.get("DASH_SERVER_PUBLIC_BASE_URL")
     if not isinstance(public_base_url, str) or not public_base_url.startswith("https://"):
-        raise RuntimeError("Hosted mode requires DASH_SERVER_PUBLIC_BASE_URL to be an https:// URL.")
+        raise _startup_error("Hosted mode requires DASH_SERVER_PUBLIC_BASE_URL to be an https:// URL.")
 
 
 def _validate_runtime_isolation_config(app: Flask) -> None:
@@ -90,23 +119,19 @@ def _validate_runtime_isolation_config(app: Flask) -> None:
 
     _validate_port_config(app)
 
-    dep_iso = str(app.config.get("APP_DEPENDENCY_ISOLATION", "shared")).strip().lower()
-    runtime_mode = str(app.config.get("APP_RUNTIME_MODE", "in_process")).strip().lower()
+    dep_iso = str(app.config["APP_DEPENDENCY_ISOLATION"]).strip().lower()
+    runtime_mode = str(app.config["APP_RUNTIME_MODE"]).strip().lower()
     if dep_iso not in DEPENDENCY_ISOLATION_MODES:
-        raise RuntimeError(
-            "DASH_SERVER_APP_DEPENDENCY_ISOLATION must be 'shared' or 'per_app'."
-        )
+        raise _startup_error("DASH_SERVER_APP_DEPENDENCY_ISOLATION must be 'shared' or 'per_app'.")
     if runtime_mode not in RUNTIME_MODES:
-        raise RuntimeError(
-            "DASH_SERVER_APP_RUNTIME_MODE must be 'in_process' or 'isolated'."
-        )
+        raise _startup_error("DASH_SERVER_APP_RUNTIME_MODE must be 'in_process' or 'isolated'.")
     app.config["APP_DEPENDENCY_ISOLATION"] = dep_iso
     app.config["APP_RUNTIME_MODE"] = runtime_mode
 
     if app.config.get("DASH_SERVER_MODE") == "hosted":
         unsafe_ok = coerce_bool(app.config.get("DASH_SERVER_ALLOW_UNSAFE_INPROCESS"))
         if (dep_iso != "per_app" or runtime_mode != "isolated") and not unsafe_ok:
-            raise RuntimeError(
+            raise _startup_error(
                 "Hosted mode requires APP_DEPENDENCY_ISOLATION=per_app and "
                 "APP_RUNTIME_MODE=isolated. Set DASH_SERVER_ALLOW_UNSAFE_INPROCESS=true "
                 "to override during development."
@@ -127,7 +152,7 @@ def _validate_runtime_isolation_config(app: Flask) -> None:
 
 def _validate_port_config(app: Flask) -> None:
     control_plane_port = _coerce_port(
-        app.config.get("DASH_SERVER_PORT", 5100),
+        app.config["DASH_SERVER_PORT"],
         key="DASH_SERVER_PORT",
     )
     app.config["DASH_SERVER_PORT"] = control_plane_port
@@ -141,6 +166,7 @@ def _validate_port_config(app: Flask) -> None:
 
 
 def _coerce_port(value: Any, *, key: str) -> int:
+    # RuntimeError kept: test asserts pytest.raises(RuntimeError, match="DASH_SERVER_APP_WORKER_PORT_RANGE").
     try:
         port = int(value)
     except (TypeError, ValueError) as exc:
@@ -151,6 +177,7 @@ def _coerce_port(value: Any, *, key: str) -> int:
 
 
 def _parse_port_range(value: str, *, key: str) -> tuple[int, int]:
+    # RuntimeError kept: test asserts pytest.raises(RuntimeError, match="DASH_SERVER_APP_WORKER_PORT_RANGE").
     if "-" not in value:
         raise RuntimeError(f"{key} must use START-END syntax.")
     start_text, end_text = (part.strip() for part in value.split("-", 1))
@@ -171,18 +198,19 @@ def _validate_hosted_auth_provider_config(app: Flask) -> None:
         ):
             value = app.config.get(key)
             if not isinstance(value, str) or not value:
+                # RuntimeError kept: test asserts pytest.raises(RuntimeError, match="DASH_SERVER_OIDC_ISSUER").
                 raise RuntimeError(f"Hosted OIDC auth requires {key}.")
         redirect_uri = app.config["DASH_SERVER_OIDC_REDIRECT_URI"]
         if not str(redirect_uri).startswith("https://"):
-            raise RuntimeError("Hosted OIDC auth requires DASH_SERVER_OIDC_REDIRECT_URI to be an https:// URL.")
+            raise _startup_error("Hosted OIDC auth requires DASH_SERVER_OIDC_REDIRECT_URI to be an https:// URL.")
         return
 
     if provider == "trusted_proxy":
         if not coerce_bool(app.config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED")):
-            raise RuntimeError("Hosted trusted_proxy auth requires DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED=true.")
+            raise _startup_error("Hosted trusted_proxy auth requires DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED=true.")
         allowed_cidrs = app.config.get("DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS")
         if not _config_string_sequence(allowed_cidrs):
-            raise RuntimeError("Hosted trusted_proxy auth requires DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS.")
+            raise _startup_error("Hosted trusted_proxy auth requires DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS.")
 
 
 def _config_string_sequence(value: Any) -> tuple[str, ...]:
@@ -194,7 +222,18 @@ def _config_string_sequence(value: Any) -> tuple[str, ...]:
 
 
 def _resolve_instance_path(test_config: dict[str, Any] | None, project_root: Path) -> str:
-    """Pick the instance directory. See `create_app` for the precedence order."""
+    """Pick the instance directory the whole run is anchored under.
+
+    Precedence (highest first):
+      1. ``test_config["INSTANCE_PATH"]`` — the config-level override. It wins
+         over any ambient env var, which is what lets a test pin the instance
+         path regardless of what ``DASH_SERVER_INSTANCE_PATH`` is set to in the
+         surrounding shell/CI.
+      2. ``DASH_SERVER_INSTANCE_PATH`` / ``FLASK_INSTANCE_PATH`` env var. Read
+         live (not via the import-time ``Config.INSTANCE_PATH`` snapshot) so a
+         value exported at runtime is still honored when no override is given.
+      3. Default: ``<project_root>/instance``.
+    """
 
     if test_config and test_config.get("INSTANCE_PATH"):
         return str(test_config["INSTANCE_PATH"])
@@ -226,123 +265,109 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
     dsn = app.config.get("EXASOL_BOOTSTRAP_DSN")
     user = app.config.get("EXASOL_BOOTSTRAP_USER")
     if not dsn or not user:
-        raise RuntimeError(
+        raise _startup_error(
             "EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_DSN or "
             "DASH_SERVER_EXASOL_USER is missing."
         )
 
     secret_env_var = app.config.get("EXASOL_BOOTSTRAP_SECRET_ENV_VAR")
     if not secret_env_var:
-        raise RuntimeError(
+        raise _startup_error(
             "EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_SECRET_ENV_VAR is missing."
         )
 
     exasol_dashboard_service.create_local_profile(
         name=str(profile_name),
-        backend=str(app.config.get("EXASOL_BOOTSTRAP_BACKEND", "onprem")),
-        credential_mode=str(app.config.get("EXASOL_BOOTSTRAP_CREDENTIAL_MODE", "password")),
+        backend=str(app.config["EXASOL_BOOTSTRAP_BACKEND"]),
+        credential_mode=str(app.config["EXASOL_BOOTSTRAP_CREDENTIAL_MODE"]),
         dsn=str(dsn),
         user=str(user),
         description=app.config.get("EXASOL_BOOTSTRAP_DESCRIPTION"),
-        tls_verify=bool(app.config.get("EXASOL_BOOTSTRAP_TLS_VERIFY", True)),
+        tls_verify=bool(app.config["EXASOL_BOOTSTRAP_TLS_VERIFY"]),
         secret_env_var=str(secret_env_var),
-        statement_timeout_seconds=int(app.config.get("EXASOL_BOOTSTRAP_STATEMENT_TIMEOUT_SECONDS", 30)),
-        row_limit=int(app.config.get("EXASOL_BOOTSTRAP_ROW_LIMIT", 50000)),
+        statement_timeout_seconds=int(app.config["EXASOL_BOOTSTRAP_STATEMENT_TIMEOUT_SECONDS"]),
+        row_limit=int(app.config["EXASOL_BOOTSTRAP_ROW_LIMIT"]),
     )
 
 
-def create_app(test_config: dict[str, Any] | None = None) -> Flask:
-    """Create and configure the Flask control-plane app.
+@dataclass(frozen=True)
+class Roots:
+    """Filesystem/DB roots the control plane anchors under the instance path.
 
-    Instance-path resolution (highest priority first):
-      1. ``test_config["INSTANCE_PATH"]`` — explicit pytest / programmatic override.
-      2. ``DASH_SERVER_INSTANCE_PATH`` or ``FLASK_INSTANCE_PATH`` env var.
-      3. Default: ``<project_root>/instance``.
-
-    Per-subroot keys (``REGISTRY_DB_PATH``, ``ARTIFACTS_ROOT``, etc.) each have their
-    own ``DASH_SERVER_*`` env-var fallback in ``Config`` and override the per-instance
-    derivation when set.
+    Replaces the ~10 locals ``create_app`` used to thread by position. Each
+    value is the config override when set, else the ``Config.default_*``
+    derivation from the instance path. ``_resolve_roots`` additionally writes
+    the three ``APP_*_ROOT`` values back into ``app.config`` because downstream
+    code (and tests) read them from there — those write-backs are load-bearing.
     """
 
-    project_root = Path(__file__).resolve().parents[2]
-    instance_path = _resolve_instance_path(test_config, project_root)
-    app = Flask(
-        __name__,
-        instance_path=instance_path,
-        instance_relative_config=True,
-    )
-    app.config.from_object(Config)
+    db_path: str
+    artifacts_root: str
+    workspaces_root: str
+    diagnostics_root: str
+    dependency_state_root: str
+    gitops_repo_path: str
+    exasol_secrets_root: str
+    app_environments_root: str
+    app_wheel_cache_root: str
+    app_pycache_root: str
 
-    if test_config:
-        app.config.update(test_config)
-    # Echo the resolved path back onto config for downstream code (and tests) that
-    # want to know which directory the run is anchored under.
-    app.config["INSTANCE_PATH"] = instance_path
 
-    auth_context = _configure_deployment_mode(app)
-    email_sender = InvitationEmailSender(app.config)
-    email_sender.validate_startup(hosted_mode=auth_context.mode == "hosted")
+def _resolve_roots(app: Flask) -> Roots:
+    instance_path = app.instance_path
+    roots = Roots(
+        db_path=app.config["REGISTRY_DB_PATH"] or Config.default_db_path(instance_path),
+        artifacts_root=app.config["ARTIFACTS_ROOT"] or Config.default_artifacts_root(instance_path),
+        workspaces_root=app.config["WORKSPACES_ROOT"] or Config.default_workspaces_root(instance_path),
+        diagnostics_root=app.config["DIAGNOSTICS_ROOT"] or Config.default_diagnostics_root(instance_path),
+        dependency_state_root=app.config["DEPENDENCY_STATE_ROOT"]
+        or Config.default_dependency_state_root(instance_path),
+        gitops_repo_path=app.config["GITOPS_REPO_PATH"] or Config.default_gitops_repo_path(instance_path),
+        exasol_secrets_root=app.config["EXASOL_SECRETS_ROOT"]
+        or Config.default_exasol_secrets_root(instance_path),
+        app_environments_root=app.config["APP_ENVIRONMENTS_ROOT"]
+        or Config.default_app_environments_root(instance_path),
+        app_wheel_cache_root=app.config["APP_WHEEL_CACHE_ROOT"]
+        or Config.default_app_wheel_cache_root(instance_path),
+        app_pycache_root=app.config["APP_PYCACHE_ROOT"] or Config.default_app_pycache_root(instance_path),
+    )
+    # Load-bearing write-backs: downstream services read these from app.config.
+    app.config["APP_ENVIRONMENTS_ROOT"] = roots.app_environments_root
+    app.config["APP_WHEEL_CACHE_ROOT"] = roots.app_wheel_cache_root
+    app.config["APP_PYCACHE_ROOT"] = roots.app_pycache_root
+    return roots
 
-    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
 
-    db_path = app.config["REGISTRY_DB_PATH"] or Config.default_db_path(app.instance_path)
-    artifacts_root = app.config["ARTIFACTS_ROOT"] or Config.default_artifacts_root(app.instance_path)
-    workspaces_root = app.config["WORKSPACES_ROOT"] or Config.default_workspaces_root(app.instance_path)
-    diagnostics_root = app.config["DIAGNOSTICS_ROOT"] or Config.default_diagnostics_root(
-        app.instance_path
-    )
-    dependency_state_root = app.config["DEPENDENCY_STATE_ROOT"] or Config.default_dependency_state_root(
-        app.instance_path
-    )
-    gitops_repo_path = app.config["GITOPS_REPO_PATH"] or Config.default_gitops_repo_path(app.instance_path)
-    exasol_secrets_root = app.config["EXASOL_SECRETS_ROOT"] or Config.default_exasol_secrets_root(
-        app.instance_path
-    )
-    app_environments_root = app.config["APP_ENVIRONMENTS_ROOT"] or Config.default_app_environments_root(
-        app.instance_path
-    )
-    app_wheel_cache_root = app.config["APP_WHEEL_CACHE_ROOT"] or Config.default_app_wheel_cache_root(
-        app.instance_path
-    )
-    app_pycache_root = app.config["APP_PYCACHE_ROOT"] or Config.default_app_pycache_root(
-        app.instance_path
-    )
-    app.config["APP_ENVIRONMENTS_ROOT"] = app_environments_root
-    app.config["APP_WHEEL_CACHE_ROOT"] = app_wheel_cache_root
-    app.config["APP_PYCACHE_ROOT"] = app_pycache_root
-    _validate_runtime_isolation_config(app)
-    git_repo_service = GitRepoService(gitops_repo_path)
-    git_repo_service.initialize()
-    git_worktree_service = GitWorktreeService(git_repo_service, workspaces_root)
-    registry = SQLiteAppRegistry(db_path)
-    registry.initialize()
+def _build_dependency_layer(
+    app: Flask,
+    roots: Roots,
+    registry: SQLiteAppRegistry,
+    diagnostics_service: DiagnosticsService,
+) -> tuple[Any, DependencyEnvironmentService | None]:
+    """Build the dependency installer and (in per_app isolation) the env service.
 
-    dispatcher = DynamicPrefixDispatcher(app.wsgi_app)
-    # Flask exposes `wsgi_app` as a method on the class but documents reassigning it
-    # for middleware (see https://flask.palletsprojects.com/en/latest/api/#flask.Flask.wsgi_app),
-    # which is exactly what we're doing here. The type stubs don't model that idiom.
-    app.wsgi_app = dispatcher  # type: ignore[method-assign]
+    Returns ``(dependency_installer, dependency_environment_service)`` where the
+    installer is either the per-app :class:`DependencyEnvironmentService` (also
+    returned as the second element) or the shared :class:`DependencyInstaller`
+    (second element ``None``).
+    """
 
-    diagnostics_service = DiagnosticsService(diagnostics_root)
-
-    # Phase 1: when APP_DEPENDENCY_ISOLATION=per_app, hosted apps' requirements install into
-    # a per-(dependency_lock_hash) venv under instance/app_envs/, not the server interpreter.
     dependency_environment_service: DependencyEnvironmentService | None = None
     if app.config.get("APP_DEPENDENCY_ISOLATION") == "per_app":
         helper_source = Path(__file__).resolve().parent.parent / "dash_server_runtime"
         # Phase 5b config: read GC settings from app.config so they can be overridden in tests.
-        env_gc_enabled = bool(app.config.get("APP_ENV_GC_ENABLED", False))
-        wheel_gc_enabled = bool(app.config.get("APP_WHEEL_CACHE_GC_ENABLED", False))
-        env_gc_interval = float(app.config.get("APP_ENV_GC_INTERVAL_SECONDS", 300))
-        wheel_gc_interval = float(app.config.get("APP_WHEEL_CACHE_GC_INTERVAL_SECONDS", 600))
-        env_retention_seconds = float(app.config.get("APP_ENV_GC_RETENTION_DAYS", 7)) * 24 * 3600
-        env_disk_cap_gb = float(app.config.get("APP_ENVIRONMENTS_DISK_CAP_GB", 5.0))
+        env_gc_enabled = bool(app.config["APP_ENV_GC_ENABLED"])
+        wheel_gc_enabled = bool(app.config["APP_WHEEL_CACHE_GC_ENABLED"])
+        env_gc_interval = float(app.config["APP_ENV_GC_INTERVAL_SECONDS"])
+        wheel_gc_interval = float(app.config["APP_WHEEL_CACHE_GC_INTERVAL_SECONDS"])
+        env_retention_seconds = float(app.config["APP_ENV_GC_RETENTION_DAYS"]) * 24 * 3600
+        env_disk_cap_gb = float(app.config["APP_ENVIRONMENTS_DISK_CAP_GB"])
         env_disk_cap_bytes = int(env_disk_cap_gb * (1024 ** 3))
 
         dependency_environment_service = DependencyEnvironmentService(
-            environments_root=app_environments_root,
-            wheel_cache_root=app_wheel_cache_root,
-            pycache_root=app_pycache_root,
+            environments_root=roots.app_environments_root,
+            wheel_cache_root=roots.app_wheel_cache_root,
+            pycache_root=roots.app_pycache_root,
             enabled=bool(app.config["AUTO_INSTALL_DEPENDENCIES"]),
             base_python_executable=app.config["PYTHON_EXECUTABLE"],
             timeout_seconds=int(app.config["DEPENDENCY_INSTALL_TIMEOUT_SECONDS"]),
@@ -363,56 +388,87 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         # Background drivers respect their off-switches (default off).
         dependency_environment_service.start_env_gc()
         dependency_environment_service.start_wheel_cache_gc()
-        dependency_installer: Any = dependency_environment_service
-    else:
-        dependency_installer = DependencyInstaller(
-            dependency_state_root,
-            enabled=bool(app.config["AUTO_INSTALL_DEPENDENCIES"]),
-            python_executable=app.config["PYTHON_EXECUTABLE"],
-            timeout_seconds=int(app.config["DEPENDENCY_INSTALL_TIMEOUT_SECONDS"]),
-        )
-    exasol_dashboard_service = ExasolDashboardService(git_repo_service, exasol_secrets_root)
-    _bootstrap_exasol_profile(app, exasol_dashboard_service)
+        return dependency_environment_service, dependency_environment_service
 
-    runtime_mode = str(app.config.get("APP_RUNTIME_MODE", "in_process")).strip().lower()
-    worker_manager = None
-    if runtime_mode == "isolated":
-        from .runtime.worker_manager import AppWorkerManager
+    dependency_installer = DependencyInstaller(
+        roots.dependency_state_root,
+        enabled=bool(app.config["AUTO_INSTALL_DEPENDENCIES"]),
+        python_executable=app.config["PYTHON_EXECUTABLE"],
+        timeout_seconds=int(app.config["DEPENDENCY_INSTALL_TIMEOUT_SECONDS"]),
+    )
+    return dependency_installer, dependency_environment_service
 
-        workers_root = str(Path(app.instance_path) / "workers")
-        prewarm_pool_size = int(app.config.get("APP_WORKER_PREWARM_POOL_SIZE", 1))
-        prewarm_packages = tuple(app.config.get("APP_WORKER_PREWARM_PACKAGES") or ()) or (
-            "dash",
-            "flask",
-            "dash_server_runtime",
-        )
-        worker_manager = AppWorkerManager(
-            workers_root=workers_root,
-            diagnostics_root=diagnostics_root,
-            gitops_repo_path=gitops_repo_path,
-            exasol_secrets_root=exasol_secrets_root,
-            pycache_root=app_pycache_root,
-            start_timeout_seconds=int(app.config.get("APP_WORKER_START_TIMEOUT_SECONDS", 30)),
-            idle_stop_seconds=int(app.config.get("APP_WORKER_IDLE_STOP_SECONDS", 600)),
-            host=str(app.config.get("APP_WORKER_HOST", "127.0.0.1")),
-            port_range=app.config.get("APP_WORKER_PORT_RANGE"),
-            diagnostics_service=diagnostics_service,
-            enable_forkserver=prewarm_pool_size > 0,
-            prewarm_packages=prewarm_packages,
-            max_restarts_per_5_minutes=int(
-                app.config.get("APP_WORKER_MAX_RESTARTS_PER_5_MINUTES", 5)
-            ),
-        )
-        # Start the idle sweep so workers without traffic for APP_WORKER_IDLE_STOP_SECONDS
-        # are stopped and persisted as `stopped_idle`. ensure_running re-spawns transparently
-        # on the next request.
-        worker_manager.start_idle_sweep()
+
+def _build_worker_manager(
+    app: Flask,
+    roots: Roots,
+    diagnostics_service: DiagnosticsService,
+    runtime_mode: str,
+) -> AppWorkerManager | None:
+    """Build the isolated-runtime worker manager, or ``None`` for in-process mode."""
+
+    if runtime_mode != "isolated":
+        return None
+
+    from .runtime.worker_manager import AppWorkerManager
+
+    workers_root = str(Path(app.instance_path) / "workers")
+    prewarm_pool_size = int(app.config["APP_WORKER_PREWARM_POOL_SIZE"])
+    prewarm_packages = tuple(app.config.get("APP_WORKER_PREWARM_PACKAGES") or ()) or (
+        "dash",
+        "flask",
+        "dash_server_runtime",
+    )
+    worker_manager = AppWorkerManager(
+        workers_root=workers_root,
+        diagnostics_root=roots.diagnostics_root,
+        gitops_repo_path=roots.gitops_repo_path,
+        exasol_secrets_root=roots.exasol_secrets_root,
+        pycache_root=roots.app_pycache_root,
+        start_timeout_seconds=int(app.config["APP_WORKER_START_TIMEOUT_SECONDS"]),
+        idle_stop_seconds=int(app.config["APP_WORKER_IDLE_STOP_SECONDS"]),
+        host=str(app.config["APP_WORKER_HOST"]),
+        port_range=app.config.get("APP_WORKER_PORT_RANGE"),
+        diagnostics_service=diagnostics_service,
+        enable_forkserver=prewarm_pool_size > 0,
+        prewarm_packages=prewarm_packages,
+        max_restarts_per_5_minutes=int(app.config["APP_WORKER_MAX_RESTARTS_PER_5_MINUTES"]),
+    )
+    # Start the idle sweep so workers without traffic for APP_WORKER_IDLE_STOP_SECONDS
+    # are stopped and persisted as `stopped_idle`. ensure_running re-spawns transparently
+    # on the next request.
+    worker_manager.start_idle_sweep()
+    return worker_manager
+
+
+def _build_services(
+    app: Flask,
+    *,
+    roots: Roots,
+    auth_context: AuthContext,
+    email_sender: InvitationEmailSender,
+    registry: SQLiteAppRegistry,
+    dispatcher: DynamicPrefixDispatcher,
+    diagnostics_service: DiagnosticsService,
+    dependency_installer: Any,
+    dependency_environment_service: DependencyEnvironmentService | None,
+    git_repo_service: GitRepoService,
+    git_worktree_service: GitWorktreeService,
+    exasol_dashboard_service: ExasolDashboardService,
+    worker_manager: AppWorkerManager | None,
+    runtime_mode: str,
+) -> tuple[IdentityService, AuthorizationService]:
+    """Construct the runtime service, run bootstrap, and wire all app.extensions.
+
+    Returns ``(identity_service, authorization_service)`` — the collaborators the
+    blueprint stage's request hooks close over.
+    """
 
     runtime_service = AppRuntimeService(
         registry,
         dispatcher,
-        artifacts_root,
-        workspaces_root,
+        roots.artifacts_root,
+        roots.workspaces_root,
         diagnostics_service,
         dependency_installer,
         git_repo_service,
@@ -458,7 +514,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         authorization_service,
         app.config,
         exasol_service=exasol_dashboard_service,
-        artifacts_root=artifacts_root,
+        artifacts_root=roots.artifacts_root,
     )
     consumption_service.start()
     app.extensions["identity_service"] = identity_service
@@ -471,6 +527,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         email_sender=email_sender,
         consumption_service=consumption_service,
     )
+    return identity_service, authorization_service
+
+
+def _register_blueprints(
+    app: Flask,
+    dispatcher: DynamicPrefixDispatcher,
+    identity_service: IdentityService,
+    authorization_service: AuthorizationService,
+) -> None:
+    """Wire the dispatcher auth handler, the auth-context request hook, and blueprints."""
 
     def _authorize_mounted_dashboard(
         environ: dict[str, Any],
@@ -497,5 +563,104 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.register_blueprint(create_mcp_blueprint())
     app.register_blueprint(create_public_blueprint())
     app.register_blueprint(create_consumption_blueprint())
+
+
+def _create_flask_app(test_config: dict[str, Any] | None, project_root: Path) -> Flask:
+    """Resolve the instance path, build the Flask app, and load config.
+
+    ``test_config`` overrides win over ``Config`` defaults; the resolved
+    instance path is echoed back onto ``app.config["INSTANCE_PATH"]`` for
+    downstream code and tests that want to know the anchor directory.
+    """
+
+    instance_path = _resolve_instance_path(test_config, project_root)
+    app = Flask(
+        __name__,
+        instance_path=instance_path,
+        instance_relative_config=True,
+    )
+    app.config.from_object(Config)
+    if test_config:
+        app.config.update(test_config)
+    app.config["INSTANCE_PATH"] = instance_path
+    return app
+
+
+def create_app(test_config: dict[str, Any] | None = None) -> Flask:
+    """Create and configure the Flask control-plane app.
+
+    The body reads as an ordered list of named stages; each stage's inputs are
+    explicit in its signature so the load-bearing construction order is visible.
+
+    Instance-path resolution (highest priority first):
+      1. ``test_config["INSTANCE_PATH"]`` — explicit pytest / programmatic override.
+      2. ``DASH_SERVER_INSTANCE_PATH`` or ``FLASK_INSTANCE_PATH`` env var.
+      3. Default: ``<project_root>/instance``.
+
+    Per-subroot keys (``REGISTRY_DB_PATH``, ``ARTIFACTS_ROOT``, etc.) each have their
+    own ``DASH_SERVER_*`` env-var fallback in ``Config`` and override the per-instance
+    derivation when set.
+    """
+
+    project_root = Path(__file__).resolve().parents[2]
+    app = _create_flask_app(test_config, project_root)
+
+    # Stage: deployment-mode + startup validation (must precede everything else).
+    auth_context = _configure_deployment_mode(app)
+    email_sender = InvitationEmailSender(app.config)
+    email_sender.validate_startup(hosted_mode=auth_context.mode == "hosted")
+
+    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+
+    # Stage: resolve roots (writes the APP_*_ROOT keys back into app.config), then
+    # validate the runtime-isolation flags now that the roots exist.
+    roots = _resolve_roots(app)
+    _validate_runtime_isolation_config(app)
+
+    # Stage: persistence + routing primitives.
+    git_repo_service = GitRepoService(roots.gitops_repo_path)
+    git_repo_service.initialize()
+    git_worktree_service = GitWorktreeService(git_repo_service, roots.workspaces_root)
+    registry = SQLiteAppRegistry(roots.db_path)
+    registry.initialize()
+
+    dispatcher = DynamicPrefixDispatcher(app.wsgi_app)
+    # Flask exposes `wsgi_app` as a method on the class but documents reassigning it
+    # for middleware (see https://flask.palletsprojects.com/en/latest/api/#flask.Flask.wsgi_app),
+    # which is exactly what we're doing here. The type stubs don't model that idiom.
+    app.wsgi_app = dispatcher  # type: ignore[method-assign]
+
+    diagnostics_service = DiagnosticsService(roots.diagnostics_root)
+
+    # Stage: dependency layer + exasol + worker manager.
+    dependency_installer, dependency_environment_service = _build_dependency_layer(
+        app, roots, registry, diagnostics_service
+    )
+    exasol_dashboard_service = ExasolDashboardService(git_repo_service, roots.exasol_secrets_root)
+    _bootstrap_exasol_profile(app, exasol_dashboard_service)
+
+    runtime_mode = str(app.config["APP_RUNTIME_MODE"]).strip().lower()
+    worker_manager = _build_worker_manager(app, roots, diagnostics_service, runtime_mode)
+
+    # Stage: runtime service + auth/consumption/mcp services + extension wiring.
+    identity_service, authorization_service = _build_services(
+        app,
+        roots=roots,
+        auth_context=auth_context,
+        email_sender=email_sender,
+        registry=registry,
+        dispatcher=dispatcher,
+        diagnostics_service=diagnostics_service,
+        dependency_installer=dependency_installer,
+        dependency_environment_service=dependency_environment_service,
+        git_repo_service=git_repo_service,
+        git_worktree_service=git_worktree_service,
+        exasol_dashboard_service=exasol_dashboard_service,
+        worker_manager=worker_manager,
+        runtime_mode=runtime_mode,
+    )
+
+    # Stage: request hooks + blueprint registration.
+    _register_blueprints(app, dispatcher, identity_service, authorization_service)
 
     return app

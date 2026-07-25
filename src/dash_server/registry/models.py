@@ -111,3 +111,133 @@ class AppEvent:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ShareLink:
+    """One-time (or few-use) manually shared dashboard access link."""
+
+    id: int
+    app_name: str
+    token_hash: str
+    scope: str
+    role: str
+    recipient_email: str | None
+    recipient_note: str | None
+    expires_at: str | None
+    max_uses: int
+    use_count: int
+    created_by_principal_id: str | None
+    created_at: str
+    redeemed_at: str | None
+    revoked_at: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Invitation:
+    """Hashed-token email invitation for an external user."""
+
+    id: int
+    app_name: str
+    token_hash: str
+    recipient_email: str
+    email_normalized: str
+    scope: str
+    role: str
+    message: str | None
+    status: str
+    delivery_status: str
+    delivery_provider: str | None
+    delivery_message_id: str | None
+    delivery_error: str | None
+    expires_at: str | None
+    accepted_principal_id: str | None
+    grant_id: int | None
+    created_by_principal_id: str | None
+    created_at: str
+    sent_at: str | None
+    accepted_at: str | None
+    revoked_at: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RegistryUser:
+    """Persisted control-plane user record."""
+
+    id: int
+    principal_id: str
+    issuer: str
+    subject: str
+    email: str | None
+    email_normalized: str | None
+    email_verified: bool
+    display_name: str
+    user_type: str
+    status: str
+    tenant_id: str | None
+    last_login_at: str | None
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Group:
+    """Persisted group record used for group-scoped grants."""
+
+    id: int
+    external_id: str
+    display_name: str | None
+    email: str | None
+    source: str
+    status: str
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AclEntry:
+    """A single access-control grant on an app (a sharing grant)."""
+
+    id: int
+    app_name: str
+    principal_type: str
+    principal_id: str
+    role: str
+    scope: str
+    created_by_principal_id: str | None
+    created_at: str
+    expires_at: str | None
+    revoked_at: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SharePolicy:
+    """App-level sharing policy governing link scope and catalog visibility."""
+
+    app_name: str
+    link_scope: str
+    allowed_domain: str | None
+    default_link_role: str
+    allow_preview_link: bool
+    public_catalog_visible: bool
+    external_sharing_enabled: bool
+    updated_by_principal_id: str | None
+    updated_at: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

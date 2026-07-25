@@ -4,37 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import difflib
-import importlib.util
 import json
 import os
 import shutil
 import sqlite3
-import sys
-import traceback
 import uuid
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-from dash import Dash
-from flask import Flask, got_request_exception, request
-from werkzeug.test import Client as WSGIClient
-from werkzeug.wrappers import Response as WSGIResponse
 
 from dash_server.artifacts_io import (
-    APP_ENTRYPOINT_FILENAME,
     APP_MANIFEST_FILENAME,
     REQUIREMENTS_FILENAME,
-    list_artifact_files,
-    load_manifest_from_dir,
     read_artifact_files,
 )
 from dash_server.dash_apps.demo import build_demo_bundle
-from dash_server.dash_apps.callback_isolation import (
-    finalize_dash_app_callbacks,
-    isolated_dash_callback_globals,
-)
-from dash_server.dash_apps.branding import apply_hosted_footer
-from dash_server.dash_apps.runtime_checks import verify_dash_mount
 from dash_server.dash_apps.factory import (
     is_files_bundle_shape,
     validate_bundle,
@@ -44,12 +29,14 @@ from dash_server.dependencies import DependencyInstaller
 from dash_server.diagnostics import DiagnosticsService
 from dash_server.exceptions import DashServerError
 from dash_server.gitops import GitRepoService, GitWorktreeService
-from dash_server.imports import isolated_local_imports
 from dash_server.registry.models import AppManifest, AppRevision, HostedApp
 from dash_server.registry.sqlite_registry import SQLiteAppRegistry
 from dash_server.workspace.service import WorkspaceService
 
 from .dispatcher import DynamicPrefixDispatcher
+from .mounter import RuntimeMounter
+from .prober import HealthProber
+from .reconciler import GitReconciler
 
 
 class AppRuntimeService:
@@ -90,6 +77,22 @@ class AppRuntimeService:
             # Stop the worker whenever the dispatcher unmounts its proxy. The dispatcher's
             # observer hook lets us layer this in without subclassing or monkey-patching.
             self.dispatcher.on_unmount(self._stop_worker_for_mount)
+
+    # Collaborators own one concern each; the service is a facade that holds shared
+    # state (registry/dispatcher/git/diagnostics) and delegates to them. They are
+    # lazily built so a service constructed via ``__new__`` (see probe unit tests)
+    # still resolves a collaborator the moment one of its delegators is called.
+    @cached_property
+    def mounter(self) -> RuntimeMounter:
+        return RuntimeMounter(self)
+
+    @cached_property
+    def reconciler(self) -> GitReconciler:
+        return GitReconciler(self)
+
+    @cached_property
+    def prober(self) -> HealthProber:
+        return HealthProber(self)
 
     def _stop_worker_for_mount(self, mount_path: str) -> None:
         """Dispatcher unmount-observer: tear down the worker behind a mount path."""
@@ -273,223 +276,22 @@ class AppRuntimeService:
     def git_desired_state(self) -> dict[str, Any]:
         """Return the parsed Git-backed desired live and preview state."""
 
-        return self.git_repo_service.desired_state()
+        return self.reconciler.git_desired_state()
 
     def rebuild_cache_from_git(self) -> dict[str, Any]:
         """Reconstruct app and revision cache rows from the authoritative GitOps repository."""
 
-        if not self.git_repo_service.has_commits():
-            return {"apps": [], "status": "skipped"}
-
-        desired = self.git_desired_state()
-        rebuilt_apps: list[dict[str, Any]] = []
-        for app_name in self.git_repo_service.tracked_apps():
-            manifest_payload = self.git_repo_service.read_app_manifest(app_name)
-            if not isinstance(manifest_payload, dict):
-                continue
-            try:
-                source_manifest = validate_manifest_payload(manifest_payload)
-            except DashServerError as exc:
-                self._record_dash_server_error(app_name, source="runtime", exc=exc)
-                continue
-
-            release_payloads = self.git_repo_service.read_release_manifests(app_name)
-            revisions: list[AppRevision] = []
-            for release_payload in release_payloads:
-                revision = self._upsert_revision_from_release(app_name, source_manifest, release_payload)
-                if revision is not None:
-                    revisions.append(revision)
-            revisions.sort(key=lambda revision: revision.revision_number)
-            if not revisions:
-                continue
-
-            live_desired = desired["live"].get(app_name)
-            preview_desired = desired["preview"].get(app_name)
-            current_revision = self._resolve_desired_revision_from_list(revisions, live_desired) or revisions[-1]
-            preview_revision = self._resolve_desired_revision_from_list(revisions, preview_desired)
-            rollback_revision = self._previous_revision(revisions, current_revision)
-
-            existing_app = self.registry.get_app(app_name)
-            status = existing_app.status if existing_app is not None else "running"
-            exposure = self._exposure_from_desired_state(
-                live_desired,
-                fallback_manifest=source_manifest,
-                fallback_app=existing_app,
-            )
-
-            self.registry.upsert_app_cache(
-                name=app_name,
-                title=current_revision.manifest.get("title", source_manifest.title),
-                route=exposure["route"],
-                status=status,
-                visibility=exposure["visibility"],
-                auth_policy=exposure["auth_policy"],
-                enabled=exposure["enabled"],
-                permissions=exposure["permissions"],
-                current_revision_id=current_revision.id,
-                preview_revision_id=preview_revision.id if preview_revision is not None else None,
-                rollback_revision_id=rollback_revision.id if rollback_revision is not None else None,
-            )
-
-            for revision in revisions:
-                lifecycle_state = "archived"
-                if revision.id == current_revision.id:
-                    lifecycle_state = "live"
-                elif preview_revision is not None and revision.id == preview_revision.id:
-                    lifecycle_state = "warming"
-                self.registry.update_revision_state(
-                    revision.id,
-                    lifecycle_state,
-                    rollout_metadata=revision.rollout_metadata,
-                )
-
-            if not self.registry.list_events(app_name):
-                revision_map = {revision.revision_number: revision.id for revision in revisions}
-                for event_payload in self.git_repo_service.read_history_events(app_name):
-                    event_type = event_payload.get("event_type")
-                    event_data = event_payload.get("data", {})
-                    revision_number = event_payload.get("revision_number")
-                    timestamp = event_payload.get("timestamp")
-                    if not isinstance(event_type, str) or not isinstance(event_data, dict):
-                        continue
-                    revision_id = (
-                        revision_map.get(revision_number)
-                        if isinstance(revision_number, int)
-                        else None
-                    )
-                    self.registry.ensure_event(
-                        app_name,
-                        event_type,
-                        revision_id=revision_id,
-                        data=event_data,
-                        created_at=timestamp if isinstance(timestamp, str) else None,
-                    )
-            rebuilt_apps.append(
-                {
-                    "app": app_name,
-                    "revisions": [revision.revision_number for revision in revisions],
-                    "current_revision": current_revision.revision_number,
-                    "preview_revision": preview_revision.revision_number if preview_revision is not None else None,
-                }
-            )
-
-        return {"apps": rebuilt_apps, "status": "rebuilt"}
+        return self.reconciler.rebuild_cache_from_git()
 
     def git_drift_report(self) -> dict[str, Any]:
         """Return a comparison between desired Git state and the observed runtime state."""
 
-        desired = self.git_desired_state()
-        drift: list[dict[str, Any]] = []
-        app_names = sorted(
-            {
-                *[app.name for app in self.registry.list_apps()],
-                *desired["live"].keys(),
-                *desired["preview"].keys(),
-            }
-        )
-        for app_name in app_names:
-            app = self.registry.get_app(app_name)
-            live_desired = desired["live"].get(app_name)
-            preview_desired = desired["preview"].get(app_name)
-            live_status = "missing"
-            preview_status = "missing"
-            if app is not None and live_desired is not None:
-                current_revision = self.registry.get_current_revision(app_name)
-                live_target = self._resolve_desired_revision(app_name, live_desired)
-                live_status = (
-                    "in_sync"
-                    if current_revision is not None
-                    and live_target is not None
-                    and current_revision.id == live_target.id
-                    and app.route == live_desired["spec"].get("route")
-                    and app.visibility == live_desired["spec"].get("visibility")
-                    and app.auth_policy == live_desired["spec"].get("authPolicy")
-                    and app.enabled == bool(live_desired["spec"].get("enabled"))
-                    else "drifted"
-                )
-                preview_revision = self.registry.get_preview_revision(app_name)
-                preview_target = self._resolve_desired_revision(app_name, preview_desired) if preview_desired is not None else None
-                if preview_desired is None:
-                    preview_status = "cleared" if preview_revision is None else "drifted"
-                else:
-                    preview_status = (
-                        "in_sync"
-                        if preview_revision is not None
-                        and preview_target is not None
-                        and preview_revision.id == preview_target.id
-                        else "drifted"
-                    )
-            observed_current = self.registry.get_current_revision(app_name) if app is not None else None
-            observed_preview = self.registry.get_preview_revision(app_name) if app is not None else None
-            drift.append(
-                {
-                    "app": app_name,
-                    "live": {
-                        "status": live_status,
-                        "desired": live_desired,
-                        "observed_revision": (
-                            observed_current.revision_number if observed_current is not None else None
-                        ),
-                    },
-                    "preview": {
-                        "status": preview_status,
-                        "desired": preview_desired,
-                        "observed_revision": (
-                            observed_preview.revision_number if observed_preview is not None else None
-                        ),
-                    },
-                }
-            )
-        return {
-            "repo": self.git_repo_service.status()["repo"],
-            "desired_state": desired,
-            "drift": drift,
-        }
+        return self.reconciler.git_drift_report()
 
     def reconcile_git_desired_state(self) -> dict[str, Any]:
         """Apply Git-tracked desired state to the observed runtime and SQLite cache."""
 
-        desired = self.git_desired_state()
-        results: list[dict[str, Any]] = []
-        desired_live_routes = self._desired_live_routes(desired["live"])
-        for app_name in sorted(
-            {
-                *[app.name for app in self.registry.list_apps()],
-                *desired["live"].keys(),
-                *desired["preview"].keys(),
-            }
-        ):
-            app = self.registry.get_app(app_name)
-            if app is None:
-                results.append(
-                    {
-                        "app": app_name,
-                        "status": "skipped",
-                        "reason": "app_not_registered",
-                    }
-                )
-                continue
-            try:
-                result = self._reconcile_app_desired_state(
-                    app_name,
-                    desired["live"].get(app_name),
-                    desired["preview"].get(app_name),
-                    desired_live_routes,
-                )
-            except DashServerError as exc:
-                self._record_dash_server_error(app_name, source="runtime", exc=exc)
-                result = {
-                    "app": app_name,
-                    "status": "failed",
-                    "reason": exc.category,
-                    "details": exc.details,
-                }
-            results.append(result)
-        return {
-            "repo": self.git_repo_service.status()["repo"],
-            "desired_state": desired,
-            "results": results,
-        }
+        return self.reconciler.reconcile_git_desired_state()
 
     def _bootstrap_mount_live_revision(self, name: str) -> bool:
         try:
@@ -1014,109 +816,92 @@ class AppRuntimeService:
             "permissions": app.permissions,
         }
 
+    def _apply_exposure_change(
+        self,
+        name: str,
+        *,
+        write_kwargs: dict[str, Any],
+        commit_message: str,
+        event_type: str,
+        event_data: dict[str, Any],
+        log_message: str,
+        log_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Common tail for the five exposure mutations: write desired state, reconcile,
+        emit the audit event, log, and return the refreshed status."""
+
+        revision = self._require_current_revision(name)
+        self._write_live_desired_state_for_revision(
+            name, revision, commit_message=commit_message, **write_kwargs
+        )
+        self._reconcile_or_raise(name)
+        self.registry.append_event(name, event_type, data=event_data)
+        self.diagnostics_service.append_log(name, "runtime", log_message, data=log_data)
+        return self._serialize_status(name)
+
     def update_route(self, name: str, mount_path: str) -> dict[str, Any]:
         app = self._require_app(name)
         normalized = self._normalize_live_route(mount_path)
         if normalized != app.route:
             self._ensure_route_available(normalized, excluding_app=name)
-        revision = self._require_current_revision(name)
         previous_route = app.route
-        self._write_live_desired_state_for_revision(
+        return self._apply_exposure_change(
             name,
-            revision,
-            route=normalized,
+            write_kwargs={"route": normalized},
             commit_message=f"app/{name}: update live route to {normalized}",
+            event_type="route_updated",
+            event_data={"previous_route": previous_route, "route": normalized},
+            log_message=f"Updated live route from {previous_route} to {normalized}.",
+            log_data={"previous_route": previous_route, "route": normalized},
         )
-        self._reconcile_or_raise(name)
-        self.registry.append_event(
-            name,
-            "route_updated",
-            data={"previous_route": previous_route, "route": normalized},
-        )
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            f"Updated live route from {previous_route} to {normalized}.",
-            data={"previous_route": previous_route, "route": normalized},
-        )
-        return self._serialize_status(name)
 
     def update_visibility(self, name: str, visibility: str) -> dict[str, Any]:
         normalized = self._normalize_visibility(visibility)
-        revision = self._require_current_revision(name)
-        self._write_live_desired_state_for_revision(
+        return self._apply_exposure_change(
             name,
-            revision,
-            visibility=normalized,
+            write_kwargs={"visibility": normalized},
             commit_message=f"app/{name}: update visibility to {normalized}",
+            event_type="visibility_updated",
+            event_data={"visibility": normalized},
+            log_message=f"Updated visibility to {normalized}.",
+            log_data={"visibility": normalized},
         )
-        self._reconcile_or_raise(name)
-        self.registry.append_event(name, "visibility_updated", data={"visibility": normalized})
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            f"Updated visibility to {normalized}.",
-            data={"visibility": normalized},
-        )
-        return self._serialize_status(name)
 
     def update_auth_policy(self, name: str, auth_policy: str) -> dict[str, Any]:
         normalized = self._normalize_auth_policy(auth_policy)
-        revision = self._require_current_revision(name)
-        self._write_live_desired_state_for_revision(
+        return self._apply_exposure_change(
             name,
-            revision,
-            auth_policy=normalized,
+            write_kwargs={"auth_policy": normalized},
             commit_message=f"app/{name}: update auth policy to {normalized}",
+            event_type="auth_policy_updated",
+            event_data={"auth_policy": normalized},
+            log_message=f"Updated auth policy to {normalized}.",
+            log_data={"auth_policy": normalized},
         )
-        self._reconcile_or_raise(name)
-        self.registry.append_event(name, "auth_policy_updated", data={"auth_policy": normalized})
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            f"Updated auth policy to {normalized}.",
-            data={"auth_policy": normalized},
-        )
-        return self._serialize_status(name)
 
     def update_permissions(self, name: str, permissions: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize_permissions(permissions)
-        revision = self._require_current_revision(name)
-        self._write_live_desired_state_for_revision(
+        return self._apply_exposure_change(
             name,
-            revision,
-            permissions=normalized,
+            write_kwargs={"permissions": normalized},
             commit_message=f"app/{name}: update permissions",
+            event_type="permissions_updated",
+            event_data={"permissions": normalized},
+            log_message="Updated app permissions.",
+            log_data={"permissions": normalized},
         )
-        self._reconcile_or_raise(name)
-        self.registry.append_event(name, "permissions_updated", data={"permissions": normalized})
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            "Updated app permissions.",
-            data={"permissions": normalized},
-        )
-        return self._serialize_status(name)
 
     def set_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
         app = self._require_app(name)
-        revision = self._require_current_revision(name)
-        self._write_live_desired_state_for_revision(
+        return self._apply_exposure_change(
             name,
-            revision,
-            enabled=enabled,
+            write_kwargs={"enabled": enabled},
             commit_message=f"app/{name}: {'enable' if enabled else 'disable'} live publication",
+            event_type="publication_enabled" if enabled else "publication_disabled",
+            event_data={"enabled": enabled, "route": app.route},
+            log_message=("Enabled" if enabled else "Disabled") + f" live publication at {app.route}.",
+            log_data={"enabled": enabled, "route": app.route},
         )
-        self._reconcile_or_raise(name)
-        event_type = "publication_enabled" if enabled else "publication_disabled"
-        self.registry.append_event(name, event_type, data={"enabled": enabled, "route": app.route})
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            ("Enabled" if enabled else "Disabled") + f" live publication at {app.route}.",
-            data={"enabled": enabled, "route": app.route},
-        )
-        return self._serialize_status(name)
 
     def run_healthcheck(
         self,
@@ -1165,42 +950,16 @@ class AppRuntimeService:
                     },
                 },
             ]
-
             if not mounted:
-                homepage_probe = self._skipped_probe("http_ready", "Preview revision is not mounted.")
-                layout_probe = self._skipped_probe("dash_layout", "Preview revision is not mounted.")
-                dependency_probe = self._skipped_probe("dash_dependencies", "Preview revision is not mounted.")
-                asset_probe = self._skipped_probe("static_assets", "Preview revision is not mounted.")
+                http_probes = self.prober._skipped_http_probes("Preview revision is not mounted.")
                 overall_status = "stopped"
             else:
-                homepage_probe = self._http_probe(
-                    mount_path,
-                    probe_name="http_ready",
-                    follow_redirects=True,
-                )
-                layout_probe = self._http_probe(
-                    f"{mount_path}/_dash-layout",
-                    probe_name="dash_layout",
-                    accepted_statuses={200},
-                )
-                dependency_probe = self._http_probe(
-                    f"{mount_path}/_dash-dependencies",
-                    probe_name="dash_dependencies",
-                    accepted_statuses={200},
-                )
-                asset_probe = self._asset_probe(mount_path)
-                overall_status = (
-                    "healthy"
-                    if all(probe["status"] == "passed" for probe in [homepage_probe, layout_probe, dependency_probe, asset_probe])
-                    else "unhealthy"
-                )
+                http_probes, overall_status = self.prober._run_http_probe_suite(mount_path)
         else:
             revision = self._require_current_revision(name)
             mount_path = app.route
             mounted = self.dispatcher.is_mounted(mount_path)
-
-            probes = []
-            probes.append(
+            probes = [
                 {
                     "name": "publication",
                     "status": "passed" if app.enabled else "skipped",
@@ -1211,9 +970,7 @@ class AppRuntimeService:
                         "mount_path": mount_path,
                         "target": "live",
                     },
-                }
-            )
-            probes.append(
+                },
                 {
                     "name": "process_alive",
                     "status": "passed" if app.status == "running" else "skipped" if not app.enabled else "failed",
@@ -1221,64 +978,29 @@ class AppRuntimeService:
                         "app_status": app.status,
                         "mounted": mounted,
                     },
-                }
-            )
-
+                },
+            ]
             if not app.enabled:
-                homepage_probe = self._skipped_probe("http_ready", "Live publication is disabled.")
-                layout_probe = self._skipped_probe("dash_layout", "Live publication is disabled.")
-                dependency_probe = self._skipped_probe("dash_dependencies", "Live publication is disabled.")
-                asset_probe = self._skipped_probe("static_assets", "Live publication is disabled.")
+                http_probes = self.prober._skipped_http_probes("Live publication is disabled.")
                 overall_status = "not_published"
             elif app.status != "running":
-                homepage_probe = self._skipped_probe("http_ready", "App runtime is stopped.")
-                layout_probe = self._skipped_probe("dash_layout", "App runtime is stopped.")
-                dependency_probe = self._skipped_probe("dash_dependencies", "App runtime is stopped.")
-                asset_probe = self._skipped_probe("static_assets", "App runtime is stopped.")
+                http_probes = self.prober._skipped_http_probes("App runtime is stopped.")
                 overall_status = "stopped"
             else:
-                homepage_probe = self._http_probe(
-                    mount_path,
-                    probe_name="http_ready",
-                    follow_redirects=True,
-                )
-                layout_probe = self._http_probe(
-                    f"{mount_path}/_dash-layout",
-                    probe_name="dash_layout",
-                    accepted_statuses={200},
-                )
-                dependency_probe = self._http_probe(
-                    f"{mount_path}/_dash-dependencies",
-                    probe_name="dash_dependencies",
-                    accepted_statuses={200},
-                )
-                asset_probe = self._asset_probe(mount_path)
-                overall_status = (
-                    "healthy"
-                    if all(probe["status"] == "passed" for probe in [homepage_probe, layout_probe, dependency_probe, asset_probe])
-                    else "unhealthy"
-                )
-        homepage_probe["name"] = "http_ready"
-        probes.append(homepage_probe)
-        layout_probe["name"] = "dash_layout"
-        probes.append(layout_probe)
-        dependency_probe["name"] = "dash_dependencies"
-        probes.append(dependency_probe)
-        asset_probe["name"] = "static_assets"
-        probes.append(asset_probe)
+                http_probes, overall_status = self.prober._run_http_probe_suite(mount_path)
+
+        probes.extend(http_probes)
 
         data_layer_probe = self._data_layer_probe(name, revision_number=revision.revision_number)
         probes.append(data_layer_probe)
-        if data_layer_probe["status"] == "failed" and overall_status == "healthy":
-            overall_status = "degraded"
+        overall_status = self.prober._downgrade(overall_status, data_layer_probe)
 
         # BUG-002 fix: actively smoke-test each `queries/**/*.sql` against the bound
         # profile. Catches broken-but-never-clicked dashboards that the inspect-only
         # `data_layer` probe misses.
         sql_smoke_probe = self._sql_smoke_probe(name, revision)
         probes.append(sql_smoke_probe)
-        if sql_smoke_probe["status"] == "failed" and overall_status == "healthy":
-            overall_status = "degraded"
+        overall_status = self.prober._downgrade(overall_status, sql_smoke_probe)
 
         # Phase 3: when running in isolated mode, surface the worker process state alongside
         # the existing HTTP probes. In in_process mode the probe records "not_applicable" so
@@ -1288,8 +1010,7 @@ class AppRuntimeService:
             revision_number=revision.revision_number,
         )
         probes.append(worker_probe)
-        if worker_probe["status"] == "failed" and overall_status == "healthy":
-            overall_status = "degraded"
+        overall_status = self.prober._downgrade(overall_status, worker_probe)
 
         # Phase 3.5: worker_http reads the proxy's most recent forwarded-response status code.
         worker_http_probe = self._worker_http_probe(
@@ -1297,8 +1018,7 @@ class AppRuntimeService:
             revision_number=revision.revision_number,
         )
         probes.append(worker_http_probe)
-        if worker_http_probe["status"] == "failed" and overall_status == "healthy":
-            overall_status = "degraded"
+        overall_status = self.prober._downgrade(overall_status, worker_http_probe)
 
         payload: dict[str, Any] = {
             "app": self._serialize_app_row(app),
@@ -2407,367 +2127,13 @@ class AppRuntimeService:
         )
 
     def _mount_live_revision(self, name: str) -> None:
-        app = self._require_app(name)
-        revision = self._require_current_revision(name)
-        if not app.enabled:
-            self.dispatcher.unmount(app.route)
-            return
-        self._mount_revision(revision, app.route)
+        self.mounter._mount_live_revision(name)
 
     def _mount_preview_revision(self, name: str, revision_number: int) -> None:
-        revision = self._require_revision(name, revision_number)
-        self._mount_revision(revision, self.preview_path(name, revision_number))
+        self.mounter._mount_preview_revision(name, revision_number)
 
     def _mount_revision(self, revision: AppRevision, mount_path: str) -> None:
-        try:
-            if self.runtime_mode == "isolated" and self.worker_manager is not None:
-                self._mount_revision_isolated(revision, mount_path)
-            else:
-                wsgi_app = self._create_revision_wsgi_app(revision, mount_path)
-                self.dispatcher.mount(mount_path, wsgi_app)
-            self.diagnostics_service.append_log(
-                revision.app_name,
-                "runtime",
-                f"Mounted revision {revision.revision_number} at {mount_path}.",
-                revision_number=revision.revision_number,
-                data={"runtime_mode": self.runtime_mode},
-            )
-        except DashServerError as exc:
-            self._record_dash_server_error(
-                revision.app_name,
-                source="runtime",
-                exc=exc,
-                revision_number=revision.revision_number,
-            )
-            raise
-        except Exception as exc:
-            wrapped = DashServerError(
-                category="runtime_mount_error",
-                summary=f"Failed to mount revision {revision.revision_number} for app {revision.app_name}.",
-                details={
-                    "app": revision.app_name,
-                    "revision_number": revision.revision_number,
-                    "mount_path": mount_path,
-                    "traceback_text": traceback.format_exc(),
-                    "exception_type": type(exc).__name__,
-                },
-            )
-            self._record_dash_server_error(
-                revision.app_name,
-                source="runtime",
-                exc=wrapped,
-                revision_number=revision.revision_number,
-            )
-            raise wrapped from exc
-
-    def _mount_revision_isolated(self, revision: AppRevision, mount_path: str) -> None:
-        """Phase 3 isolated path: spawn a worker, mount the proxy in front of it.
-
-        The artifact must contain a usable ``app.py``. Metadata-only ``app_create`` bundles
-        (the ``metric-cards`` template) don't ship a ``app.py`` until they're rendered;
-        for those we still fall back to in-process serving for now. A follow-up will render
-        the scaffold into the artifact directory at build time so isolated mode works there too.
-        """
-
-        from .worker_proxy import WorkerProxyWSGIApp
-
-        # Isolated mounts only happen when the manager is wired in; assert so mypy can
-        # narrow `self.worker_manager` from `Any | None` to a concrete manager for the
-        # rest of the function body.
-        assert self.worker_manager is not None, "isolated mount without worker_manager"
-        from .worker_manager import WorkerStartError
-
-        artifact_path = Path(revision.artifact_path)
-        app_source = artifact_path / APP_ENTRYPOINT_FILENAME
-        if not (artifact_path.is_dir() and app_source.exists()):
-            # Fall back to in-process for revisions whose artifact has no app.py on disk.
-            wsgi_app = self._create_revision_wsgi_app(revision, mount_path)
-            self.dispatcher.mount(mount_path, wsgi_app)
-            return
-
-        # Resolve the worker's python_executable. Prefer the env id stored on the revision
-        # row (recorded at build time); fall back to recomputing from requirements.txt only
-        # when the build never wrote one (older revisions or builds that ran before the
-        # dependency-environment service was wired in).
-        python_executable: str | None = None
-        environment_id: str | None = None
-        if self.dependency_environment_service is not None:
-            env_id = revision.dependency_environment_id
-            stored_python = revision.env_python_executable
-            if env_id and stored_python:
-                # Fast path: trust the stored identity. lookup() still tells us if the env
-                # was evicted from disk so we can fall through to recompute and rebuild.
-                env_record = self.dependency_environment_service.lookup(env_id)
-                if env_record is not None and isinstance(env_record.get("python_executable"), str):
-                    python_executable = env_record["python_executable"]
-                    environment_id = env_id
-                else:
-                    # Env was GC'd or never materialized. Fall through to recompute path.
-                    env_id = ""
-            if not environment_id:
-                requirements = self._read_requirements_from_artifact(artifact_path)
-                try:
-                    env_id_computed = self.dependency_environment_service.compute_environment_id(
-                        requirements
-                    )
-                    env_record = self.dependency_environment_service.lookup(env_id_computed)
-                except Exception:
-                    env_record = None
-                    env_id_computed = None
-                if env_record is not None and isinstance(env_record.get("python_executable"), str):
-                    python_executable = env_record["python_executable"]
-                    environment_id = env_id_computed
-                    # Backfill the revision row so subsequent mounts hit the fast path.
-                    try:
-                        self.registry.update_revision_environment(
-                            revision.id,
-                            dependency_environment_id=env_id_computed,
-                            env_python_executable=python_executable,
-                        )
-                    except Exception:
-                        pass
-
-        manifest = revision.manifest or {}
-
-        try:
-            self.worker_manager.start(
-                app_name=revision.app_name,
-                revision_number=revision.revision_number,
-                mount_path=mount_path,
-                app_source=app_source,
-                manifest=manifest,
-                python_executable=python_executable,
-                environment_id=environment_id,
-            )
-        except WorkerStartError as exc:
-            raise DashServerError(
-                category="runtime_mount_error",
-                summary=(
-                    f"Failed to start isolated worker for {revision.app_name} "
-                    f"revision {revision.revision_number}."
-                ),
-                details={
-                    "app": revision.app_name,
-                    "revision_number": revision.revision_number,
-                    "mount_path": mount_path,
-                    "worker_start_error": str(exc),
-                    "python_executable": python_executable or sys.executable,
-                },
-            ) from exc
-
-        proxy = WorkerProxyWSGIApp(
-            self.worker_manager,
-            mount_path=mount_path,
-            app_name=revision.app_name,
-        )
-        self.dispatcher.mount(mount_path, proxy)
-
-    def _read_requirements_from_artifact(self, artifact_path: Path) -> list[str]:
-        path = artifact_path / REQUIREMENTS_FILENAME
-        if not path.exists():
-            return []
-        return [
-            line.strip()
-            for line in path.read_text().splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
-
-    def _create_revision_wsgi_app(self, revision: AppRevision, mount_path: str) -> Flask:
-        artifact_path = Path(revision.artifact_path)
-        if artifact_path.is_dir() and (artifact_path / APP_ENTRYPOINT_FILENAME).exists():
-            wsgi_app = self._load_workspace_artifact_wsgi_app(
-                artifact_path,
-                mount_path,
-                revision_number=revision.revision_number,
-            )
-        else:
-            manifest, dashboard = validate_bundle(
-                {"manifest": revision.manifest, "dashboard": revision.bundle}
-            )
-            from dash_server.dash_apps.factory import build_dash_wsgi_app
-
-            wsgi_app = build_dash_wsgi_app(
-                manifest,
-                dashboard,
-                mount_prefix=mount_path,
-                revision_number=revision.revision_number,
-            )
-        self._instrument_runtime_wsgi_app(
-            wsgi_app,
-            app_name=revision.app_name,
-            revision_number=revision.revision_number,
-        )
-        return wsgi_app
-
-    def _instrument_runtime_wsgi_app(
-        self,
-        wsgi_app: Any,
-        *,
-        app_name: str,
-        revision_number: int,
-    ) -> None:
-        if not isinstance(wsgi_app, Flask):
-            return
-        if getattr(wsgi_app, "_dash_server_diagnostics_instrumented", False):
-            return
-
-        def handle_runtime_exception(sender, exception, **extra):
-            traceback_text = "".join(
-                traceback.format_exception(
-                    type(exception),
-                    exception,
-                    exception.__traceback__,
-                )
-            )
-            path = request.path
-            if path.endswith("/_dash-update-component"):
-                callback_payload = request.get_json(silent=True)
-                details = {
-                    "path": path,
-                    "method": request.method,
-                    **self._callback_request_details(callback_payload),
-                }
-                summary = self._callback_failure_summary(details)
-                self.diagnostics_service.record_callback_failure(
-                    app_name,
-                    summary=summary,
-                    details=details,
-                    traceback_text=traceback_text,
-                    revision_number=revision_number,
-                )
-                return
-
-            category = self.diagnostics_service.inspect_traceback(traceback_text)["traceback"][
-                "category"
-            ]
-            summary = f"Unhandled runtime exception while serving {path}."
-            self.diagnostics_service.record_error(
-                app_name,
-                source="runtime",
-                category=category,
-                summary=summary,
-                details={
-                    "path": path,
-                    "method": request.method,
-                },
-                traceback_text=traceback_text,
-                revision_number=revision_number,
-            )
-
-        got_request_exception.connect(handle_runtime_exception, wsgi_app, weak=False)
-        # Idempotency marker (mirrored read via `getattr` at the top of this function).
-        # Flask doesn't declare arbitrary attributes; this is the documented sentinel pattern.
-        wsgi_app._dash_server_diagnostics_instrumented = True  # type: ignore[attr-defined]
-
-    def _callback_request_details(self, payload: Any) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            return {
-                "output": None,
-                "outputs": None,
-                "changed_prop_ids": [],
-                "inputs": [],
-                "state": [],
-            }
-        return {
-            "output": payload.get("output"),
-            "outputs": payload.get("outputs"),
-            "changed_prop_ids": payload.get("changedPropIds") or [],
-            "inputs": payload.get("inputs") or [],
-            "state": payload.get("state") or [],
-        }
-
-    def _callback_failure_summary(self, details: dict[str, Any]) -> str:
-        output = details.get("output")
-        if isinstance(output, str) and output:
-            return f"Dash callback failed for output {output}."
-        changed = details.get("changed_prop_ids")
-        if isinstance(changed, list) and changed:
-            return f"Dash callback failed after input change {changed[0]}."
-        return "Dash callback failed during callback dispatch."
-
-    def _load_workspace_artifact_wsgi_app(
-        self,
-        artifact_dir: Path,
-        mount_path: str,
-        *,
-        revision_number: int,
-    ) -> Flask:
-        manifest_payload = json.loads((artifact_dir / APP_MANIFEST_FILENAME).read_text())
-        manifest = validate_manifest_payload(manifest_payload)
-        module_name = f"dash_server_artifact_{manifest.name}_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(
-            module_name, artifact_dir / APP_ENTRYPOINT_FILENAME
-        )
-        assert spec is not None and spec.loader is not None
-        with isolated_dash_callback_globals(), isolated_local_imports(artifact_dir):
-            module = importlib.util.module_from_spec(spec)
-            try:
-                spec.loader.exec_module(module)
-            except Exception as exc:
-                raise DashServerError(
-                    category="runtime_mount_error",
-                    summary="Failed to import artifact app.py during runtime mount.",
-                    details={
-                        "artifact_path": str(artifact_dir),
-                        "exception_type": type(exc).__name__,
-                        "traceback_text": traceback.format_exc(),
-                    },
-                ) from exc
-            factory = getattr(module, "create_dash_app", None)
-            if not callable(factory):
-                raise DashServerError(
-                    category="artifact_error",
-                    summary="Artifact app.py must define create_dash_app(server, url_base_pathname, metadata).",
-                    details={"artifact_path": str(artifact_dir)},
-                )
-            server = Flask(f"dash_server.runtime.{manifest.name}.{uuid.uuid4().hex}")
-            server.extensions.update(self.runtime_extensions)
-            try:
-                created = factory(
-                    server=server,
-                    url_base_pathname=f"{mount_path.rstrip('/')}/",
-                    # `revision_number` lets the runtime helper stamp data-layer errors
-                    # with the active revision, so the data_layer probe + errors resource
-                    # can filter old failures out after promote/rollback. (BUG-005)
-                    metadata={
-                        **manifest.to_dict(),
-                        "route": mount_path,
-                        "revision_number": revision_number,
-                    },
-                )
-                if isinstance(created, Dash):
-                    apply_hosted_footer(
-                        created,
-                        mount_path=mount_path,
-                        revision_number=revision_number,
-                        app_name=manifest.name,
-                        has_consumption_outputs=bool(
-                            (manifest.consumption or {}).get("outputs")
-                        ),
-                    )
-                    finalize_dash_app_callbacks(created)
-            except Exception as exc:
-                raise DashServerError(
-                    category="runtime_mount_error",
-                    summary="Artifact factory raised an exception during runtime mount.",
-                    details={
-                        "artifact_path": str(artifact_dir),
-                        "exception_type": type(exc).__name__,
-                        "traceback_text": traceback.format_exc(),
-                    },
-                ) from exc
-            mount_check = verify_dash_mount(server)
-            if mount_check["status"] != "passed":
-                raise DashServerError(
-                    category="runtime_mount_error",
-                    summary="Artifact app did not serve the mounted Dash routes.",
-                    details={
-                        "artifact_path": str(artifact_dir),
-                        "mount_path": mount_path,
-                        "mount_check": mount_check,
-                    },
-                )
-        return server
+        self.mounter._mount_revision(revision, mount_path)
 
     def _validate_workspace_identity(self, app: HostedApp, manifest: AppManifest) -> None:
         if manifest.name != app.name:
@@ -2998,28 +2364,14 @@ class AppRuntimeService:
         clear_preview: bool = False,
         commit_message: str,
     ) -> None:
-        app = self._require_app(app_name)
-        self.git_repo_service.publish_revision_to_main(
-            app_name=app_name,
-            revision_number=revision.revision_number,
-            artifact_path=revision.artifact_path,
-            commit_sha=revision.commit_sha,
-            git_tag=revision.git_tag,
-            source_hash=revision.source_hash,
-            dependency_lock_hash=revision.dependency_lock_hash,
-            release_manifest_path=revision.release_manifest_path,
-        )
-        self.git_repo_service.write_live_desired_state(
-            app_name=app_name,
-            revision_number=revision.revision_number,
-            commit_sha=revision.commit_sha,
-            git_tag=revision.git_tag,
-            release_manifest_path=revision.release_manifest_path,
-            route=route or app.route,
-            visibility=visibility or app.visibility,
-            auth_policy=auth_policy or app.auth_policy,
-            enabled=app.enabled if enabled is None else enabled,
-            permissions=permissions or app.permissions,
+        self.reconciler._write_live_desired_state_for_revision(
+            app_name,
+            revision,
+            route=route,
+            visibility=visibility,
+            auth_policy=auth_policy,
+            enabled=enabled,
+            permissions=permissions,
             clear_preview=clear_preview,
             commit_message=commit_message,
         )
@@ -3031,35 +2383,9 @@ class AppRuntimeService:
         *,
         commit_message: str,
     ) -> None:
-        self.git_repo_service.publish_revision_to_main(
-            app_name=app_name,
-            revision_number=revision.revision_number,
-            artifact_path=revision.artifact_path,
-            commit_sha=revision.commit_sha,
-            git_tag=revision.git_tag,
-            source_hash=revision.source_hash,
-            dependency_lock_hash=revision.dependency_lock_hash,
-            release_manifest_path=revision.release_manifest_path,
+        self.reconciler._write_preview_desired_state_for_revision(
+            app_name, revision, commit_message=commit_message
         )
-        self.git_repo_service.write_preview_desired_state(
-            app_name=app_name,
-            revision_number=revision.revision_number,
-            commit_sha=revision.commit_sha,
-            git_tag=revision.git_tag,
-            release_manifest_path=revision.release_manifest_path,
-            commit_message=commit_message,
-        )
-
-    def _desired_live_routes(self, desired_live: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
-        routes: dict[str, list[str]] = {}
-        for app_name, desired in desired_live.items():
-            spec = desired.get("spec")
-            if not isinstance(spec, dict):
-                continue
-            route = spec.get("route")
-            if isinstance(route, str) and route:
-                routes.setdefault(route, []).append(app_name)
-        return routes
 
     def _reconcile_app_desired_state(
         self,
@@ -3068,293 +2394,17 @@ class AppRuntimeService:
         preview_desired: dict[str, Any] | None,
         desired_live_routes: dict[str, list[str]],
     ) -> dict[str, Any]:
-        app = self._require_app(app_name)
-        previous_route = app.route
-        if live_desired is not None:
-            spec = live_desired.get("spec")
-            if not isinstance(spec, dict):
-                raise DashServerError(
-                    category="gitops_reconcile_error",
-                    summary=f"Live desired state for app {app_name} is malformed.",
-                    details={"app": app_name, "desired_state": live_desired},
-                )
-            route = self._normalize_live_route(str(spec.get("route", app.route)))
-            if len(desired_live_routes.get(route, [])) > 1:
-                raise DashServerError(
-                    category="route_conflict",
-                    summary=f"Live desired state uses duplicate route {route}.",
-                    details={"app": app_name, "route": route, "apps": desired_live_routes[route]},
-                )
-            self._ensure_route_available(route, excluding_app=app_name)
-            visibility = self._normalize_visibility(str(spec.get("visibility", app.visibility)))
-            auth_policy = self._normalize_auth_policy(str(spec.get("authPolicy", app.auth_policy)))
-            enabled = bool(spec.get("enabled", app.enabled))
-            spec_permissions = spec.get("permissions")
-            permissions = self._normalize_permissions(
-                spec_permissions if isinstance(spec_permissions, dict) else app.permissions
-            )
-            updated = self.registry.update_exposure(
-                app_name,
-                route=route,
-                visibility=visibility,
-                auth_policy=auth_policy,
-                enabled=enabled,
-                permissions=permissions,
-            )
-            assert updated is not None
-            app = updated
-            desired_live_revision = self._resolve_desired_revision(app_name, live_desired)
-            if desired_live_revision is not None and (
-                app.current_revision_id != desired_live_revision.id
-            ):
-                previous_current = self.registry.get_current_revision(app_name)
-                self.registry.promote_revision(app_name, desired_live_revision.id)
-                self.registry.update_revision_state(
-                    desired_live_revision.id,
-                    "live",
-                    rollout_metadata={"reconciled_to": app.route},
-                )
-                if previous_current is not None and previous_current.id != desired_live_revision.id:
-                    self.registry.update_revision_state(
-                        previous_current.id,
-                        "archived",
-                        rollout_metadata={"replaced_by": desired_live_revision.revision_number},
-                    )
-                app = self._require_app(app_name)
-            if previous_route != app.route and self.dispatcher.is_mounted(previous_route):
-                self.dispatcher.unmount(previous_route)
-            if app.enabled and app.status == "running":
-                self._mount_live_revision(app_name)
-            else:
-                self.dispatcher.unmount(app.route)
-        else:
-            desired_live_revision = None
-
-        if preview_desired is not None:
-            desired_preview_revision = self._resolve_desired_revision(app_name, preview_desired)
-            if desired_preview_revision is None:
-                raise DashServerError(
-                    category="gitops_reconcile_error",
-                    summary=f"Preview desired state for app {app_name} could not be resolved.",
-                    details={"app": app_name, "desired_state": preview_desired},
-                )
-            self.registry.set_preview_revision(app_name, desired_preview_revision.id)
-            self.registry.update_revision_state(
-                desired_preview_revision.id,
-                "warming",
-                rollout_metadata={"preview_path": self.preview_path(app_name, desired_preview_revision.revision_number)},
-            )
-            self._mount_preview_revision(app_name, desired_preview_revision.revision_number)
-        else:
-            existing_preview = self.registry.get_preview_revision(app_name)
-            if existing_preview is not None:
-                self.dispatcher.unmount(self.preview_path(app_name, existing_preview.revision_number))
-                self.registry.set_preview_revision(app_name, None)
-            desired_preview_revision = None
-
-        return {
-            "app": app_name,
-            "status": "reconciled",
-            "live_revision": desired_live_revision.revision_number if live_desired is not None and desired_live_revision is not None else None,
-            "preview_revision": desired_preview_revision.revision_number if desired_preview_revision is not None else None,
-            "route": self._require_app(app_name).route,
-        }
-
-    def _resolve_desired_revision(
-        self,
-        app_name: str,
-        desired_state: dict[str, Any] | None,
-    ) -> AppRevision | None:
-        if desired_state is None:
-            return None
-        spec = desired_state.get("spec")
-        if not isinstance(spec, dict):
-            return None
-        target_revision = spec.get("targetRevision")
-        if not isinstance(target_revision, str) or not target_revision.startswith("r"):
-            return None
-        try:
-            revision_number = int(target_revision[1:])
-        except ValueError:
-            return None
-        revision = self.registry.get_revision_by_number(app_name, revision_number)
-        if revision is None:
-            return None
-        git_tag = spec.get("gitTag")
-        if isinstance(git_tag, str) and git_tag and revision.git_tag and git_tag != revision.git_tag:
-            raise DashServerError(
-                category="gitops_reconcile_error",
-                summary=f"Desired state for app {app_name} references a mismatched git tag.",
-                details={
-                    "app": app_name,
-                    "target_revision": target_revision,
-                    "desired_git_tag": git_tag,
-                    "observed_git_tag": revision.git_tag,
-                },
-            )
-        return revision
-
-    def _resolve_desired_revision_from_list(
-        self,
-        revisions: list[AppRevision],
-        desired_state: dict[str, Any] | None,
-    ) -> AppRevision | None:
-        if desired_state is None:
-            return None
-        spec = desired_state.get("spec")
-        if not isinstance(spec, dict):
-            return None
-        target_revision = spec.get("targetRevision")
-        if not isinstance(target_revision, str) or not target_revision.startswith("r"):
-            return None
-        try:
-            revision_number = int(target_revision[1:])
-        except ValueError:
-            return None
-        for revision in revisions:
-            if revision.revision_number == revision_number:
-                return revision
-        return None
-
-    def _previous_revision(
-        self,
-        revisions: list[AppRevision],
-        current_revision: AppRevision,
-    ) -> AppRevision | None:
-        earlier = [revision for revision in revisions if revision.revision_number < current_revision.revision_number]
-        return earlier[-1] if earlier else None
-
-    def _exposure_from_desired_state(
-        self,
-        desired_state: dict[str, Any] | None,
-        *,
-        fallback_manifest: AppManifest,
-        fallback_app: HostedApp | None,
-    ) -> dict[str, Any]:
-        spec = desired_state.get("spec") if isinstance(desired_state, dict) else None
-        permissions = (
-            fallback_app.permissions
-            if fallback_app is not None
-            else {
-                "filesystem": {"mode": "workspace-write"},
-                "network": {"mode": "inherit"},
-                "env": {"mode": "inherit"},
-            }
+        return self.reconciler._reconcile_app_desired_state(
+            app_name, live_desired, preview_desired, desired_live_routes
         )
-        return {
-            "route": str(spec.get("route", fallback_app.route if fallback_app is not None else fallback_manifest.route))
-            if isinstance(spec, dict)
-            else (fallback_app.route if fallback_app is not None else fallback_manifest.route),
-            "visibility": str(spec.get("visibility", fallback_app.visibility if fallback_app is not None else "private"))
-            if isinstance(spec, dict)
-            else (fallback_app.visibility if fallback_app is not None else "private"),
-            "auth_policy": str(spec.get("authPolicy", fallback_app.auth_policy if fallback_app is not None else "inherited"))
-            if isinstance(spec, dict)
-            else (fallback_app.auth_policy if fallback_app is not None else "inherited"),
-            "enabled": bool(spec.get("enabled", fallback_app.enabled if fallback_app is not None else True))
-            if isinstance(spec, dict)
-            else (fallback_app.enabled if fallback_app is not None else True),
-            "permissions": self._normalize_permissions(spec.get("permissions", permissions))
-            if isinstance(spec, dict) and isinstance(spec.get("permissions", permissions), dict)
-            else permissions,
-        }
-
-    def _upsert_revision_from_release(
-        self,
-        app_name: str,
-        fallback_manifest: AppManifest,
-        release_payload: dict[str, Any],
-    ) -> AppRevision | None:
-        metadata = release_payload.get("metadata")
-        spec = release_payload.get("spec")
-        if not isinstance(metadata, dict) or not isinstance(spec, dict):
-            return None
-        revision_label = metadata.get("revision")
-        if not isinstance(revision_label, str) or not revision_label.startswith("r"):
-            return None
-        try:
-            revision_number = int(revision_label[1:])
-        except ValueError:
-            return None
-        existing = self.registry.get_revision_by_number(app_name, revision_number)
-        artifact_path = str(spec.get("artifactPath", ""))
-        revision_manifest = self._manifest_from_artifact_or_fallback(artifact_path, fallback_manifest)
-        return self.registry.upsert_revision_cache(
-            app_name,
-            revision_number=revision_number,
-            manifest=revision_manifest.to_dict(),
-            bundle={
-                "source_files": self._artifact_source_files(artifact_path),
-                "reconstructed_from": "git_cache_rebuild",
-            },
-            lifecycle_state="archived",
-            artifact_path=artifact_path,
-            source_hash=self._strip_hash_prefix(str(spec.get("manifestHash", ""))),
-            dependency_lock_hash=self._strip_hash_prefix(str(spec.get("dependencyLockHash", ""))),
-            commit_sha=str(spec.get("commit", "")),
-            git_tag=str(spec.get("gitTag", "")),
-            git_branch=existing.git_branch if existing is not None and existing.git_branch else "main",
-            release_manifest_path=str(release_payload.get("path", "")),
-            rollout_metadata={"reconstructed_from": "git_cache_rebuild"},
-        )
-
-    def _manifest_from_artifact_or_fallback(
-        self,
-        artifact_path: str,
-        fallback_manifest: AppManifest,
-    ) -> AppManifest:
-        manifest_payload = load_manifest_from_dir(Path(artifact_path))
-        if manifest_payload is not None:
-            return validate_manifest_payload(manifest_payload)
-        return fallback_manifest
-
-    def _artifact_source_files(self, artifact_path: str) -> list[str]:
-        artifact_dir = Path(artifact_path)
-        if not artifact_dir.exists() or not artifact_dir.is_dir():
-            return []
-        return list_artifact_files(artifact_dir)
-
-    def _strip_hash_prefix(self, value: str) -> str:
-        return value.split("sha256:", 1)[1] if value.startswith("sha256:") else value
 
     def reconcile_app(self, app_name: str) -> dict[str, Any]:
-        """Reconcile one app's Git desired state without touching the rest of the fleet.
+        """Reconcile one app's Git desired state without touching the rest of the fleet."""
 
-        Single-app mutations (route/visibility/exposure changes, promote,
-        rollback, preview) must not re-resolve or re-mount unrelated apps; the
-        fleet-wide `reconcile_git_desired_state` remains for bootstrap and
-        drift reporting.
-        """
-        app = self.registry.get_app(app_name)
-        if app is None:
-            return {"app": app_name, "status": "skipped", "reason": "app_not_registered"}
-        desired = self.git_desired_state()
-        desired_live_routes = self._desired_live_routes(desired["live"])
-        try:
-            return self._reconcile_app_desired_state(
-                app_name,
-                desired["live"].get(app_name),
-                desired["preview"].get(app_name),
-                desired_live_routes,
-            )
-        except DashServerError as exc:
-            self._record_dash_server_error(app_name, source="runtime", exc=exc)
-            return {
-                "app": app_name,
-                "status": "failed",
-                "reason": exc.category,
-                "details": exc.details,
-            }
+        return self.reconciler.reconcile_app(app_name)
 
     def _reconcile_or_raise(self, app_name: str) -> dict[str, Any]:
-        result = self.reconcile_app(app_name)
-        if result.get("status") == "failed":
-            raise DashServerError(
-                category=str(result.get("reason") or "gitops_reconcile_error"),
-                summary=f"Git desired-state reconcile failed for app {app_name}.",
-                details={"app": app_name, **(result.get("details") or {})},
-            )
-        return result
+        return self.reconciler._reconcile_or_raise(app_name)
 
     def _safe_workspace_validation(
         self,
@@ -3440,348 +2490,38 @@ class AppRuntimeService:
         follow_redirects: bool = False,
         accepted_statuses: set[int] | None = None,
     ) -> dict[str, Any]:
-        client = WSGIClient(self.dispatcher, WSGIResponse)
-        return self._client_http_probe(
-            client,
+        return self.prober._http_probe(
             path,
             probe_name=probe_name,
             follow_redirects=follow_redirects,
             accepted_statuses=accepted_statuses,
         )
 
-    def _client_http_probe(
-        self,
-        client: WSGIClient,
-        path: str,
-        *,
-        probe_name: str,
-        follow_redirects: bool = False,
-        accepted_statuses: set[int] | None = None,
-    ) -> dict[str, Any]:
-        response = client.get(path, follow_redirects=follow_redirects)
-        if accepted_statuses is None:
-            accepted_statuses = set(range(200, 400))
-        if response.status_code in accepted_statuses:
-            return {
-                "status": "passed",
-                "details": {
-                    "path": path,
-                    "status_code": response.status_code,
-                },
-            }
-        return self._failed_probe(
-            probe_name,
-            f"Unexpected status code {response.status_code}.",
-            details={"path": path, "status_code": response.status_code},
-        )
-
     def _asset_probe(self, route: str) -> dict[str, Any]:
-        client = WSGIClient(self.dispatcher, WSGIResponse)
-        return self._client_asset_probe(client, route)
-
-    def _client_asset_probe(self, client: WSGIClient, route: str) -> dict[str, Any]:
-        response = client.get(route, follow_redirects=True)
-        if response.status_code >= 400:
-            return self._failed_probe(
-                "static_assets",
-                f"Homepage returned {response.status_code}.",
-                details={"path": route, "status_code": response.status_code},
-            )
-        body = response.get_data(as_text=True)
-        asset_path = None
-        for marker in ('src="', "href=\""):
-            start = body.find(marker)
-            while start != -1:
-                end = body.find('"', start + len(marker))
-                candidate = body[start + len(marker) : end]
-                if candidate.startswith(route) and (
-                    "_dash-component-suites" in candidate or "_favicon.ico" in candidate
-                ):
-                    asset_path = candidate
-                    break
-                start = body.find(marker, start + len(marker))
-            if asset_path is not None:
-                break
-        if asset_path is None:
-            return self._failed_probe(
-                "static_assets",
-                "No static asset reference was found in the app shell.",
-                details={"path": route, "status_code": response.status_code},
-            )
-        asset_response = client.get(asset_path)
-        if 200 <= asset_response.status_code < 400:
-            return {
-                "status": "passed",
-                "details": {
-                    "path": asset_path,
-                    "status_code": asset_response.status_code,
-                },
-            }
-        return self._failed_probe(
-            "static_assets",
-            f"Asset returned {asset_response.status_code}.",
-            details={"path": asset_path, "status_code": asset_response.status_code},
-        )
-
-    def _failed_probe(
-        self,
-        probe_name: str,
-        message: str,
-        *,
-        details: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        payload = {"message": message}
-        if details:
-            payload.update(details)
-        return {"name": probe_name, "status": "failed", "details": payload}
+        return self.prober._asset_probe(route)
 
     def _skipped_probe(self, probe_name: str, message: str) -> dict[str, Any]:
-        return {"name": probe_name, "status": "skipped", "details": {"message": message}}
+        return self.prober._skipped_probe(probe_name, message)
 
     def _sql_smoke_probe(self, app_name: str, revision: AppRevision) -> dict[str, Any]:
-        """Actively run each `queries/**/*.sql` file with ``WHERE 1=0`` against the bound profile.
-
-        Returns ``not_applicable`` when the manifest has no data source (or no Exasol service is
-        wired in), ``passed`` when every file parses cleanly, ``failed`` when any file fails to
-        parse/bind or the connection itself can't open. This is the probe that closes BUG-002 —
-        a dashboard with broken queries used to report ``all probes passed`` because the existing
-        ``data_layer`` probe only inspected already-recorded errors.
-        """
-
-        from ..exasol.sql_smoke import collect_sql_files, collect_sql_smoke_params, run_sql_smoke
-
-        exasol_service = self.runtime_extensions.get("exasol_dashboard_service")
-        if exasol_service is None:
-            return {"name": "sql_smoke", "status": "not_applicable", "details": {"reason": "no_exasol_service"}}
-
-        profile_name = self._manifest_profile_name(revision)
-        if not profile_name:
-            return {
-                "name": "sql_smoke",
-                "status": "not_applicable",
-                "details": {"reason": "no_bound_profile"},
-            }
-
-        try:
-            profile = exasol_service.profile_store.get_profile(profile_name)
-        except Exception as exc:
-            return {
-                "name": "sql_smoke",
-                "status": "failed",
-                "details": {
-                    "reason": "profile_not_found",
-                    "profile": profile_name,
-                    "error": str(exc),
-                },
-            }
-
-        sql_files = collect_sql_files(Path(revision.artifact_path))
-        if not sql_files:
-            return {
-                "name": "sql_smoke",
-                "status": "not_applicable",
-                "details": {"reason": "no_sql_files"},
-            }
-
-        report = run_sql_smoke(
-            profile=profile,
-            sql_files=sql_files,
-            connection_manager=exasol_service.connection_manager,
-            smoke_params=collect_sql_smoke_params(Path(revision.artifact_path)),
-        )
-        if report.overall_status == "passed":
-            return {
-                "name": "sql_smoke",
-                "status": "passed",
-                "details": {
-                    "profile": profile_name,
-                    "files_tested": [f.relative_path for f in report.files if f.outcome == "passed"],
-                    "files_skipped": [
-                        {"path": f.relative_path, "reason": f.skip_reason}
-                        for f in report.files
-                        if f.outcome == "skipped"
-                    ],
-                },
-            }
-        if report.overall_status == "skipped":
-            return {
-                "name": "sql_smoke",
-                "status": "not_applicable",
-                "details": {
-                    "reason": "all_files_skipped",
-                    "files": [
-                        {"path": f.relative_path, "reason": f.skip_reason}
-                        for f in report.files
-                    ],
-                },
-            }
-        # failed — surface the first failure plus the connection error if any.
-        first = report.first_failure
-        return {
-            "name": "sql_smoke",
-            "status": "failed",
-            "details": {
-                "profile": profile_name,
-                "connection_error": report.connection_error,
-                "first_failed_file": first.relative_path if first is not None else None,
-                "latest_error": first.error_text if first is not None else report.connection_error,
-                "failed_files": [
-                    {"path": f.relative_path, "error": f.error_text}
-                    for f in report.files
-                    if f.outcome == "failed"
-                ],
-            },
-        }
-
-    def _manifest_profile_name(self, revision: AppRevision) -> str | None:
-        """Return ``manifest.data_sources.primary.profile`` if it's set to an Exasol profile, else None."""
-
-        manifest = revision.manifest or {}
-        data_sources = manifest.get("data_sources") if isinstance(manifest, dict) else None
-        if not isinstance(data_sources, dict):
-            return None
-        primary = data_sources.get("primary")
-        if not isinstance(primary, dict):
-            return None
-        if primary.get("kind") != "exasol":
-            return None
-        profile_name = primary.get("profile")
-        return profile_name if isinstance(profile_name, str) and profile_name else None
+        return self.prober._sql_smoke_probe(app_name, revision)
 
     def _data_layer_probe(self, app_name: str, *, revision_number: int | None) -> dict[str, Any]:
-        """Probe the per-app errors stream for recent data_layer (Exasol) failures.
-
-        Filters errors with both (a) the active revision number — so stale errors from
-        a rolled-back revision don't keep the probe red after a promote — and (b) the
-        acknowledge watermark, so operators can explicitly clear the probe after fixing
-        SQL in-place without promoting a new revision.
-
-        Returns a "passed" probe when no recent data_layer errors apply, a "failed"
-        probe when one or more are present. This is how scaffolded Exasol dashboards
-        bubble query failures up to app_run_healthcheck.
-        """
-
-        errors = self.diagnostics_service.list_errors(app_name, limit=0, source="data_layer")
-        records = errors.get("errors", [])
-        watermark = self.diagnostics_service.data_layer_ack_watermark(app_name)
-        applicable = [
-            record
-            for record in records
-            if _data_layer_record_applies_to(
-                record, revision_number=revision_number, watermark=watermark
-            )
-        ]
-        if not applicable:
-            return {
-                "name": "data_layer",
-                "status": "passed",
-                "details": {
-                    "message": (
-                        "No data-layer errors recorded for the current revision since the last acknowledge."
-                        if watermark or revision_number is not None
-                        else "No data-layer errors recorded since last reset."
-                    ),
-                    "watermark": watermark,
-                    "revision_number": revision_number,
-                },
-            }
-        latest = applicable[-1]
-        sql_file = (latest.get("details") or {}).get("sql_file")
-        return {
-            "name": "data_layer",
-            "status": "failed",
-            "details": {
-                "message": "One or more recent Exasol queries failed.",
-                "sql_file": sql_file,
-                "error_count": len(applicable),
-                "latest_error": (latest.get("details") or {}).get("error"),
-                "latest_timestamp": latest.get("timestamp"),
-                "watermark": watermark,
-                "revision_number": revision_number,
-            },
-        }
+        return self.prober._data_layer_probe(app_name, revision_number=revision_number)
 
     def _worker_http_probe(
         self, *, mount_path: str, revision_number: int | None
     ) -> dict[str, Any]:
-        """Probe a worker via its last-seen HTTP response status from the proxy.
-
-        The proxy calls ``manager.set_last_response_status(...)`` on every forwarded
-        request, so the probe is a pure read — no extra HTTP roundtrip to the worker.
-        Returns ``not_applicable`` outside isolated mode.
-        """
-
-        if self.runtime_mode != "isolated" or self.worker_manager is None:
-            return {
-                "name": "worker_http",
-                "status": "not_applicable",
-                "details": {"runtime_mode": self.runtime_mode},
-            }
-        record = self.worker_manager.get_record(mount_path)
-        if record is None or record.last_response_status is None:
-            return {
-                "name": "worker_http",
-                "status": "skipped",
-                "details": {
-                    "message": (
-                        "No HTTP request has reached the worker yet for the current revision."
-                    ),
-                    "mount_path": mount_path,
-                    "revision_number": revision_number,
-                },
-            }
-        status_code = record.last_response_status
-        return {
-            "name": "worker_http",
-            "status": "passed" if status_code < 500 else "failed",
-            "details": {
-                "last_response_status": status_code,
-                "last_request_at": record.last_request_at,
-                "mount_path": mount_path,
-                "revision_number": revision_number,
-            },
-        }
+        return self.prober._worker_http_probe(
+            mount_path=mount_path, revision_number=revision_number
+        )
 
     def _worker_alive_probe(
         self, *, mount_path: str, revision_number: int | None
     ) -> dict[str, Any]:
-        """Probe an isolated-mode worker for liveness.
-
-        Returns ``status="not_applicable"`` when the server is running in_process so the
-        probe list stays the same shape across modes.
-        """
-
-        if self.runtime_mode != "isolated" or self.worker_manager is None:
-            return {
-                "name": "worker_alive",
-                "status": "not_applicable",
-                "details": {"runtime_mode": self.runtime_mode},
-            }
-        record = self.worker_manager.get_record(mount_path)
-        if record is None:
-            return {
-                "name": "worker_alive",
-                "status": "failed",
-                "details": {
-                    "message": "No worker record found for this mount path.",
-                    "mount_path": mount_path,
-                },
-            }
-        alive = self.worker_manager.ensure_running(mount_path) is not None
-        rss = self.worker_manager.sample_rss(mount_path)
-        return {
-            "name": "worker_alive",
-            "status": "passed" if alive else "failed",
-            "details": {
-                "pid": record.pid,
-                "endpoint": f"{record.host}:{record.port}",
-                "environment_id": record.environment_id,
-                "revision_number": revision_number,
-                "started_at": record.started_at,
-                "last_request_at": record.last_request_at,
-                "rss_bytes": rss,
-            },
-        }
+        return self.prober._worker_alive_probe(
+            mount_path=mount_path, revision_number=revision_number
+        )
 
     def _preflight_mount_path(self, app_name: str, revision_number: int) -> str:
         return f"/__dash-server/preflight/{app_name}/{revision_number}/{uuid.uuid4().hex}"
@@ -3901,31 +2641,3 @@ class AppRuntimeService:
                     details={"section": key},
                 )
         return normalized
-
-
-def _data_layer_record_applies_to(
-    record: dict[str, Any],
-    *,
-    revision_number: int | None,
-    watermark: str | None,
-) -> bool:
-    """Return True when a data-layer error record is still relevant.
-
-    Filters out:
-      - errors from a different revision (when `revision_number` is given and the
-        record carries a non-None `revision_number` of its own — legacy records with
-        ``revision_number: null`` pass through so we don't suddenly hide old data).
-      - errors recorded before the ack watermark.
-    """
-
-    if revision_number is not None:
-        stamped = record.get("revision_number")
-        if isinstance(stamped, int) and stamped != revision_number:
-            return False
-    if watermark is not None:
-        timestamp = record.get("timestamp")
-        if isinstance(timestamp, str) and timestamp <= watermark:
-            # ISO-8601 strings compare lexically when same timezone — both are UTC
-            # `...Z` strings produced by `DiagnosticsService._timestamp()`.
-            return False
-    return True

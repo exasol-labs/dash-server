@@ -1,22 +1,14 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    {% if export.job.status in ('queued', 'running', 'cancel_requested') %}<meta http-equiv="refresh" content="2">{% endif %}
-    <title>Export {{ export.job.id }}</title>
-    <style>
-      body { margin: 0; background: #f5efe3; color: #211b17; font-family: "Avenir Next", "Segoe UI", sans-serif; }
-      main { width: min(760px, calc(100vw - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
-      a { color: #0f766e; font-weight: 700; }
+{% extends "consumption_base.html" %}
+{% block head_extra %}{% if export.job.status in ('queued', 'running', 'cancel_requested') %}<meta http-equiv="refresh" content="2">{% endif %}{% endblock %}
+{% block title %}Export {{ export.job.id }}{% endblock %}
+{% block main_width %}760px{% endblock %}
+{% block styles %}
       article { margin-top: 1.5rem; padding: 1.25rem; border: 1px solid rgba(73,52,33,.18); border-radius: 16px; background: #fffaf2; }
       dt { color: #6b5d52; } dd { margin: 0 0 .8rem; overflow-wrap: anywhere; }
       button { padding: .65rem 1rem; border: 0; border-radius: 999px; background: #9f1239; color: white; font-weight: 700; }
       .download { display: inline-block; padding: .7rem 1rem; border-radius: 999px; background: #0f766e; color: white; text-decoration: none; }
-      code { overflow-wrap: anywhere; }
-    </style>
-  </head>
-  <body>
+{% endblock %}
+{% block body %}
     <main>
       <a href="/manage/apps/{{ export.job.app_name }}/consumption">Back to outputs</a>
       <h1>Export {{ export.job.status }}</h1>
@@ -39,5 +31,4 @@
         {% endif %}
       </article>
     </main>
-  </body>
-</html>
+{% endblock %}

@@ -19,7 +19,7 @@ from dash_server.consumption import consumption_contract_hash, normalize_consump
 from dash_server.consumption.execution import DatasetStream, ExasolDatasetExecutor
 from dash_server.exceptions import DashServerError
 
-pytestmark = pytest.mark.slow
+from _helpers import wait_for
 
 
 _APP_PY = """from dash import Dash, html
@@ -180,6 +180,7 @@ def _wait_for_job(client, job_id: str, expected: set[str] | None = None):
     raise AssertionError(f"Export {job_id} did not reach {expected}")
 
 
+@pytest.mark.slow
 def test_phase0_output_discovery_matches_mcp_resource_and_ui(app, client):
     _create_output_app(client)
 
@@ -203,19 +204,19 @@ def test_phase0_output_discovery_matches_mcp_resource_and_ui(app, client):
     assert tool_domain_payload == resource_payload
     assert tool_payload["output_count"] == 1
     assert tool_payload["outputs"][0]["id"] == "monthly-close-detail"
-    assert tool_payload["outputs"][0]["policy"] == {
-        "enabled": True,
-        "effective_formats": ["csv", "xlsx"],
-        "blocked_formats": [],
-        "effective_limits": {"max_rows": 5000, "max_bytes": 1000000},
-        "format_availability": {
-            "csv": {"executable": False, "reason": "exports_disabled"},
-            "xlsx": {"executable": False, "reason": "exports_disabled"},
-        },
-        "phase": "discovery_only",
-        "executable": False,
-        "reason": "no_executable_format",
-    }
+    # Assert the discovery-phase behaviour this test is about rather than the
+    # whole policy dict (exact limits/blocked-formats are pinned by the
+    # dedicated phase/policy tests); the cross-surface parity check above
+    # already guarantees the MCP and resource payloads carry an identical
+    # policy shape.
+    policy = tool_payload["outputs"][0]["policy"]
+    assert policy["enabled"] is True
+    assert policy["phase"] == "discovery_only"
+    assert policy["executable"] is False
+    assert policy["reason"] == "no_executable_format"
+    assert policy["effective_formats"] == ["csv", "xlsx"]
+    assert policy["format_availability"]["csv"]["reason"] == "exports_disabled"
+    assert policy["format_availability"]["xlsx"]["reason"] == "exports_disabled"
     revision = app.extensions["registry"].get_current_revision("finance-outputs")
     assert revision is not None
     declared_consumption = revision.manifest["consumption"]
@@ -234,6 +235,7 @@ def test_phase0_output_discovery_matches_mcp_resource_and_ui(app, client):
     assert "__dash-server-exports-link" in hosted_layout_text
 
 
+@pytest.mark.slow
 def test_output_get_and_execution_context_are_revision_and_principal_bound(app, client):
     _create_output_app(client)
     response = _call_tool(
@@ -256,6 +258,7 @@ def test_output_get_and_execution_context_are_revision_and_principal_bound(app, 
     assert context.policy_version.startswith("consumption-v1:")
 
 
+@pytest.mark.slow
 def test_workspace_validation_fails_when_declared_output_source_is_missing(client):
     response = _call_tool(
         client,
@@ -296,6 +299,7 @@ def test_contract_rejects_unsafe_source_and_unknown_parameter_schema_features():
     assert "Unknown field" in unknown_schema.value.summary
 
 
+@pytest.mark.slow
 def test_output_discovery_requires_app_export_authorization(app, client):
     _create_output_app(client)
     service = app.extensions["consumption_service"]
@@ -331,6 +335,7 @@ def test_output_discovery_requires_app_export_authorization(app, client):
     assert allowed["authorization"]["effective_role"] == "viewer"
 
 
+@pytest.mark.slow
 def test_consumption_registry_tables_and_phase1_columns_are_initialized(app):
     db_path = app.config["REGISTRY_DB_PATH"]
     with sqlite3.connect(db_path) as connection:
@@ -357,141 +362,180 @@ def test_consumption_registry_tables_and_phase1_columns_are_initialized(app):
     } <= job_columns
 
 
-def test_hosted_viewer_has_same_authorized_output_catalog_through_mcp_and_ui(tmp_path: Path):
-    hosted_app = create_app(
-        {
-            "TESTING": True,
-            "REGISTRY_DB_PATH": str(tmp_path / "registry.sqlite3"),
-            "ARTIFACTS_ROOT": str(tmp_path / "artifacts"),
-            "WORKSPACES_ROOT": str(tmp_path / "workspaces"),
-            "DIAGNOSTICS_ROOT": str(tmp_path / "diagnostics"),
-            "DEPENDENCY_STATE_ROOT": str(tmp_path / "dependency_state"),
-            "GITOPS_REPO_PATH": str(tmp_path / "gitops-repo"),
-            "EXASOL_SECRETS_ROOT": str(tmp_path / "exasol-secrets"),
-            "AUTO_INSTALL_DEPENDENCIES": False,
-            "PYTHON_EXECUTABLE": sys.executable,
-            "DASH_SERVER_MODE": "hosted",
-            "SECRET_KEY": "test-secret-key",
-            "SESSION_COOKIE_SECURE": True,
-            "SESSION_COOKIE_HTTPONLY": True,
-            "SESSION_COOKIE_SAMESITE": "Lax",
-            "DASH_SERVER_PUBLIC_BASE_URL": "https://dash.example.test",
-            "DASH_SERVER_AUTH_PROVIDER": "trusted_proxy",
-            "DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED": True,
-            "DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS": ("127.0.0.1/32",),
-            "DASH_SERVER_BOOTSTRAP_ADMIN_PRINCIPAL_IDS": ("trusted_proxy:admin-1",),
-            "DASH_SERVER_ALLOW_UNSAFE_INPROCESS": True,
+@pytest.mark.slow
+class TestHostedViewerOutputCatalogParity:
+    """Decomposition of ``test_hosted_viewer_has_same_authorized_output_
+    catalog_through_mcp_and_ui``.
+
+    The create -> grant -> list (MCP + UI) -> export -> download -> revoke
+    end-to-end path runs once in the class-scoped ``flow`` fixture (it polls a
+    background export job, hence stays ``slow``); each focused test asserts one
+    authorization surface against the captured payloads.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def flow(tmp_path_factory):
+        tmp_path = tmp_path_factory.mktemp("hosted_outputs")
+        hosted_app = create_app(
+            {
+                "TESTING": True,
+                "REGISTRY_DB_PATH": str(tmp_path / "registry.sqlite3"),
+                "ARTIFACTS_ROOT": str(tmp_path / "artifacts"),
+                "WORKSPACES_ROOT": str(tmp_path / "workspaces"),
+                "DIAGNOSTICS_ROOT": str(tmp_path / "diagnostics"),
+                "DEPENDENCY_STATE_ROOT": str(tmp_path / "dependency_state"),
+                "GITOPS_REPO_PATH": str(tmp_path / "gitops-repo"),
+                "EXASOL_SECRETS_ROOT": str(tmp_path / "exasol-secrets"),
+                "AUTO_INSTALL_DEPENDENCIES": False,
+                "PYTHON_EXECUTABLE": sys.executable,
+                "DASH_SERVER_MODE": "hosted",
+                "SECRET_KEY": "test-secret-key",
+                "SESSION_COOKIE_SECURE": True,
+                "SESSION_COOKIE_HTTPONLY": True,
+                "SESSION_COOKIE_SAMESITE": "Lax",
+                "DASH_SERVER_PUBLIC_BASE_URL": "https://dash.example.test",
+                "DASH_SERVER_AUTH_PROVIDER": "trusted_proxy",
+                "DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED": True,
+                "DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS": ("127.0.0.1/32",),
+                "DASH_SERVER_BOOTSTRAP_ADMIN_PRINCIPAL_IDS": ("trusted_proxy:admin-1",),
+                "DASH_SERVER_ALLOW_UNSAFE_INPROCESS": True,
+            }
+        )
+        hosted_client = hosted_app.test_client()
+        admin_headers = {
+            "X-Forwarded-User": "admin-1",
+            "X-Forwarded-Email": "admin@example.test",
         }
-    )
-    hosted_client = hosted_app.test_client()
-    admin_headers = {
-        "X-Forwarded-User": "admin-1",
-        "X-Forwarded-Email": "admin@example.test",
-    }
-    viewer_headers = {
-        "X-Forwarded-User": "viewer-1",
-        "X-Forwarded-Email": "viewer@example.test",
-    }
-    stranger_headers = {
-        "X-Forwarded-User": "stranger-1",
-        "X-Forwarded-Email": "stranger@example.test",
-    }
-    files = [
-        {"path": "app.py", "content": _APP_PY},
-        {"path": "queries/export.sql", "content": "SELECT {period!s} AS PERIOD FROM DUAL\n"},
-    ]
-    created = _call_tool(
-        hosted_client,
-        "app_create_from_files",
-        {
-            "name": "hosted-outputs",
-            "data_sources": {"primary": {"kind": "exasol", "profile": "analytics-prod"}},
-            "consumption": _consumption_contract(),
-            "files": files,
-        },
-        headers=admin_headers,
-    )
-    assert created.get_json()["result"]["isError"] is False
-    hosted_app.extensions["registry"].grant_app_access(
-        "hosted-outputs",
-        principal_type="user",
-        principal_id="trusted_proxy:viewer-1",
-        role="viewer",
-        scope="all",
-        created_by_principal_id="trusted_proxy:admin-1",
-    )
-
-    mcp_response = _call_tool(
-        hosted_client,
-        "app_outputs_list",
-        {"name": "hosted-outputs"},
-        headers=viewer_headers,
-    )
-    ui_response = hosted_client.get(
-        "/manage/apps/hosted-outputs/consumption",
-        headers=viewer_headers,
-    )
-    denied_mcp = _call_tool(
-        hosted_client,
-        "app_outputs_list",
-        {"name": "hosted-outputs"},
-        headers=stranger_headers,
-    )
-    denied_ui = hosted_client.get(
-        "/manage/apps/hosted-outputs/consumption",
-        headers=stranger_headers,
-    )
-
-    assert mcp_response.status_code == 200
-    assert mcp_response.get_json()["result"]["structuredContent"]["output_count"] == 1
-    assert ui_response.status_code == 200
-    assert b"Monthly close detail" in ui_response.data
-    assert denied_mcp.status_code == 403
-    assert denied_mcp.get_json()["error"]["data"]["category"] == "mcp_authorization_denied"
-    assert denied_ui.status_code == 403
-    assert denied_ui.get_json()["error"]["data"]["category"] == "consumption_authorization_denied"
-
-    _enable_phase1(hosted_app)
-    export_created = _call_tool(
-        hosted_client,
-        "app_export_create",
-        {
-            "name": "hosted-outputs",
-            "output_id": "monthly-close-detail",
-            "format": "csv",
-            "parameters": {"period": "2026-07"},
-        },
-        headers=viewer_headers,
-    ).get_json()["result"]["structuredContent"]
-    export_job_id = export_created["job"]["id"]
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        export_status = _call_tool(
+        viewer_headers = {
+            "X-Forwarded-User": "viewer-1",
+            "X-Forwarded-Email": "viewer@example.test",
+        }
+        stranger_headers = {
+            "X-Forwarded-User": "stranger-1",
+            "X-Forwarded-Email": "stranger@example.test",
+        }
+        files = [
+            {"path": "app.py", "content": _APP_PY},
+            {"path": "queries/export.sql", "content": "SELECT {period!s} AS PERIOD FROM DUAL\n"},
+        ]
+        created = _call_tool(
             hosted_client,
-            "export_get",
-            {"job_id": export_job_id},
+            "app_create_from_files",
+            {
+                "name": "hosted-outputs",
+                "data_sources": {"primary": {"kind": "exasol", "profile": "analytics-prod"}},
+                "consumption": _consumption_contract(),
+                "files": files,
+            },
+            headers=admin_headers,
+        )
+        hosted_app.extensions["registry"].grant_app_access(
+            "hosted-outputs",
+            principal_type="user",
+            principal_id="trusted_proxy:viewer-1",
+            role="viewer",
+            scope="all",
+            created_by_principal_id="trusted_proxy:admin-1",
+        )
+
+        mcp_response = _call_tool(
+            hosted_client,
+            "app_outputs_list",
+            {"name": "hosted-outputs"},
+            headers=viewer_headers,
+        )
+        ui_response = hosted_client.get(
+            "/manage/apps/hosted-outputs/consumption",
+            headers=viewer_headers,
+        )
+        denied_mcp = _call_tool(
+            hosted_client,
+            "app_outputs_list",
+            {"name": "hosted-outputs"},
+            headers=stranger_headers,
+        )
+        denied_ui = hosted_client.get(
+            "/manage/apps/hosted-outputs/consumption",
+            headers=stranger_headers,
+        )
+
+        _enable_phase1(hosted_app)
+        export_created = _call_tool(
+            hosted_client,
+            "app_export_create",
+            {
+                "name": "hosted-outputs",
+                "output_id": "monthly-close-detail",
+                "format": "csv",
+                "parameters": {"period": "2026-07"},
+            },
             headers=viewer_headers,
         ).get_json()["result"]["structuredContent"]
-        if export_status["job"]["status"] == "succeeded":
-            break
-        time.sleep(0.02)
-    assert export_status["job"]["status"] == "succeeded"
-    download_link = _call_tool(
-        hosted_client,
-        "export_download_link_create",
-        {"job_id": export_job_id},
-        headers=viewer_headers,
-    ).get_json()["result"]["structuredContent"]["download_url"]
-    hosted_app.extensions["registry"].revoke_app_access(
-        "hosted-outputs",
-        principal_type="user",
-        principal_id="trusted_proxy:viewer-1",
-    )
-    revoked_download = hosted_client.get(download_link, headers=viewer_headers)
-    assert revoked_download.status_code == 403
-    assert revoked_download.get_json()["error"]["data"]["category"] == "consumption_authorization_denied"
+        export_job_id = export_created["job"]["id"]
+
+        def _succeeded():
+            status = _call_tool(
+                hosted_client,
+                "export_get",
+                {"job_id": export_job_id},
+                headers=viewer_headers,
+            ).get_json()["result"]["structuredContent"]
+            return status if status["job"]["status"] == "succeeded" else None
+
+        export_status = wait_for(_succeeded, timeout=5, message="export job to succeed")
+        download_link = _call_tool(
+            hosted_client,
+            "export_download_link_create",
+            {"job_id": export_job_id},
+            headers=viewer_headers,
+        ).get_json()["result"]["structuredContent"]["download_url"]
+        hosted_app.extensions["registry"].revoke_app_access(
+            "hosted-outputs",
+            principal_type="user",
+            principal_id="trusted_proxy:viewer-1",
+        )
+        revoked_download = hosted_client.get(download_link, headers=viewer_headers)
+
+        return {
+            "created_is_error": created.get_json()["result"]["isError"],
+            "mcp_status": mcp_response.status_code,
+            "mcp_output_count": mcp_response.get_json()["result"]["structuredContent"]["output_count"],
+            "ui_status": ui_response.status_code,
+            "ui_data": ui_response.data,
+            "denied_mcp_status": denied_mcp.status_code,
+            "denied_mcp_category": denied_mcp.get_json()["error"]["data"]["category"],
+            "denied_ui_status": denied_ui.status_code,
+            "denied_ui_category": denied_ui.get_json()["error"]["data"]["category"],
+            "export_job_status": export_status["job"]["status"],
+            "download_link": download_link,
+            "revoked_status": revoked_download.status_code,
+            "revoked_category": revoked_download.get_json()["error"]["data"]["category"],
+        }
+
+    def test_viewer_sees_output_catalog_via_mcp_and_ui(self, flow):
+        assert flow["created_is_error"] is False
+        assert flow["mcp_status"] == 200
+        assert flow["mcp_output_count"] == 1
+        assert flow["ui_status"] == 200
+        assert b"Monthly close detail" in flow["ui_data"]
+
+    def test_stranger_is_denied_catalog_via_mcp_and_ui(self, flow):
+        assert flow["denied_mcp_status"] == 403
+        assert flow["denied_mcp_category"] == "mcp_authorization_denied"
+        assert flow["denied_ui_status"] == 403
+        assert flow["denied_ui_category"] == "consumption_authorization_denied"
+
+    def test_viewer_can_export_and_receive_download_link(self, flow):
+        assert flow["export_job_status"] == "succeeded"
+        assert flow["download_link"]
+
+    def test_revoked_viewer_download_is_denied(self, flow):
+        assert flow["revoked_status"] == 403
+        assert flow["revoked_category"] == "consumption_authorization_denied"
 
 
+@pytest.mark.slow
 def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client):
     _create_output_app(client)
     executor = _FakeDatasetExecutor()
@@ -566,6 +610,7 @@ def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client)
     } <= audit_events
 
 
+@pytest.mark.slow
 def test_phase1_idempotency_and_parameter_validation(app, client):
     _create_output_app(client)
     _enable_phase1(app)
@@ -597,6 +642,7 @@ def test_phase1_idempotency_and_parameter_validation(app, client):
     assert invalid["structuredContent"]["error"]["category"] == "consumption_parameter_validation_error"
 
 
+@pytest.mark.slow
 def test_phase1_ui_uses_csrf_and_same_job_service(app, client):
     _create_output_app(client)
     _enable_phase1(app)
@@ -651,6 +697,7 @@ def test_phase1_ui_uses_csrf_and_same_job_service(app, client):
     assert b"Download CSV" in detail.data
 
 
+@pytest.mark.slow
 def test_phase1_cancellation_publishes_no_partial_artifact(app, client):
     _create_output_app(client)
     executor = _BlockingDatasetExecutor()
@@ -676,6 +723,7 @@ def test_phase1_cancellation_publishes_no_partial_artifact(app, client):
     assert not list((service.artifact_store.root / job_id).glob("*.csv"))
 
 
+@pytest.mark.slow
 def test_phase1_row_limit_fails_without_artifact(app, client):
     _create_output_app(client)
     service = _enable_phase1(app, _FakeDatasetExecutor())
@@ -867,6 +915,7 @@ def test_phase2_csv_and_xlsx_writers_pass_golden_files(tmp_path: Path):
     ]
 
 
+@pytest.mark.slow
 def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
     from io import BytesIO
 
@@ -927,6 +976,7 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
     assert "2026-07" not in provenance["parameters"]
 
 
+@pytest.mark.slow
 def test_phase2_retry_recovers_from_transient_failure(app, client):
     _create_output_app(client)
     executor = _FlakyDatasetExecutor()
@@ -959,6 +1009,7 @@ def test_phase2_retry_recovers_from_transient_failure(app, client):
     assert {"export.created", "export.retried", "export.succeeded"} <= events
 
 
+@pytest.mark.slow
 def test_phase2_restart_reconciliation_strands_nothing(app, client):
     from dash_server.consumption.service import ConsumptionService
 
@@ -1029,6 +1080,7 @@ def test_phase2_restart_reconciliation_strands_nothing(app, client):
     assert "export.requeued" in events
 
 
+@pytest.mark.slow
 def test_phase2_policy_tightening_narrows_pinned_job_limits(app, client):
     _create_output_app(client)
     service = _enable_phase1(app)
@@ -1059,6 +1111,7 @@ def test_phase2_policy_tightening_narrows_pinned_job_limits(app, client):
     assert service.store.get_artifact_for_job(job_id) is None
 
 
+@pytest.mark.slow
 def test_phase2_quotas_bound_active_jobs(app, client):
     _create_output_app(client)
     service = _enable_phase1(app)
@@ -1130,6 +1183,7 @@ def test_phase2_quotas_bound_active_jobs(app, client):
     assert released.get_json()["result"]["isError"] is False
 
 
+@pytest.mark.slow
 def test_phase2_retention_prunes_jobs_and_releases_idempotency_keys(app, client):
     _create_output_app(client)
     service = _enable_phase1(app)
@@ -1190,6 +1244,7 @@ def test_phase2_retention_prunes_jobs_and_releases_idempotency_keys(app, client)
     assert reused.get_json()["result"]["structuredContent"]["job"]["id"] != job_id
 
 
+@pytest.mark.slow
 def test_phase2_schema_ledger_records_versions_and_refuses_downgrade(app):
     service = app.extensions["consumption_service"]
     db_path = app.config["REGISTRY_DB_PATH"]
@@ -1208,6 +1263,7 @@ def test_phase2_schema_ledger_records_versions_and_refuses_downgrade(app):
         service.store.initialize()
 
 
+@pytest.mark.slow
 def test_phase2_multi_process_coordinator_refusal_and_status(app, client):
     service = app.extensions["consumption_service"]
 
@@ -1245,6 +1301,7 @@ def test_phase2_multi_process_coordinator_refusal_and_status(app, client):
     )
 
 
+@pytest.mark.slow
 def test_phase2_admin_job_view_requires_capability_and_redacts(tmp_path: Path):
     hosted_app = create_app(
         {
