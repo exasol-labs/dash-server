@@ -14,9 +14,11 @@ a rendered Dash page.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -37,22 +39,32 @@ _NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(_NODE is None, reason="node is not available")
 
 
-def _run(code: str) -> dict:
-    """Drive one command through the payload and return the harness report."""
+def _run(code: str, *, fake_layout: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Drive one command through the payload and return the harness report.
 
+    ``fake_layout`` is an optional ``{components: ...}`` Dash layout tree (see
+    ``session_channel_harness.js``'s ``SESSION_CHANNEL_FAKE_LAYOUT`` env var) that stubs
+    ``window.dash_stores``/``window.dash_component_api.getLayout`` so the
+    ``dash_component_api`` prop tier can be exercised without a real browser.
+    """
+
+    env = None
+    if fake_layout is not None:
+        env = {**os.environ, "SESSION_CHANNEL_FAKE_LAYOUT": json.dumps(fake_layout)}
     completed = subprocess.run(
         [str(_NODE), str(_HARNESS), str(_PAYLOAD), code],
         capture_output=True,
         text=True,
         timeout=60,
         cwd=str(_ROOT),
+        env=env,
     )
     assert completed.returncode == 0, f"harness failed:\n{completed.stderr}"
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
-def _result(code: str) -> dict:
-    return _run(code)["result"]
+def _result(code: str, *, fake_layout: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _run(code, fake_layout=fake_layout)["result"]
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +267,108 @@ def test_ctx_props_reports_its_tier_and_the_ids_it_could_not_find() -> None:
     assert payload["tier"] == "none"
     assert payload["missing"] == ["region-filter"]
     assert payload["values"] == {}
+
+
+# ---------------------------------------------------------------------------
+# PS26-BUG-002: the dash_component_api prop tier
+#
+# `layoutIndex()` used to call `window.dash_component_api.getLayout()` with no
+# argument to get "the whole tree." The real `getLayout(componentPathOrId)` looks up
+# exactly one component and throws on `undefined`; the bare try/catch around it
+# swallowed that every time, so `ctx.props()`/`ctx.stores()` silently returned nothing
+# at this tier while `capabilities.dash_component_api` still reported `true`. These
+# specs stub `window.dash_stores` (via SESSION_CHANNEL_FAKE_LAYOUT) the way a real Dash
+# page populates it, and would fail against the pre-fix implementation.
+# ---------------------------------------------------------------------------
+
+_FAKE_LAYOUT = {
+    "components": {
+        "type": "Div",
+        "namespace": "dash_html_components",
+        "props": {
+            "children": [
+                {
+                    "type": "Dropdown",
+                    "namespace": "dash_core_components",
+                    "props": {
+                        "id": "region-filter",
+                        "value": "APAC",
+                        "options": [{"label": "APAC", "value": "APAC"}],
+                    },
+                },
+                {
+                    # A dcc.Store renders no DOM node at all, so this can only ever be
+                    # read through the dash_component_api tier - the whole point of the
+                    # original bug. `storage_type` is deliberately omitted: Dash's
+                    # initial layout JSON only serializes props the app explicitly
+                    # passed, and most real `dcc.Store(id=...)` calls never pass
+                    # `storage_type` (its Python-side default is "memory"). Only
+                    # `modified_timestamp` is guaranteed present once live - see the
+                    # PS26-BUG-002 follow-up fix in `readStores()`.
+                    "type": "Store",
+                    "namespace": "dash_core_components",
+                    "props": {
+                        "id": "filter-store",
+                        "modified_timestamp": 1700000000000,
+                        "data": {"selected": ["APAC"]},
+                    },
+                },
+            ]
+        },
+    }
+}
+
+
+def test_ps26_bug002_ctx_props_reads_real_values_at_the_dash_component_api_tier() -> None:
+    result = _result("ctx.props(['region-filter'])", fake_layout=_FAKE_LAYOUT)
+
+    payload = result["value"]
+    assert payload["tier"] == "dash_component_api"
+    assert payload["partial"] is False
+    assert payload["missing"] == []
+    assert payload["values"]["region-filter.value"] == "APAC"
+
+
+def test_ps26_bug002_ctx_props_still_reports_missing_ids_precisely() -> None:
+    """A real id lookup miss must stay a miss, not a thrown exception that aborts the
+    whole call (the real `getLayout` throws on an unknown id too, see the harness).
+    """
+
+    result = _result("ctx.props(['does-not-exist'])", fake_layout=_FAKE_LAYOUT)
+
+    payload = result["value"]
+    assert payload["tier"] == "dash_component_api"
+    assert payload["missing"] == ["does-not-exist"]
+    assert payload["values"] == {}
+
+
+def test_ps26_bug002_ctx_props_with_no_ids_lists_every_known_component() -> None:
+    result = _result("ctx.props([])", fake_layout=_FAKE_LAYOUT)
+
+    payload = result["value"]
+    assert payload["tier"] == "dash_component_api"
+    assert payload["values"]["region-filter.value"] == "APAC"
+    assert "filter-store.data" in payload["values"]
+
+
+def test_ps26_bug002_ctx_stores_reads_a_store_that_never_renders_to_the_dom() -> None:
+    """Also covers the follow-up fix: `_FAKE_LAYOUT`'s Store has no `storage_type` in
+    props (realistic - most apps never pass it), so a correct detection heuristic must
+    still find it via `modified_timestamp` and report the documented "memory" default.
+    """
+
+    result = _result("ctx.stores()", fake_layout=_FAKE_LAYOUT)
+
+    payload = result["value"]
+    assert payload["tier"] == "dash_component_api"
+    assert payload["partial"] is False
+    assert payload["stores"]["filter-store"]["storage_type"] == "memory"
+    assert payload["stores"]["filter-store"]["data"] == {"selected": ["APAC"]}
+
+
+def test_ps26_bug002_capability_probe_reports_dash_component_api_true() -> None:
+    report = _run("1", fake_layout=_FAKE_LAYOUT)
+    assert report["registered"]["capabilities"]["dash_component_api"] is True
 
 
 def test_ctx_session_identifies_the_tab() -> None:

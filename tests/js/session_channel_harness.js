@@ -10,6 +10,13 @@
  *
  * Usage: node session_channel_harness.js <path-to-session_channel.js> <code>
  * Consumed by tests/test_session_channel_js.py, which skips when node is unavailable.
+ *
+ * Optional env var SESSION_CHANNEL_FAKE_LAYOUT: a JSON `{components: ...}` Dash layout
+ * tree (the shape a real `store.getState().layout` has). When set, this stubs
+ * `window.dash_stores`/`window.dash_component_api.getLayout` so PS26-BUG-002 regression
+ * tests can exercise the `dash_component_api` prop tier without a real browser. The fake
+ * `getLayout` mirrors the real one's one sharp edge on purpose (throws when called with
+ * no argument) so a regression back to the old no-arg call is still caught here.
  */
 
 "use strict";
@@ -104,6 +111,57 @@ const win = {
     throw new Error("unexpected fetch: " + method + " " + url);
   },
 };
+
+const fakeLayoutJson = process.env.SESSION_CHANNEL_FAKE_LAYOUT;
+if (fakeLayoutJson) {
+  const fakeTree = JSON.parse(fakeLayoutJson);
+
+  function findById(node, id) {
+    if (!node) {
+      return null;
+    }
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findById(child, id);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+    }
+    if (typeof node !== "object") {
+      return null;
+    }
+    const props = node.props || null;
+    if (props && props.id === id) {
+      return node;
+    }
+    if (props) {
+      return findById(props.children, id);
+    }
+    return null;
+  }
+
+  win.dash_component_api = {
+    // Real signature: getLayout(componentPathOrId). Called with no argument (the
+    // PS26-BUG-002 bug), the real implementation feeds `undefined` into Ramda's
+    // `path()`, which throws — reproduced here so a regression is still caught.
+    getLayout(componentPathOrId) {
+      if (componentPathOrId === undefined) {
+        throw new TypeError("Cannot read properties of undefined (reading 'length')");
+      }
+      const node = findById(fakeTree.components, componentPathOrId);
+      return node ? node.props : undefined;
+    },
+  };
+  win.dash_stores = [
+    {
+      getState() {
+        return { layout: fakeTree };
+      },
+    },
+  ];
+}
 
 global.window = win;
 global.document = {

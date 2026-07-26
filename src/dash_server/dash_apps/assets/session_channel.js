@@ -583,7 +583,17 @@ function (nIntervals, meta) {
 
     function hasComponentApi() {
       try {
-        return !!(W.dash_component_api && typeof W.dash_component_api.getLayout === "function");
+        // `getLayout` existing is necessary but not sufficient: `layoutIndex()` below
+        // does not call it (see that function's comment for why), but it reads the
+        // same `window.dash_stores` registry `getLayout` itself reads from
+        // internally. Requiring both here means a page that somehow has one without
+        // the other reports the tier unavailable instead of claiming success and
+        // then finding nothing (PS26-BUG-002).
+        return (
+          !!(W.dash_component_api && typeof W.dash_component_api.getLayout === "function") &&
+          Object.prototype.toString.call(W.dash_stores) === "[object Array]" &&
+          W.dash_stores.length > 0
+        );
       } catch (err) {
         return false;
       }
@@ -712,10 +722,47 @@ function (nIntervals, meta) {
       return found;
     }
 
+    /*
+     * PS26-BUG-002: this used to call `W.dash_component_api.getLayout()` with no
+     * argument to get "the whole tree" in one shot. That is not what the real
+     * function does — `getLayout(componentPathOrId)` looks up exactly ONE
+     * component by id/path and throws on `undefined` (Ramda's `path` expects an
+     * array). The bare try/catch around it swallowed that exception every time,
+     * so this returned an empty index unconditionally while `hasComponentApi()`'s
+     * existence check still reported the tier as available — an agent had no way
+     * to tell "the tier is broken" from "there really are no matching ids."
+     *
+     * There is no bulk/whole-tree accessor on the public `dash_component_api`
+     * surface (only per-id `getLayout`), so walking every id one call at a time
+     * would need one call per component. Instead, this reads the same data
+     * `getLayout` itself reads from internally: Dash's renderer registers every
+     * mounted Redux store on the page in `window.dash_stores` (see
+     * `dash-renderer`'s `utils/stores.ts` `getStores()`, which is exactly what
+     * `getLayout` calls before doing its own per-id lookup). Each store's
+     * `getState().layout.components` is the live layout tree root — walking it
+     * with the existing `walkLayout` below gives the complete, current id index
+     * in one synchronous pass, including components that never render a DOM
+     * node at all (a `dcc.Store` has no visible element, so `domIds()` cannot
+     * find it — confirmed by hand against a live page before writing this fix).
+     */
     function layoutIndex() {
       var index = {};
       try {
-        walkLayout(W.dash_component_api.getLayout(), index, 0);
+        var stores = W.dash_stores;
+        if (Object.prototype.toString.call(stores) !== "[object Array]") {
+          return index;
+        }
+        for (var i = 0; i < stores.length; i++) {
+          var store = stores[i];
+          if (!store || typeof store.getState !== "function") {
+            continue;
+          }
+          var reduxState = store.getState();
+          var root = reduxState && reduxState.layout && reduxState.layout.components;
+          if (root) {
+            walkLayout(root, index, 0);
+          }
+        }
       } catch (err) {
         /* probe said it was available; treat a failure as an empty index */
       }
@@ -937,10 +984,23 @@ function (nIntervals, meta) {
         var index = layoutIndex();
         Object.keys(index).forEach(function (id) {
           var props = index[id];
-          if (props && Object.prototype.hasOwnProperty.call(props, "storage_type") &&
+          // `modified_timestamp` (not `storage_type`) is the reliable Store fingerprint:
+          // Dash's initial layout JSON only serializes props the app actually passed, and
+          // most apps write `dcc.Store(id=...)` without an explicit `storage_type` (its
+          // Python-side default is "memory", per dcc.Store's own docstring, so nothing
+          // ever sends it over the wire). `modified_timestamp` is different — the Store
+          // component itself writes it back through Dash's normal prop-update pipeline
+          // whenever `data` changes, so it shows up in the live layout even when the
+          // Python side never set it. Requiring `storage_type` here made `ctx.stores()`
+          // blind to almost every real app's stores (PS26-BUG-002 follow-up, found while
+          // verifying the layoutIndex() fix live against a real Store with default
+          // storage_type).
+          if (props && Object.prototype.hasOwnProperty.call(props, "modified_timestamp") &&
               Object.prototype.hasOwnProperty.call(props, "data")) {
             stores[id] = {
-              storage_type: props.storage_type,
+              storage_type: Object.prototype.hasOwnProperty.call(props, "storage_type")
+                ? props.storage_type
+                : "memory",
               data: serialize(props.data, budget, 1, [])
             };
           }
