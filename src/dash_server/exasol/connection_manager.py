@@ -135,13 +135,24 @@ class ExasolConnectionManager:
         Callers should NOT call `.close()` on the returned connection — the manager
         owns the lifecycle. To force a reconnect (e.g. after a network blip), call
         `invalidate(profile.name)` and the next `connect()` will rebuild.
+
+        Threads the profile's `query_defaults.statement_timeout_seconds` into the
+        new connection (PS26-BUG-001: this value used to be stored and displayed
+        but never actually reached `pyexasol.connect(...)` for the runtime/callback
+        path, only for one-shot uncached probes). Because pyexasol's `query_timeout`
+        is a connect-time setting that applies to every statement executed on that
+        session, setting it here at cache-miss time covers every subsequent cached
+        query for this profile on this thread.
         """
 
         cache = self._thread_cache()
         cached = cache.get(profile.name)
         if cached is not None:
             return cached
-        connection = self.connect_uncached(profile)
+        connection = self.connect_uncached(
+            profile,
+            query_timeout_seconds=self.statement_timeout_seconds(profile),
+        )
         cache[profile.name] = connection
         return connection
 
@@ -192,6 +203,30 @@ class ExasolConnectionManager:
         cache = self._thread_cache()
         for name in list(cache.keys()):
             self.invalidate(name)
+
+    @staticmethod
+    def statement_timeout_seconds(profile: ExasolProfile) -> int | None:
+        """Read `query_defaults.statement_timeout_seconds` off a profile, defensively.
+
+        Public (not prefixed) because both the cached runtime path (`connect`,
+        below) and one-shot probe callers (`sql_smoke.run_sql_smoke`) need the
+        same coercion instead of each hand-rolling their own `.get()`/`int(...)`.
+
+        Returns `None` (no timeout passed to pyexasol) when the profile has no
+        `query_defaults`, no `statement_timeout_seconds` key, or a value that
+        doesn't coerce to an int — callers already tolerate `None` here (it's the
+        same default `connect_uncached`/`_connect_kwargs` use for probe callers
+        that don't want a timeout at all).
+        """
+
+        query_defaults = profile.query_defaults or {}
+        value = query_defaults.get("statement_timeout_seconds")
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _thread_cache(self) -> dict[str, ExaConnectionLike]:
         cache = getattr(self._local, "connections", None)

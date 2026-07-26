@@ -661,7 +661,7 @@ class _ConnectKwargsCapture:
         return _Conn()
 
 
-def _profile(*, tls_verify: bool) -> ExasolProfile:
+def _profile(*, tls_verify: bool, query_defaults: dict[str, Any] | None = None) -> ExasolProfile:
     return ExasolProfile(
         name="local-test",
         backend="onprem",
@@ -672,7 +672,7 @@ def _profile(*, tls_verify: bool) -> ExasolProfile:
         description="study test profile",
         tls_verify=tls_verify,
         secret_ref=ExasolSecretRef(provider="env", key="EXA_PASSWORD"),
-        query_defaults=None,
+        query_defaults=query_defaults,
     )
 
 
@@ -789,6 +789,87 @@ def test_bug001_self_signed_cert_error_gets_friendly_hint() -> None:
     assert "tls_verify=false" in classified["hint"]
 
 
+def test_ps26_bug001_cached_connect_passes_profile_statement_timeout_to_pyexasol(
+    tmp_path, monkeypatch
+) -> None:
+    """PS26-BUG-001 regression: `query_defaults.statement_timeout_seconds` used to be
+    stored and displayed but never reached `pyexasol.connect(...)` for the runtime/
+    callback path (`ExasolConnectionManager.connect`) — only one-shot uncached probe
+    callers that explicitly passed `query_timeout_seconds` got it. A profile with
+    `statement_timeout_seconds` configured must now have every *cached* connection
+    (the one every live Dash callback query reuses) opened with pyexasol's
+    `query_timeout` set to that value.
+    """
+    monkeypatch.setenv("EXA_PASSWORD", "test")
+    fake = _ConnectKwargsCapture()
+    cm = ExasolConnectionManager(
+        ExasolSecretStore(str(tmp_path)),
+        connector_loader=lambda: fake,
+    )
+    profile = _profile(tls_verify=False, query_defaults={"statement_timeout_seconds": 12, "row_limit": 50000})
+
+    connection = cm.connect(profile)
+    assert connection is cm.connect(profile), "second connect() must reuse the cached connection"
+    assert len(fake.connect_calls) == 1, "the cache must prevent a second pyexasol.connect(...) call"
+    assert fake.connect_calls[0]["query_timeout"] == 12
+
+
+def test_ps26_bug001_cached_connect_omits_query_timeout_when_profile_has_none(tmp_path, monkeypatch) -> None:
+    """A profile with no `statement_timeout_seconds` must not invent one — pyexasol's
+    own default (no timeout) applies, matching pre-fix behavior for profiles that
+    never configured this.
+    """
+    monkeypatch.setenv("EXA_PASSWORD", "test")
+    fake = _ConnectKwargsCapture()
+    cm = ExasolConnectionManager(
+        ExasolSecretStore(str(tmp_path)),
+        connector_loader=lambda: fake,
+    )
+    profile = _profile(tls_verify=False, query_defaults=None)
+
+    cm.connect(profile)
+    assert "query_timeout" not in fake.connect_calls[0]
+
+
+def test_ps26_bug001_statement_timeout_seconds_coerces_and_tolerates_bad_values() -> None:
+    good = _profile(tls_verify=False, query_defaults={"statement_timeout_seconds": "45"})
+    assert ExasolConnectionManager.statement_timeout_seconds(good) == 45
+
+    missing = _profile(tls_verify=False, query_defaults={})
+    assert ExasolConnectionManager.statement_timeout_seconds(missing) is None
+
+    bogus = _profile(tls_verify=False, query_defaults={"statement_timeout_seconds": "not-a-number"})
+    assert ExasolConnectionManager.statement_timeout_seconds(bogus) is None
+
+    none_profile = _profile(tls_verify=False, query_defaults=None)
+    assert ExasolConnectionManager.statement_timeout_seconds(none_profile) is None
+
+
+def test_ps26_bug001_sql_smoke_passes_profile_statement_timeout_to_uncached_connect(tmp_path, monkeypatch) -> None:
+    """The SQL-smoke preflight's one-shot probe connection should honor the same
+    configured timeout as the runtime path, so a query that would hang forever in a
+    live callback doesn't also hang forever during preflight.
+    """
+    from dash_server.exasol.sql_smoke import run_sql_smoke
+
+    monkeypatch.setenv("EXA_PASSWORD", "test")
+    fake = _ConnectKwargsCapture()
+    cm = ExasolConnectionManager(
+        ExasolSecretStore(str(tmp_path)),
+        connector_loader=lambda: fake,
+    )
+    profile = _profile(tls_verify=False, query_defaults={"statement_timeout_seconds": 9})
+
+    run_sql_smoke(
+        profile=profile,
+        sql_files=[("queries/summary.sql", "SELECT 1 AS OK FROM DUAL")],
+        connection_manager=cm,
+    )
+
+    assert len(fake.connect_calls) == 1
+    assert fake.connect_calls[0]["query_timeout"] == 9
+
+
 class _PyexasolStyleStatement:
     """Mimic pyexasol.ExaStatement: column_names() and columns() are methods, description is None."""
 
@@ -808,6 +889,81 @@ class _PyexasolStyleStatement:
 
     def close(self) -> None:
         return None
+
+
+class _FetchManyStatement:
+    """Statement double that supports `fetchmany` and asserts `fetchall` is never
+    called when it doesn't have to be — the whole point of PS26-BUG-004's fix.
+    """
+
+    def __init__(self, rows: list[list[Any]]) -> None:
+        self._rows = rows
+        self.fetchmany_calls: list[int] = []
+
+    def fetchmany(self, size: int) -> list[list[Any]]:
+        self.fetchmany_calls.append(size)
+        return self._rows[:size]
+
+    def fetchall(self) -> list[list[Any]]:
+        raise AssertionError(
+            "fetchall() must not be called when fetchmany() is available (PS26-BUG-004)"
+        )
+
+    def close(self) -> None:
+        return None
+
+
+def test_ps26_bug004_fetch_bounded_rows_stops_at_row_limit_plus_one_via_fetchmany() -> None:
+    """PS26-BUG-004 regression: the previous implementation always called
+    `statement.fetchall()`, pulling an unbounded result set into Python before
+    slicing to `row_limit` — meaning a query with no SQL-level LIMIT (e.g. an
+    accidental cross join) cost dash-server the full result size regardless of
+    `row_limit`. `_fetch_bounded_rows` must instead request only `row_limit + 1`
+    rows via `fetchmany` (the `+1` is exactly enough to detect truncation) and
+    never fall back to `fetchall()` when `fetchmany` exists.
+    """
+    from dash_server.exasol.service import ExasolDashboardService
+
+    svc = ExasolDashboardService.__new__(ExasolDashboardService)
+    # 10,000 "rows" available — a stand-in for an unbounded cross-join result.
+    # If the fix regresses to fetchall()-then-slice, this statement's fetchall()
+    # will raise and fail the test outright rather than just returning a wrong count.
+    statement = _FetchManyStatement([[i] for i in range(10_000)])
+
+    rows, truncated = svc._fetch_bounded_rows(statement, row_limit=50)
+
+    assert statement.fetchmany_calls == [51], "must request exactly row_limit + 1 rows, not the full result"
+    assert len(rows) == 50
+    assert truncated is True
+
+
+def test_ps26_bug004_fetch_bounded_rows_not_truncated_when_result_fits_under_limit() -> None:
+    from dash_server.exasol.service import ExasolDashboardService
+
+    svc = ExasolDashboardService.__new__(ExasolDashboardService)
+    statement = _FetchManyStatement([[i] for i in range(5)])
+
+    rows, truncated = svc._fetch_bounded_rows(statement, row_limit=50)
+
+    assert statement.fetchmany_calls == [51]
+    assert len(rows) == 5
+    assert truncated is False
+
+
+def test_ps26_bug004_fetch_bounded_rows_falls_back_to_fetchall_without_fetchmany() -> None:
+    """Statement doubles (and, per the module docstring, potentially older/other
+    driver shapes) that only implement `fetchall` must keep working exactly as
+    before the fix - this is the explicit fallback path, not an oversight.
+    """
+    from dash_server.exasol.service import ExasolDashboardService
+
+    svc = ExasolDashboardService.__new__(ExasolDashboardService)
+    statement = _FakeExasolStatement()  # only fetchall(); one row
+
+    rows, truncated = svc._fetch_bounded_rows(statement, row_limit=50)
+
+    assert rows == [["2026-03-30", "sys", "public"]]
+    assert truncated is False
 
 
 def test_bug002_extract_columns_handles_pyexasol_method_api() -> None:

@@ -98,7 +98,10 @@ def run_sql_smoke(
     # finally even on the connection-failure path. This must not use the runtime
     # callback cache, because smoke preflight deliberately closes its connection.
     try:
-        connection = connection_manager.connect_uncached(profile)
+        connection = connection_manager.connect_uncached(
+            profile,
+            query_timeout_seconds=connection_manager.statement_timeout_seconds(profile),
+        )
     except Exception as exc:
         # Profile unreachable. Treat every file as `failed` with the connection
         # error attached so consumers can show a clear single message.

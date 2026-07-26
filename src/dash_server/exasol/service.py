@@ -199,11 +199,14 @@ class ExasolDashboardService:
                 # downstream code expects covers connection-level failures too. (BUG-006.)
                 connection = self.connection_manager.connect(profile)
                 statement = connection.execute(sql_text, params or {})
-                rows = self._fetch_rows(statement)
+                visible_rows, truncated = self._fetch_bounded_rows(statement, row_limit)
                 columns = self._extract_columns(statement)
-                truncated = len(rows) > row_limit
-                visible_rows = rows[:row_limit]
-                # Close only the statement; the connection stays cached.
+                # Close only the statement; the connection stays cached. Closing
+                # promptly here also matters more than it used to (PS26-BUG-004):
+                # for a statement we only partially consumed via `_fetch_bounded_rows`'s
+                # `fetchmany` above, this is the signal that tells Exasol it can
+                # abandon any remaining unfetched rows for this cursor rather than
+                # holding them ready.
                 close_statement = getattr(statement, "close", None)
                 if callable(close_statement):
                     try:
@@ -503,6 +506,39 @@ class ExasolDashboardService:
                 records.append({str(column): value for column, value in zip(columns, row, strict=False)})
         return records
 
+    def _fetch_bounded_rows(self, statement: Any, row_limit: int) -> tuple[list[list[Any]], bool]:
+        """Fetch at most `row_limit + 1` rows and report whether more existed.
+
+        PS26-BUG-004: the previous implementation always called `_fetch_rows`
+        (effectively `statement.fetchall()`), pulling the *entire* result set into
+        Python before slicing to `row_limit` — for a query with no SQL-level
+        `LIMIT` (an accidental cross join, a bad join condition, an adversarial
+        parameter), that meant computing and transmitting an unbounded number of
+        rows just to throw most of them away. `fetchmany(row_limit + 1)` asks the
+        driver for only as many rows as we can ever show plus one (to detect
+        truncation), so an oversized result stops costing dash-server (and, once
+        the statement is closed right after in the caller, ideally Exasol too)
+        proportional to its real size rather than its full size.
+
+        This does not replace `statement_timeout_seconds` (see
+        `ExasolConnectionManager.statement_timeout_seconds`) as the primary
+        defense against a runaway query — a result that's expensive to *compute*
+        server-side (as opposed to expensive to transfer) can still run long
+        before the first `fetchmany` call returns at all. The two guardrails are
+        complementary: the timeout bounds execution time, this bounds how much of
+        the result dash-server ever pulls into process memory.
+
+        Falls back to the old fetchall()-then-slice behavior when `statement`
+        doesn't implement `fetchmany` (some lightweight test doubles don't).
+        """
+
+        fetchmany = getattr(statement, "fetchmany", None)
+        if callable(fetchmany):
+            rows = self._normalize_rows(fetchmany(row_limit + 1))
+        else:
+            rows = self._fetch_rows(statement)
+        return rows[:row_limit], len(rows) > row_limit
+
     def _fetch_rows(self, statement: Any) -> list[list[Any]]:
         # `statement` is `Any` rather than `ExaStatementLike` because tests and the
         # `_extract_columns` retries pass non-pyexasol objects too; the body probes
@@ -513,6 +549,9 @@ class ExasolDashboardService:
             rows = statement
         else:
             rows = list(statement)
+        return self._normalize_rows(rows)
+
+    def _normalize_rows(self, rows: Any) -> list[list[Any]]:
         normalized: list[list[Any]] = []
         for row in rows:
             if isinstance(row, tuple):
