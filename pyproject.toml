@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dash-server"
 version = "0.5.0"
-description = "Stage 4 diagnostics slice for an agent-controlled Dash hosting server."
+description = "Agent-controlled Dash hosting server for Exasol."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -21,9 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=9.1,<10.0",
-  "mypy>=2.1",
+  "mypy>=2.3",
   "types-jsonschema>=4.26.0.20260518",
-  "ruff>=0.15.20",
+  "ruff>=0.16.0",
 ]
 
 [project.scripts]
