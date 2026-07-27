@@ -458,20 +458,56 @@ class AppRuntimeService:
             data={"revision_number": revision.revision_number, "status": app.status},
             commit_message=f"app/{app.name}: audit app create r{revision.revision_number:06d}",
         )
+
+        # PS26-BUG-005: this used to record the initial revision as an unconditional
+        # "succeeded" build result and return, without ever running the same
+        # `preflight_revision` probe (sql_smoke included) that `build_revision` runs on
+        # every *subsequent* revision. A query that would fail sql_smoke instantly on
+        # `app_build` could go straight to `published: true, status: "running"` on
+        # creation, and only a separate, later `app_run_healthcheck` call would ever
+        # reveal it. Every tool that creates an app's first revision (`app_create`,
+        # `app_create_from_files`, `app_create_exasol_dashboard`,
+        # `app_scaffold_from_schema` - all route through here) now gets the same
+        # preflight guarantee `app_build` already gave every revision after the first.
+        preflight = self.preflight_revision(app.name, revision.revision_number)
+        build_status = "succeeded"
+        build_summary = "Created initial revision from draft workspace."
+        log_level = "info"
+        build_error = None
+        if preflight["preflight"]["status"] != "passed":
+            build_error = self.diagnostics_service.record_error(
+                app.name,
+                source="build",
+                category=self._preflight_failure_category(preflight["preflight"]),
+                summary=f"Artifact preflight failed for revision {revision.revision_number}.",
+                details={
+                    "app": app.name,
+                    "revision_number": revision.revision_number,
+                    "preflight": preflight["preflight"],
+                },
+                traceback_text=self._preflight_traceback_text(preflight["preflight"]),
+                revision_number=revision.revision_number,
+            )
+            build_status = "failed"
+            build_summary = "Created initial revision from draft workspace, but artifact preflight failed."
+            log_level = "error"
         self.diagnostics_service.record_build_result(
             app.name,
-            status="succeeded",
-            summary="Created initial revision from draft workspace.",
+            status=build_status,
+            summary=build_summary,
             revision_number=revision.revision_number,
             artifact_path=revision.artifact_path,
+            preflight=preflight["preflight"],
+            error=build_error,
         )
         self.diagnostics_service.append_log(
             app.name,
             "build",
-            "Created initial revision from draft workspace.",
+            build_summary,
             revision_number=revision.revision_number,
+            level=log_level,
         )
-        return self._serialize_status(app.name)
+        return {**self._serialize_status(app.name), "preflight": preflight["preflight"]}
 
     def delete_app(self, name: str) -> dict[str, Any]:
         """Delete one hosted app from active runtime, GitOps state, and local storage."""
@@ -1281,6 +1317,68 @@ class AppRuntimeService:
             },
         }
 
+    def _find_last_known_good_revision(self, name: str, current_revision: AppRevision) -> AppRevision:
+        """The highest-numbered revision with no recorded build failure and no
+        recorded data-layer error against it.
+
+        PS26-BUG-011: this field used to just return `get_rollback_revision(name)` -
+        "the revision that was live before the current one" - which is not the same
+        thing as "a revision that actually passed a health check." A rollback target
+        can itself be broken (that's exactly what an agent doing a bad rollback would
+        hit). Here, "good" means: its own build-time preflight didn't fail (read from
+        the persisted `build` log channel, which tags every build's summary line with
+        `level` and `revision_number`), and no `data_layer` error has ever been
+        recorded against it (a query that passes static `sql_smoke` but fails once a
+        real callback runs against live data). Falls back to `current_revision` if
+        nothing qualifies - there's nothing better to suggest, but the caller can see
+        the same revision echoed elsewhere in the diagnostics payload rather than a
+        silently wrong "good" recommendation.
+        """
+
+        failed_revision_numbers = self._build_failed_revision_numbers(name)
+        candidates = sorted(
+            self.registry.list_revisions(name), key=lambda revision: revision.revision_number, reverse=True
+        )
+        for revision in candidates:
+            if revision.revision_number in failed_revision_numbers:
+                continue
+            if self.diagnostics_service.latest_error(
+                name, source="data_layer", revision_number=revision.revision_number
+            ):
+                continue
+            return revision
+        return current_revision
+
+    def _build_failed_revision_numbers(self, name: str) -> set[int]:
+        """Revision numbers whose own build-time preflight was recorded as failed.
+
+        Shared by `_find_last_known_good_revision` (PS26-BUG-011) and
+        `promote_revision`'s optional `require_healthy` gate (PS26-BUG-006): both need
+        "did this specific revision's own build preflight fail," read from the
+        persisted `build` log channel rather than re-running anything.
+        """
+
+        build_entries = self.diagnostics_service.tail_logs(name, channel="build", limit=0)["entries"]
+        return {
+            entry["revision_number"]
+            for entry in build_entries
+            if entry.get("level") == "error" and isinstance(entry.get("revision_number"), int)
+        }
+
+    def _revision_has_recorded_failure(self, name: str, revision_number: int) -> bool:
+        """True if `revision_number` has a recorded build-preflight failure or a
+        recorded data-layer error against it - the same "good" definition
+        `_find_last_known_good_revision` uses, reused by `promote_revision`'s
+        `require_healthy` gate.
+        """
+
+        if revision_number in self._build_failed_revision_numbers(name):
+            return True
+        return (
+            self.diagnostics_service.latest_error(name, source="data_layer", revision_number=revision_number)
+            is not None
+        )
+
     def collect_diagnostics(self, name: str) -> dict[str, Any]:
         app = self._require_app(name)
         validation = self._safe_workspace_validation(name)
@@ -1307,7 +1405,6 @@ class AppRuntimeService:
                 revision_number=build_revision_number if isinstance(build_revision_number, int) else None,
             )
         health = self.run_healthcheck(name, record=False)["health"]
-        rollback_revision = self.registry.get_rollback_revision(name)
         logs = {
             "latest": self.diagnostics_service.tail_logs(name, channel="latest", limit=20)["entries"],
             "build": self.diagnostics_service.tail_logs(name, channel="build", limit=20)["entries"],
@@ -1360,7 +1457,7 @@ class AppRuntimeService:
                 "install_plan": validation["dependency_install"],
             },
             "last_known_good_revision": self._revision_metadata(
-                rollback_revision or current_revision
+                self._find_last_known_good_revision(name, current_revision)
             ),
             "latest_error": latest_error,
             "latest_runtime_error": latest_runtime_error,
@@ -1471,10 +1568,28 @@ class AppRuntimeService:
             )
             return self._serialize_status(app.name)
 
-    def promote_revision(self, name: str, revision_number: int) -> dict[str, Any]:
+    def promote_revision(
+        self, name: str, revision_number: int, *, require_healthy: bool = False
+    ) -> dict[str, Any]:
         with self._locked_app_operation(name, "app_promote_revision", source="runtime"):
             app = self._require_app(name)
             revision = self._require_revision(name, revision_number)
+            if require_healthy and self._revision_has_recorded_failure(name, revision_number):
+                # PS26-BUG-006: by default (require_healthy=False, unchanged from
+                # before this existed) promotion is unconditional - a revision whose
+                # own preview healthcheck reported degraded promotes silently. This
+                # opt-in gate mirrors app_deploy_draft's auto_rollback_on_health_failure:
+                # both are additive safety, not a change to the default path, so
+                # nothing that relied on promoting a known-bad revision on purpose
+                # (e.g. to then exercise rollback) breaks.
+                raise DashServerError(
+                    category="deployment_healthcheck_failed",
+                    summary=(
+                        f"Revision {revision_number} for app {name} has a recorded build-preflight "
+                        "or data-layer failure; refusing to promote with require_healthy=true."
+                    ),
+                    details={"app": name, "revision_number": revision_number},
+                )
             previous_current = self.registry.get_current_revision(name)
             previous_preview = self.registry.get_preview_revision(name)
             self._write_live_desired_state_for_revision(

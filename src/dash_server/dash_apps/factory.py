@@ -202,6 +202,26 @@ def app_authoring_guide() -> dict[str, Any]:
                 "cause": "The draft embeds Exasol connection details or direct pyexasol.connect(...) calls.",
                 "fix": "Move credentials into an Exasol profile and use app_create_exasol_dashboard or server-side Exasol helpers.",
             },
+            {
+                "problem": "app_validate fails with category exasol_query_outside_callback "
+                "(or an import_error mentioning 'Exasol dashboard service is not registered')",
+                "cause": "load_rows/load_row/query_rows/query_one was called directly in the body of "
+                "create_dash_app(), not inside an @app.callback. The validation sandbox and the real "
+                "server both only wire the Exasol connection onto the server once request handling "
+                "starts, so this fails every time regardless of whether the profile/query are valid.",
+                "fix": "Move the query into a callback. For data that only needs to load once at "
+                "startup, trigger it from a dcc.Interval(max_intervals=1) callback instead of calling "
+                "the helper directly in the factory body.",
+            },
+            {
+                "problem": "app_validate reports is_valid: true, but a SQL file references a "
+                "nonexistent column or table",
+                "cause": "app_validate is a static/offline check - it never opens an Exasol "
+                "connection, so it cannot verify schema/table/column references.",
+                "fix": "Run app_build (or app_deploy_draft) to exercise sql_smoke, which actually "
+                "runs each queries/*.sql file against the bound profile and catches this. Run it "
+                "early rather than trusting app_validate alone for schema correctness.",
+            },
         ],
         "recommended_workflow": [
             "Use app_create for a starter app or app_create_from_files for source bootstrap.",
@@ -210,6 +230,48 @@ def app_authoring_guide() -> dict[str, Any]:
             "Run app_validate until validation passes.",
             "Run app_deploy_draft for a one-shot validate/build/promote flow.",
         ],
+        # PS26-BUG-013: app_run_healthcheck's sql_smoke and layout/dependencies probes
+        # never execute the app's actual @app.callback code - sql_smoke runs each
+        # queries/*.sql file directly through an uncached connection, entirely
+        # independent of app.py, and the layout/dependencies probes are plain GETs. A
+        # "healthy" result carries no guarantee the callback graph has ever run. The
+        # only in-band way to force real execution is a raw POST to
+        # `_dash-update-component`, which was previously undocumented anywhere
+        # MCP-reachable and cost real investigation time to reverse-engineer.
+        "triggering_callbacks_for_real": {
+            "note": (
+                "app_run_healthcheck's probes do not execute callbacks. To actually run "
+                "one, POST the Dash internal request Dash's own frontend sends on every "
+                "interaction to {mount_path}/_dash-update-component."
+            ),
+            "request_shape": {
+                "output": "the single output id.property string, e.g. 'callback-result.children'",
+                "outputs": "{'id': ..., 'property': ...} - or a list of those for a multi-output callback",
+                "inputs": "[{'id': ..., 'property': ..., 'value': ...}, ...] - one entry per Input, "
+                "with the value you want the callback to see",
+                "changedPropIds": "['<id>.<property>', ...] - which of the inputs above actually changed; "
+                "getting this list wrong does not 400, it can 500 with an opaque KeyError",
+                "state": "[{'id': ..., 'property': ..., 'value': ...}, ...] - one entry per State, or []",
+            },
+            "example": {
+                "method": "POST",
+                "path": "{mount_path}/_dash-update-component",
+                "json": {
+                    "output": "callback-result.children",
+                    "outputs": {"id": "callback-result", "property": "children"},
+                    "inputs": [{"id": "mode", "property": "value", "value": "safe"}],
+                    "changedPropIds": ["mode.value"],
+                    "state": [],
+                },
+            },
+            "on_success": "200 with the rendered output value(s) in the response body.",
+            "on_failure": (
+                "A genuine callback bug returns 500 and is recorded (category "
+                "dash_callback_error) at dash://apps/{name}/callback-failures - check "
+                "that before assuming the request shape itself was wrong."
+            ),
+            "related_resources": ["dash://apps/{app}/callback-failures"],
+        },
     }
 
 

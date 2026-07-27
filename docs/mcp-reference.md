@@ -33,13 +33,13 @@ _53 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`app_output_get`** — Inspect one governed output declared by the current live revision.
 - **`app_outputs_list`** — List governed dataset and view outputs declared by the current live revision, including parameter schemas, effective formats, limits, and policy decisions.
 - **`app_patch_file`** — Apply a search/replace patch to one file in the app draft workspace and return a compact line-context preview of the updated file.
-- **`app_promote_revision`** — Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route.
+- **`app_promote_revision`** — Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route. Pass require_healthy=true to refuse promoting a revision with a recorded build-preflight or data-layer failure (defaults to false: promotion is unconditional unless you opt in).
 - **`app_put_files`** — Create or replace one or more files in the app draft workspace. Use this before app_validate.
 - **`app_read_file`** — Return the current content of one draft workspace file. Use this to inspect app.py, requirements.txt, or other uploaded files before patching.
 - **`app_restart`** — Remount the current live revision for a hosted app.
 - **`app_revoke_external_invitation`** — [hosted-mode] Revoke a pending or accepted external invitation and revoke the accepted grant when present.
 - **`app_rollback`** — Revert the live route to the retained rollback target.
-- **`app_run_healthcheck`** — Probe the mounted live or preview route, layout endpoint, dependencies endpoint, and static assets.
+- **`app_run_healthcheck`** — Probe the mounted live or preview route, layout endpoint, dependencies endpoint, static assets, and (for Exasol-backed apps) each queries/*.sql file via sql_smoke. A "healthy" result does not mean any @app.callback has actually executed: sql_smoke runs SQL files directly, independent of app.py, and the other probes are plain GETs. To force a real callback run, POST to {mount_path}/_dash-update-component - see dash://meta/app-authoring-guide triggering_callbacks_for_real for the exact request shape.
 - **`app_runtime_workers_list`** — Return the in-process snapshot of out-of-process workers and forkserver baselines, including aggregate RSS and p50 cold-start time. Available in isolated runtime mode.
 - **`app_runtime_workers_restart`** — Stop the worker at mount_path and re-spawn it from the persisted spec. Available in isolated runtime mode.
 - **`app_scaffold_from_schema`** — Introspect Exasol catalog metadata for a profile, choose analytically useful columns and relationship hints, and generate a tailored exasol-analytics scaffold with business SQL wired to the selected schema and table.
@@ -56,7 +56,7 @@ _53 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`app_start_preview`** — Mount a revision under /preview/{app}/{revision}.
 - **`app_stop`** — Unmount the live route without deleting revisions.
 - **`app_tail_logs`** — Return recent log entries from the latest, build, runtime, or health log channels.
-- **`app_validate`** — Run manifest, dependency, lint, syntax, import, callback, and credential-safety validation on the current draft workspace. Use this before app_build or app_deploy_draft.
+- **`app_validate`** — Run manifest, dependency, lint, syntax, import, callback, and credential-safety validation on the current draft workspace. Use this before app_build or app_deploy_draft. This is a static/offline check: it does not verify that SQL in queries/*.sql references real schemas, tables, or columns against a live Exasol connection. A nonexistent-column typo passes app_validate as is_valid: true and is only caught later, by app_build's sql_smoke preflight - run app_build early if you want that check sooner.
 - **`apps_list`** — Return the current hosted app inventory from the SQLite registry.
 - **`exasol_profile_create_local`** — Create one local Exasol profile for a single-user workflow. Provide either secret_value or secret_env_var so secrets stay outside Git.
 - **`exasol_profile_validate`** — Resolve the configured secret, load pyexasol, and run a connection test.

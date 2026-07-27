@@ -262,8 +262,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='app_promote_revision',
         handler='_tool_app_promote_revision',
         title='Promote a revision to live',
-        description='Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route.',
-        input_schema='_revision_schema',
+        description='Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route. Pass require_healthy=true to refuse promoting a revision with a recorded build-preflight or data-layer failure (defaults to false: promotion is unconditional unless you opt in).',
+        input_schema='_app_promote_revision_schema',
         guidance={'next_step': 'If the app runtime is running, run health checks on the live route. If the '
                       'app is stopped, call app_start to remount it first.',
          'suggested_tools': ['app_get_status', 'app_start', 'app_run_healthcheck'],
@@ -328,10 +328,11 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         title='Compare draft against a built artifact',
         description='Show what differs between the current draft workspace and a built artifact. When revision_number is omitted, the tool compares against the latest built revision.',
         input_schema='_app_diff_draft_vs_artifact_schema',
-        guidance={'next_step': 'Inspect the changed files, then rebuild or patch the draft based on what '
-                      'differs from the built artifact.',
+        guidance={'next_step': 'This tool only reports changed/unchanged status and byte counts per file. '
+                      'For the actual line-level diff content, read the dash://apps/{name}/diff/... '
+                      'resource for the same comparison.',
          'suggested_tools': ['app_read_file', 'app_build', 'app_patch_file'],
-         'related_resources': ['dash://meta/workflows']},
+         'related_resources': ['dash://apps/{app}/diff/latest-build...draft', 'dash://meta/workflows']},
     ),
     ToolSpec(
         name='app_patch_file',
@@ -370,7 +371,16 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='app_validate',
         handler='_tool_app_validate',
         title='Validate a draft workspace',
-        description='Run manifest, dependency, lint, syntax, import, callback, and credential-safety validation on the current draft workspace. Use this before app_build or app_deploy_draft.',
+        description=(
+            'Run manifest, dependency, lint, syntax, import, callback, and '
+            'credential-safety validation on the current draft workspace. Use this '
+            'before app_build or app_deploy_draft. This is a static/offline check: it '
+            'does not verify that SQL in queries/*.sql references real schemas, '
+            'tables, or columns against a live Exasol connection. A nonexistent-column '
+            'typo passes app_validate as is_valid: true and is only caught later, by '
+            'app_build\'s sql_smoke preflight - run app_build early if you want that '
+            'check sooner.'
+        ),
         input_schema='_name_schema',
         guidance={'next_step': 'Fix any reported issues in the draft, or build a revision when validation '
                       'passes.',
@@ -414,11 +424,20 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='app_run_healthcheck',
         handler='_tool_app_run_healthcheck',
         title='Run app health checks',
-        description='Probe the mounted live or preview route, layout endpoint, dependencies endpoint, and static assets.',
+        description=(
+            'Probe the mounted live or preview route, layout endpoint, dependencies '
+            'endpoint, static assets, and (for Exasol-backed apps) each queries/*.sql '
+            'file via sql_smoke. A "healthy" result does not mean any @app.callback has '
+            'actually executed: sql_smoke runs SQL files directly, independent of '
+            'app.py, and the other probes are plain GETs. To force a real callback run, '
+            'POST to {mount_path}/_dash-update-component - see '
+            'dash://meta/app-authoring-guide triggering_callbacks_for_real for the '
+            'exact request shape.'
+        ),
         input_schema='_app_healthcheck_schema',
         guidance={'next_step': 'Inspect any failed probes before changing the live revision.',
          'suggested_tools': ['app_collect_diagnostics', 'app_tail_logs', 'app_get_status'],
-         'related_resources': ['dash://meta/workflows']},
+         'related_resources': ['dash://meta/workflows', 'dash://meta/app-authoring-guide']},
     ),
     ToolSpec(
         name='app_session_eval_js',

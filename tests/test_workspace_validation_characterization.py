@@ -404,3 +404,52 @@ def test_exasol_credential_and_lint_full_payload(tmp_path: Path):
     }
     assert payload["imports"]["status"] == "passed"
     assert payload["is_valid"] is False
+
+
+def test_ps26_bug017_cast_to_reserved_word_type_is_not_flagged_as_a_bare_alias(tmp_path: Path):
+    """`CAST(x AS DATE)` is cast syntax, not a column alias - the lint must not fire,
+    since its own suggested fix (`AS "DATE"`) would change what the cast does. A genuine
+    bare alias using the same reserved word, in the same file, must still be flagged.
+    """
+
+    workspace = _build_workspace(
+        tmp_path,
+        manifest=EXASOL_MANIFEST,
+        app_source=EXASOL_APP,
+        extra_files={
+            "queries/q.sql": (
+                "SELECT CAST(created_at AS DATE) AS created_date, id AS DAY\n"
+                "FROM my_table\n"
+            )
+        },
+    )
+    payload = workspace.validate_workspace("test", mount_path="/apps/test")
+
+    reserved_alias_messages = [
+        issue["message"]
+        for issue in payload["exasol"]["issues"]
+        if issue["path"] == "queries/q.sql" and "reserved word as a bare alias" in issue["message"]
+    ]
+    assert reserved_alias_messages == ['AS DAY uses an Exasol reserved word as a bare alias. Quote it: AS "DAY".']
+
+
+def test_ps26_bug017_cast_detection_ignores_a_same_named_identifier_prefix(tmp_path: Path):
+    """A column literally named `mycast` immediately before `(... AS DATE)` must not be
+    mistaken for the `CAST` keyword - the word-boundary check must require `CAST` to be
+    a whole token, not a suffix of a longer identifier.
+    """
+
+    workspace = _build_workspace(
+        tmp_path,
+        manifest=EXASOL_MANIFEST,
+        app_source=EXASOL_APP,
+        extra_files={"queries/q.sql": "SELECT mycast(created_at AS DATE) FROM my_table\n"},
+    )
+    payload = workspace.validate_workspace("test", mount_path="/apps/test")
+
+    reserved_alias_messages = [
+        issue["message"]
+        for issue in payload["exasol"]["issues"]
+        if issue["path"] == "queries/q.sql" and "reserved word as a bare alias" in issue["message"]
+    ]
+    assert reserved_alias_messages == ['AS DATE uses an Exasol reserved word as a bare alias. Quote it: AS "DATE".']

@@ -1,4 +1,13 @@
 {
+  "if_external_exasol_mcp_is_unreachable": {
+    "fallback": "Call app_scaffold_from_schema with only profile_name (and optionally schema_name/table_name) to have dash-server introspect the schema itself through the same profile used at runtime, then generate a tailored dashboard scaffold from the discovered blueprint - no external MCP server required.",
+    "note": "The external Exasol MCP server is a separate, optional process; it can be unreachable, unconfigured, or fail (e.g. TLS certificate verification against a self-signed Exasol instance). dash-server does not depend on it for schema discovery.",
+    "related_tools": [
+      "app_scaffold_from_schema",
+      "exasol_profile_create_local",
+      "exasol_profile_validate"
+    ]
+  },
   "recommended_workflow": [
     "Use the external Exasol MCP server to inspect schema, test candidate SQL, and understand the dataset.",
     "Create or validate a dash-server Exasol profile with exasol_profile_create_local and exasol_profile_validate.",

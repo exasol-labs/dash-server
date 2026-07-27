@@ -104,6 +104,82 @@ def test_repo_reconcile_applies_direct_git_desired_state_change(client, app):
 
 
 @pytest.mark.slow
+def test_ps26_bug019_a_cleared_preview_revision_settles_to_archived(client):
+    """PS26-BUG-019 regression: promoting a *different* revision than the one
+    currently in preview clears the old preview pointer, but used to never update
+    that revision's own `lifecycle_state` - it stayed at `"warming"` (set when it
+    *entered* preview) forever instead of settling to `"archived"` like every other
+    non-current, non-preview revision.
+    """
+
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create",
+            "arguments": {
+                "bundle": _bundle(
+                    "stale-preview",
+                    "Stale Preview v1",
+                    summary="r1 live.",
+                    revenue="$1M",
+                )
+            },
+        },
+        request_id=700,
+    )
+    build_2 = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_build",
+            "arguments": {
+                "name": "stale-preview",
+                "bundle": _bundle(
+                    "stale-preview", "Stale Preview v2", summary="r2, will only ever be previewed.", revenue="$1.1M"
+                ),
+            },
+        },
+        request_id=701,
+    )
+    revision_2 = build_2.get_json()["result"]["structuredContent"]["revision"]["revision_number"]
+    _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_start_preview", "arguments": {"name": "stale-preview", "revision_number": revision_2}},
+        request_id=702,
+    )
+
+    build_3 = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_build",
+            "arguments": {
+                "name": "stale-preview",
+                "bundle": _bundle(
+                    "stale-preview", "Stale Preview v3", summary="r3, promoted straight to live.", revenue="$1.2M"
+                ),
+            },
+        },
+        request_id=703,
+    )
+    revision_3 = build_3.get_json()["result"]["structuredContent"]["revision"]["revision_number"]
+    # Promoting r3 supersedes r2's preview without ever promoting r2 itself - this is
+    # the exact transition that used to leave r2 stuck at "warming".
+    _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_promote_revision", "arguments": {"name": "stale-preview", "revision_number": revision_3}},
+        request_id=704,
+    )
+
+    revisions = _resource_json(client, "dash://apps/stale-preview/revisions", request_id=705)["revisions"]
+    revision_2_state = next(r["lifecycle_state"] for r in revisions if r["revision_number"] == revision_2)
+    assert revision_2_state == "archived"
+
+
+@pytest.mark.slow
 def test_app_deploy_draft_runs_validate_build_and_promote_in_one_step(client):
     _call_mcp(
         client,
@@ -429,6 +505,10 @@ def test_promote_and_deploy_guidance_can_suggest_start_for_stopped_apps(client):
     promoted = promote_response.get_json()["result"]["structuredContent"]
     assert promoted["app"]["mounted"] is False
     assert "app_start" in promoted["guidance"]["suggested_tools"]
+    # PS26-BUG-007: "app_start" living only in the structured `suggested_tools` array
+    # is easy to miss - the human-readable summary text itself must say so plainly.
+    visible_text = promote_response.get_json()["result"]["content"][0]["text"]
+    assert "call app_start" in visible_text
 
     deploy_response = _call_mcp(
         client,
@@ -967,6 +1047,18 @@ class TestMcpWorkspaceEditToRollback:
         assert file_statuses["app.py"] == "changed"
         assert file_statuses["dash-app.json"] == "changed"
         assert file_statuses["notes.txt"] == "draft_only"
+
+    def test_ps26_bug015_diff_tool_guidance_points_at_the_resource_with_real_diff_content(self, flow):
+        """PS26-BUG-015 regression: the tool only ever returns changed/unchanged status
+        plus byte counts, never actual diff content - its guidance must point at the
+        `dash://apps/{app}/diff/...` resource that has the real unified diff, since an
+        agent working tool-call-only has no other way to discover that URI exists.
+        """
+
+        artifact_diff = flow["artifact_diff"]
+        assert not any("diff" in entry for entry in artifact_diff["files"])
+        related_resources = artifact_diff["guidance"]["related_resources"]
+        assert any(uri.startswith("dash://apps/{app}/diff/") for uri in related_resources)
 
     def test_latest_build_diff_before_build_targets_revision_one(self, flow):
         latest_build_diff = flow["latest_build_diff_pre"]

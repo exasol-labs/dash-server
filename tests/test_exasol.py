@@ -189,6 +189,13 @@ def test_exasol_profile_create_validate_and_resources(app, client) -> None:
     assert agent_help["resource"] == "dash://exasol/help/agent-workflow"
     assert any("external Exasol MCP server" in step for step in agent_help["recommended_workflow"])
     assert any("discovery" in rule for rule in agent_help["rules"])
+    # PS26-ENV-001: every persona in the multi-persona study hit an unreachable/failing
+    # external Exasol MCP server (TLS verification against a self-signed cert) and had
+    # no in-repo guidance pointing at a fallback. Name app_scaffold_from_schema's own
+    # introspection as the documented fallback.
+    fallback = agent_help["if_external_exasol_mcp_is_unreachable"]
+    assert "app_scaffold_from_schema" in fallback["fallback"]
+    assert "app_scaffold_from_schema" in fallback["related_tools"]
 
     create_response = _call_mcp(
         client,
@@ -572,6 +579,200 @@ def test_app_scaffold_from_schema_generates_schema_specific_bundle(app, client) 
     assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
+class _HeuristicFakeExasolStatement:
+    def __init__(self, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
+        self.description = [(column, None, None, None, None, None, None) for column in columns]
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _HeuristicFakeExasolConnection:
+    def __init__(self) -> None:
+        self.executed_sql: list[str] = []
+
+    def execute(self, sql_text: str, params: dict[str, Any] | None = None):
+        self.executed_sql.append(sql_text)
+        # PS26-BUG-008/009 fixture: a platform-internal decoy schema/table named to
+        # score well on an "agent" keyword scorer, plus the real target schema with a
+        # LAT/LON pair alongside a genuine measure column, plus a second real table
+        # sharing a key column with the target (for relationship_hints).
+        return _HeuristicFakeExasolStatement(
+            ["COLUMN_SCHEMA", "COLUMN_TABLE", "COLUMN_NAME", "COLUMN_TYPE", "COLUMN_ORDINAL_POSITION"],
+            [
+                ("SEMANTIC_AGENT", "INSTRUCTIONS_FOR_AGENT", "AGENT_ID", "DECIMAL(18,0)", 1),
+                ("SEMANTIC_AGENT", "INSTRUCTIONS_FOR_AGENT", "VERSION_NUMBER", "DECIMAL(18,0)", 2),
+                ("SEMANTIC_AGENT", "INSTRUCTIONS_FOR_AGENT", "CREATED_AT", "TIMESTAMP", 3),
+                ("SENSORS", "READINGS", "READING_ID", "DECIMAL(18,0)", 1),
+                ("SENSORS", "READINGS", "SENSOR_ID", "DECIMAL(18,0)", 2),
+                ("SENSORS", "READINGS", "READING_TS", "TIMESTAMP", 3),
+                ("SENSORS", "READINGS", "LAT", "DECIMAL(9,6)", 4),
+                ("SENSORS", "READINGS", "LON", "DECIMAL(9,6)", 5),
+                ("SENSORS", "READINGS", "TEMPERATURE_C", "DECIMAL(6,2)", 6),
+                ("SENSORS", "STATIONS", "SENSOR_ID", "DECIMAL(18,0)", 1),
+                ("SENSORS", "STATIONS", "STATION_NAME", "VARCHAR(40)", 2),
+            ],
+        )
+
+    def close(self) -> None:
+        return None
+
+
+class _HeuristicFakePyExasolModule:
+    def connect(self, **kwargs: Any) -> _HeuristicFakeExasolConnection:
+        return _HeuristicFakeExasolConnection()
+
+
+@pytest.mark.slow
+def test_ps26_bug008_blind_auto_pick_ignores_platform_internal_schemas(app, client) -> None:
+    """PS26-BUG-008 regression: `app_scaffold_from_schema` with no explicit
+    `schema_name`/`table_name` used to be able to select a `SEMANTIC_*` platform
+    schema over the real target purely because its table name matched an
+    "agent"-shaped keyword scorer, with every `table_candidates` entry drawn from
+    that same platform schema. Blind auto-pick must exclude platform-internal
+    schemas from candidacy entirely.
+    """
+
+    fake_module = _HeuristicFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "exasol_profile_create_local",
+            "arguments": {
+                "name": "analytics-prod",
+                "backend": "onprem",
+                "credential_mode": "password",
+                "dsn": "demodb.exasol.com:8563",
+                "user": "sys",
+                "secret_value": "super-secret",
+            },
+        },
+        request_id=70,
+    )
+
+    response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_scaffold_from_schema",
+            "arguments": {"name": "blind-pick", "profile_name": "analytics-prod", "title": "Blind Pick"},
+        },
+        request_id=71,
+    )
+    assert response.get_json()["result"]["isError"] is False
+    blueprint = response.get_json()["result"]["structuredContent"]["schema_blueprint"]
+
+    assert blueprint["schema_name"] != "SEMANTIC_AGENT"
+    assert blueprint["schema_name"] == "SENSORS"
+    assert blueprint["table_name"] == "READINGS"
+    assert all(
+        candidate["schema_name"] != "SEMANTIC_AGENT" for candidate in blueprint["table_candidates"]
+    )
+
+
+@pytest.mark.slow
+def test_ps26_bug009_measure_scoring_excludes_lat_lon_and_relationship_hints_skip_self(app, client) -> None:
+    """PS26-BUG-009 regression, two facets in one fixture:
+    1. `primary_measure` must not pick a LAT/LON coordinate column even when it's the
+       first numeric, non-key column encountered (a real measure, TEMPERATURE_C, exists
+       on the same table).
+    2. `relationship_hints` must exclude the *selected* table itself, not just whichever
+       table happened to rank first - triggered here via an explicit `table_name`
+       override that does not match the top-ranked candidate.
+    """
+
+    fake_module = _HeuristicFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "exasol_profile_create_local",
+            "arguments": {
+                "name": "analytics-prod",
+                "backend": "onprem",
+                "credential_mode": "password",
+                "dsn": "demodb.exasol.com:8563",
+                "user": "sys",
+                "secret_value": "super-secret",
+            },
+        },
+        request_id=72,
+    )
+
+    response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_scaffold_from_schema",
+            "arguments": {
+                "name": "measure-pick",
+                "profile_name": "analytics-prod",
+                "schema_name": "SENSORS",
+                "table_name": "READINGS",
+                "title": "Measure Pick",
+            },
+        },
+        request_id=73,
+    )
+    assert response.get_json()["result"]["isError"] is False
+    blueprint = response.get_json()["result"]["structuredContent"]["schema_blueprint"]
+
+    assert blueprint["primary_measure"] == "TEMPERATURE_C"
+    assert "LAT" not in blueprint["measure_columns"]
+    assert "LON" not in blueprint["measure_columns"]
+
+    hints = blueprint["relationship_hints"]
+    assert not any(hint["other_table"] == "READINGS" for hint in hints)
+    assert any(hint["other_table"] == "STATIONS" for hint in hints)
+
+
+def test_ps26_bug012_analytics_hub_surfaces_real_query_errors_instead_of_generic_empty_message() -> None:
+    """PS26-BUG-012 regression: the generated analytics-hub `app.py` used to check
+    ``"_error" not in monitor_rows[0]`` and, on failure, collapse straight to a generic
+    "No monitor/usage data available." message - indistinguishable from the query
+    legitimately returning zero rows. An operator watching System Health would never
+    learn Exasol actually failed. The fix routes every check through the documented
+    `has_error()` contract helper and surfaces the real `_error` text for monitor.sql
+    and usage.sql failures, matching the three-way handling `business_trend` already had.
+    """
+
+    from dash_server.exasol import scaffold
+
+    bundle = scaffold.build_exasol_dashboard_bundle(
+        app_name="bug012-check",
+        title="Bug012 Check",
+        route="/bug012-check",
+        description="Regression fixture for PS26-BUG-012.",
+        profile_name="golden-profile",
+        pattern="analytics-hub",
+    )
+    app_py = next(f["content"] for f in bundle["files"] if f["path"] == "app.py")
+
+    compile(app_py, "app.py", "exec")
+
+    assert "has_error = _HELPER_MODULE.has_error" in app_py
+
+    # The old buggy inline checks must be gone - they silently swallowed the real error.
+    assert '"_error" not in monitor_rows[0]' not in app_py
+    assert '"_error" not in usage_rows[0]' not in app_py
+    assert '"_error" in business_summary' not in app_py
+
+    # Every branch now goes through the documented has_error() helper...
+    assert "has_error(monitor_rows)" in app_py
+    assert "has_error(usage_rows)" in app_py
+    assert "has_error(business_trend)" in app_py
+    assert "has_error(sql_rows)" in app_py
+    assert "has_error(business_summary)" in app_py
+
+    # ...and a real query failure now surfaces its own error text, not a generic message.
+    assert "Exasol query failed for queries/system/monitor.sql: {monitor_rows[0]['_error']}" in app_py
+    assert "Exasol query failed for queries/system/usage.sql: {usage_rows[0]['_error']}" in app_py
+
+
 @pytest.mark.slow
 def test_exasol_validation_flags_import_time_queries_and_risky_sql(client) -> None:
     create_response = _call_mcp(
@@ -631,6 +832,81 @@ def test_exasol_validation_flags_import_time_queries_and_risky_sql(client) -> No
     exasol_messages = [issue["message"] for issue in validation_payload["exasol"]["issues"]]
     assert any("import time" in message for message in exasol_messages)
     assert any("SELECT *" in message for message in exasol_messages)
+
+
+def test_ps26_bug010_query_directly_in_create_dash_app_body_gets_an_actionable_error(client) -> None:
+    """PS26-BUG-010 regression: a query run directly in `create_dash_app()`'s body
+    (not inside an `@app.callback`, and not a top-level module statement either, so
+    the `exasol` lint's import-time-query check doesn't catch it) used to fail
+    `app_validate` with a generic `import_error` reading
+    'Exasol dashboard service is not registered on the Flask server' - indistinguishable
+    from a genuinely broken/unbound profile. It must now name the real fix.
+    """
+
+    create_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create_from_files",
+            "arguments": {
+                "name": "eager-exasol",
+                "title": "Eager Exasol",
+                "files": [
+                    {
+                        "path": "dash-app.json",
+                        "content": json.dumps(
+                            {
+                                "name": "eager-exasol",
+                                "title": "Eager Exasol",
+                                "route": "/apps/eager-exasol",
+                                "description": "Eager Exasol app.",
+                                "template": "exasol-analytics",
+                                "data_sources": {
+                                    "primary": {
+                                        "kind": "exasol",
+                                        "profile": "analytics-prod",
+                                        "auth_mode": "local_direct",
+                                    }
+                                },
+                            },
+                            indent=2,
+                        )
+                        + "\n",
+                    },
+                    {
+                        "path": "app.py",
+                        "content": (
+                            "from dash import Dash, html\n"
+                            "from dash_server.exasol.runtime import query_rows\n\n"
+                            "def create_dash_app(server, url_base_pathname, metadata):\n"
+                            "    rows = query_rows(server, metadata, base_dir='.', "
+                            "sql_relative_path='queries/detail.sql')\n"
+                            "    app = Dash(__name__, server=server, routes_pathname_prefix='/', "
+                            "requests_pathname_prefix=url_base_pathname.rstrip('/') + '/')\n"
+                            "    app.layout = html.Div(str(rows))\n"
+                            "    return app\n"
+                        ),
+                    },
+                    {"path": "queries/detail.sql", "content": "SELECT * FROM DUAL\n"},
+                    {"path": "requirements.txt", "content": "dash>=4.0,<5.0\n"},
+                ],
+            },
+        },
+        request_id=51,
+    )
+    assert create_response.status_code == 200
+    create_result = create_response.get_json()["result"]
+    assert create_result["isError"] is True
+    validation_payload = create_result["structuredContent"]["error"]["details"]["validation"]
+    # This call site isn't a top-level module statement, so the `exasol` lint's
+    # static import-time check doesn't fire - the failure must come from `imports`.
+    assert validation_payload["exasol"]["status"] != "failed"
+    assert validation_payload["imports"]["status"] == "failed"
+    assert validation_payload["imports"]["category"] == "exasol_query_outside_callback"
+    error_text = validation_payload["imports"]["error"]
+    assert "not registered on the Flask server" in error_text
+    assert "not a broken Exasol profile" in error_text
+    assert "@app.callback" in error_text
 
 
 # --- Regression tests for the persona study (BUG-001, BUG-002, BUG-003) ---
@@ -1224,7 +1500,13 @@ def _create_parameterized_sql_app(client, *, name: str, include_smoke_params: bo
         request_id=request_id,
     )
     assert response.status_code == 200
-    assert response.get_json()["result"].get("isError") is False
+    # PS26-BUG-005: this fixture's `queries/agent_latency.sql` always references the
+    # nonexistent MISSING_LATENCY_MS column, so revision 1's own preflight can now
+    # legitimately fail at creation time too (previously only a later app_build/
+    # app_deploy_draft call ever ran sql_smoke against it, since creation skipped it
+    # entirely). Both current call sites intentionally create a broken revision 1 to
+    # then test what a *later* `app_build`/`app_deploy_draft` call reveals about
+    # revision 2, so they don't assert anything about revision 1's own isError here.
 
 
 def _sql_smoke_probe(preflight: dict[str, Any]) -> dict[str, Any]:
@@ -1290,9 +1572,312 @@ def test_parameterized_sql_smoke_params_exercise_query_and_catch_bad_column(app,
     assert executions[0][1] == {"agent_id": "agent-001"}
 
 
+def _sql_smoke_app_files(*, name: str, bad_column: bool) -> list[dict[str, Any]]:
+    manifest = {
+        "name": name,
+        "title": name.replace("-", " ").title(),
+        "route": f"/apps/{name}",
+        "template": "exasol-analytics",
+        "data_sources": {
+            "primary": {"kind": "exasol", "profile": "analytics-prod", "auth_mode": "local_direct"}
+        },
+    }
+    column = "MISSING_LATENCY_MS" if bad_column else "LATENCY_MS"
+    return [
+        {"path": "dash-app.json", "content": json.dumps(manifest) + "\n"},
+        {
+            "path": "app.py",
+            "content": (
+                "from dash import Dash, html\n\n"
+                "def create_dash_app(server, url_base_pathname, metadata):\n"
+                "    app = Dash(__name__, server=server, routes_pathname_prefix='/', "
+                "requests_pathname_prefix=url_base_pathname.rstrip('/') + '/')\n"
+                "    app.layout = html.Div('sql smoke revision history')\n"
+                "    return app\n"
+            ),
+        },
+        {"path": "queries/agent_latency.sql", "content": f"SELECT AGENT_ID, {column}\nFROM AGENT_EVENTS\n"},
+        {"path": "requirements.txt", "content": "dash>=4.0,<5.0\npyexasol>=2.2.2,<3.0\n"},
+    ]
+
+
 @pytest.mark.slow
-def test_exasol_helper_auto_seeded_for_exasol_analytics_template(client) -> None:
-    """BUG-004 regression: app_create_from_files with template=exasol-analytics auto-injects dash_server_exasol.py."""
+def test_ps26_bug011_last_known_good_revision_skips_a_broken_rollback_target(app, client) -> None:
+    """PS26-BUG-011 regression: `last_known_good_revision` used to just mirror
+    `get_rollback_revision`, which is "whatever was live before the current revision" -
+    not necessarily one that ever passed a health check.
+
+    Builds a 4-revision history entirely through explicit `app_build` calls (never
+    relying on `app_create_from_files`'s own un-preflighted first revision, so this
+    stays valid regardless of PS26-BUG-005's status): r1 good, r2 bad-and-promoted,
+    r3 good-and-promoted-over-r2 (so the rollback pointer now points at bad r2), r4
+    bad-and-only-in-preview. The diagnostics field must recommend r3 (current, live,
+    good) - not the broken rollback target r2, and not the broken preview head r4.
+    """
+
+    fake_module = _SqlSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _create_sql_smoke_profile(client, request_id=960)
+
+    def _put_and_build(*, bad: bool, request_id: int) -> Any:
+        _call_mcp(
+            client,
+            "tools/call",
+            {
+                "name": "app_put_files",
+                "arguments": {
+                    "name": "last-known-good",
+                    "files": [
+                        f
+                        for f in _sql_smoke_app_files(name="last-known-good", bad_column=bad)
+                        if f["path"] != "dash-app.json"
+                    ],
+                },
+            },
+            request_id=request_id,
+        )
+        return _call_mcp(
+            client, "tools/call", {"name": "app_build", "arguments": {"name": "last-known-good"}}, request_id=request_id + 1
+        )
+
+    # r1: good SQL, created via app_create_from_files (start_immediately=False, so
+    # nothing is live/published yet) and promoted live.
+    create_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create_from_files",
+            "arguments": {
+                "name": "last-known-good",
+                "title": "Last Known Good",
+                "template": "exasol-analytics",
+                "start_immediately": False,
+                "files": _sql_smoke_app_files(name="last-known-good", bad_column=False),
+            },
+        },
+        request_id=961,
+    )
+    assert create_response.get_json()["result"]["isError"] is False
+    _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_promote_revision", "arguments": {"name": "last-known-good", "revision_number": 1}},
+        request_id=962,
+    )
+
+    # r2: bad SQL, explicit app_build (so the preflight failure is properly recorded),
+    # promoted live anyway (no promote health gate blocks this by default).
+    build_2 = _put_and_build(bad=True, request_id=963)
+    assert build_2.get_json()["result"]["isError"] is True
+    _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_promote_revision", "arguments": {"name": "last-known-good", "revision_number": 2}},
+        request_id=965,
+    )
+
+    # r3: good SQL, promoted over r2 - this makes bad r2 the rollback target.
+    build_3 = _put_and_build(bad=False, request_id=966)
+    assert build_3.get_json()["result"]["isError"] is False
+    promote_3 = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_promote_revision", "arguments": {"name": "last-known-good", "revision_number": 3}},
+        request_id=968,
+    )
+    assert promote_3.get_json()["result"]["structuredContent"]["app"]["rollback_revision_number"] == 2
+
+    # r4: bad SQL again, built and left in preview only (never promoted).
+    build_4 = _put_and_build(bad=True, request_id=969)
+    assert build_4.get_json()["result"]["isError"] is True
+    _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_start_preview", "arguments": {"name": "last-known-good", "revision_number": 4}},
+        request_id=971,
+    )
+
+    diagnostics = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_collect_diagnostics", "arguments": {"name": "last-known-good"}},
+        request_id=972,
+    ).get_json()["result"]["structuredContent"]
+    assert diagnostics["last_known_good_revision"]["revision_number"] == 3
+
+
+@pytest.mark.slow
+def test_ps26_bug005_app_create_from_files_runs_preflight_on_the_first_revision(app, client) -> None:
+    """PS26-BUG-005 regression: `app_create_from_files` (and every other tool that
+    creates an app's first revision) used to skip the same `sql_smoke` preflight probe
+    that `app_build` runs on every later revision - a bad query went straight to
+    `published: true, status: "running"` with no error, only surfacing via a
+    separately-called `app_run_healthcheck`. The very first `app_create_from_files`
+    call for a bad query must now itself report the failure.
+    """
+
+    fake_module = _SqlSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _create_sql_smoke_profile(client, request_id=990)
+
+    create_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create_from_files",
+            "arguments": {
+                "name": "preflight-on-create",
+                "title": "Preflight On Create",
+                "template": "exasol-analytics",
+                "files": _sql_smoke_app_files(name="preflight-on-create", bad_column=True),
+            },
+        },
+        request_id=991,
+    )
+    result = create_response.get_json()["result"]
+    assert result["isError"] is True
+    structured = result["structuredContent"]
+    assert structured["error"]["category"] == "artifact_preflight_failed"
+    assert structured["error"]["details"]["revision_number"] == 1
+    preflight = structured["preflight"]
+    assert preflight["status"] == "failed"
+    probe = _sql_smoke_probe(preflight)
+    assert probe["status"] == "failed"
+    assert "MISSING_LATENCY_MS" in probe["details"]["latest_error"]
+
+    # The app still exists (creation isn't blocked outright, matching app_build's
+    # "revision exists, but preflight failed" contract) - a healthcheck independently
+    # confirms the same failure, so the two surfaces agree.
+    health = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_run_healthcheck", "arguments": {"name": "preflight-on-create"}},
+        request_id=992,
+    ).get_json()["result"]["structuredContent"]
+    assert health["health"]["status"] == "degraded"
+
+
+@pytest.mark.slow
+def test_ps26_bug005_app_create_from_files_with_good_sql_still_succeeds_cleanly(app, client) -> None:
+    fake_module = _SqlSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _create_sql_smoke_profile(client, request_id=993)
+
+    create_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create_from_files",
+            "arguments": {
+                "name": "preflight-on-create-good",
+                "title": "Preflight On Create Good",
+                "template": "exasol-analytics",
+                "files": _sql_smoke_app_files(name="preflight-on-create-good", bad_column=False),
+            },
+        },
+        request_id=994,
+    )
+    result = create_response.get_json()["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["preflight"]["status"] == "passed"
+
+
+@pytest.mark.slow
+def test_ps26_bug006_promote_revision_require_healthy_blocks_a_known_bad_revision(app, client) -> None:
+    """PS26-BUG-006 regression: `app_promote_revision` had no health gate at all - it
+    would promote a revision whose own preview healthcheck reported `degraded` with no
+    warning. `require_healthy=true` must refuse that; the default (`require_healthy`
+    omitted, i.e. false) must keep promoting unconditionally, matching the documented
+    "opt-in, not a behavior change" fix.
+    """
+
+    fake_module = _SqlSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _create_sql_smoke_profile(client, request_id=980)
+
+    # r1 (created via app_create_from_files) is intentionally left good/unused here -
+    # PS26-BUG-005 (app_create_from_files' first revision skips sql_smoke) means a bad
+    # r1 wouldn't have a recorded failure to gate on. Use an explicit app_build (r2) for
+    # the bad revision instead, so this test is valid regardless of BUG-005's status.
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create_from_files",
+            "arguments": {
+                "name": "gated-promote",
+                "title": "Gated Promote",
+                "template": "exasol-analytics",
+                "start_immediately": False,
+                "files": _sql_smoke_app_files(name="gated-promote", bad_column=False),
+            },
+        },
+        request_id=981,
+    )
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_put_files",
+            "arguments": {
+                "name": "gated-promote",
+                "files": [
+                    f
+                    for f in _sql_smoke_app_files(name="gated-promote", bad_column=True)
+                    if f["path"] != "dash-app.json"
+                ],
+            },
+        },
+        request_id=982,
+    )
+    build_response = _call_mcp(
+        client, "tools/call", {"name": "app_build", "arguments": {"name": "gated-promote"}}, request_id=983
+    )
+    assert build_response.get_json()["result"]["isError"] is True  # preflight fails; revision 2 still exists
+
+    blocked = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_promote_revision",
+            "arguments": {"name": "gated-promote", "revision_number": 2, "require_healthy": True},
+        },
+        request_id=984,
+    )
+    blocked_result = blocked.get_json()["result"]
+    assert blocked_result["isError"] is True
+    assert blocked_result["structuredContent"]["error"]["category"] == "deployment_healthcheck_failed"
+
+    # Confirm it genuinely didn't promote: current revision is still r1.
+    status = _call_mcp(
+        client, "tools/call", {"name": "app_get_status", "arguments": {"name": "gated-promote"}}, request_id=985
+    ).get_json()["result"]["structuredContent"]
+    assert status["current_revision"]["revision_number"] == 1
+
+    # Default behavior (require_healthy omitted) is unchanged: promotes anyway.
+    allowed = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_promote_revision", "arguments": {"name": "gated-promote", "revision_number": 2}},
+        request_id=986,
+    )
+    assert allowed.get_json()["result"]["isError"] is False
+
+
+@pytest.mark.slow
+def test_exasol_helper_auto_seeded_for_exasol_analytics_template(app, client) -> None:
+    """BUG-004 regression: app_create_from_files with template=exasol-analytics auto-injects dash_server_exasol.py.
+
+    PS26-BUG-005 note: this app has no `queries/*.sql` files, so `sql_smoke` is
+    `not_applicable` regardless of the bound profile - but since PS26-BUG-005's fix
+    makes `app_create_from_files` preflight the first revision too, the profile
+    referenced in `dash-app.json` must now actually resolve (previously a placeholder
+    name like "doesnt-matter" worked because nothing validated it at creation time).
+    """
+    fake_module = _SqlSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: fake_module
+    _create_sql_smoke_profile(client, request_id=919)
+
     response = _call_mcp(
         client,
         "tools/call",
@@ -1319,7 +1904,7 @@ def test_exasol_helper_auto_seeded_for_exasol_analytics_template(client) -> None
                         "content": (
                             '{"name": "auto-helper-test", "title": "Auto Helper Test", '
                             '"route": "/apps/auto-helper-test", "template": "exasol-analytics", '
-                            '"data_sources": {"primary": {"kind": "exasol", "profile": "doesnt-matter", "auth_mode": "local_direct"}}}'
+                            '"data_sources": {"primary": {"kind": "exasol", "profile": "analytics-prod", "auth_mode": "local_direct"}}}'
                         ),
                     },
                     {"path": "requirements.txt", "content": "dash>=4.0,<5.0\n"},

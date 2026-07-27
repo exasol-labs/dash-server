@@ -415,11 +415,32 @@ class GitReconciler:
             if existing_preview is not None:
                 self.svc.dispatcher.unmount(self.svc.preview_path(app_name, existing_preview.revision_number))
                 self.svc.registry.set_preview_revision(app_name, None)
+                # PS26-BUG-019: clearing the preview pointer here never updated the
+                # revision's own `lifecycle_state`, which was left at "warming"
+                # (set when it *entered* preview, a few reconcile passes ago)
+                # forever - it doesn't settle to "archived" like every other
+                # non-current, non-preview revision. Skip the case where this
+                # revision was simultaneously promoted to live above (it's already
+                # correctly "live"; overwriting that back to "archived" would be
+                # its own bug).
+                if desired_live_revision is None or existing_preview.id != desired_live_revision.id:
+                    self.svc.registry.update_revision_state(
+                        existing_preview.id,
+                        "archived",
+                        rollout_metadata={"cleared_preview_without_promotion": True},
+                    )
             desired_preview_revision = None
 
+        # PS26-BUG-016: an app with no Git desired-state at all (never committed to
+        # the GitOps repo, or committed then removed) used to get the same
+        # `"reconciled"` label as an app whose desired state was actually applied -
+        # indistinguishable from "in sync" unless a caller separately noticed both
+        # revision fields were null. `repo_reconcile` on a registry containing such
+        # apps should let a caller find them by status alone.
+        status = "reconciled" if (live_desired is not None or preview_desired is not None) else "untracked"
         return {
             "app": app_name,
-            "status": "reconciled",
+            "status": status,
             "live_revision": desired_live_revision.revision_number if live_desired is not None and desired_live_revision is not None else None,
             "preview_revision": desired_preview_revision.revision_number if desired_preview_revision is not None else None,
             "route": self.svc._require_app(app_name).route,

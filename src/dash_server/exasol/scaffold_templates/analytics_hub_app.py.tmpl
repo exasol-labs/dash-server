@@ -16,6 +16,7 @@ _HELPER_MODULE = importlib.util.module_from_spec(_HELPER_SPEC)
 _HELPER_SPEC.loader.exec_module(_HELPER_MODULE)
 load_row = _HELPER_MODULE.load_row
 load_rows = _HELPER_MODULE.load_rows
+has_error = _HELPER_MODULE.has_error
 render_error_panel = _HELPER_MODULE.render_error_panel
 render_table = _HELPER_MODULE.render_table
 
@@ -138,7 +139,7 @@ def create_dash_app(server, url_base_pathname, metadata):
         business_trend = load_rows(server, metadata, __file__, "queries/business/trend.sql")
         business_detail = load_rows(server, metadata, __file__, "queries/business/detail.sql")
 
-        if meta_rows and "_error" in meta_rows[0]:
+        if has_error(meta_rows):
             error = meta_rows[0]["_error"]
             return (
                 error,
@@ -166,7 +167,7 @@ def create_dash_app(server, url_base_pathname, metadata):
         )
 
         monitor_figure = go.Figure()
-        if monitor_rows and "_error" not in monitor_rows[0]:
+        if monitor_rows and not has_error(monitor_rows):
             monitor_figure.add_trace(
                 go.Scatter(
                     x=[row.get("T") for row in monitor_rows],
@@ -183,11 +184,19 @@ def create_dash_app(server, url_base_pathname, metadata):
                     name="RAM",
                 )
             )
+        elif has_error(monitor_rows):
+            # PS26-BUG-012: this used to discard the real `_error` text for a generic
+            # "No monitor data available." message, indistinguishable from the query
+            # legitimately returning zero rows - an operator watching System Health
+            # would never learn Exasol actually failed.
+            monitor_figure = _empty_figure(
+                f"Exasol query failed for queries/system/monitor.sql: {{monitor_rows[0]['_error']}}"
+            )
         else:
             monitor_figure = _empty_figure("No monitor data available.")
 
         usage_figure = go.Figure()
-        if usage_rows and "_error" not in usage_rows[0]:
+        if usage_rows and not has_error(usage_rows):
             usage_figure.add_trace(
                 go.Bar(
                     x=[row.get("T") for row in usage_rows],
@@ -204,11 +213,15 @@ def create_dash_app(server, url_base_pathname, metadata):
                 )
             )
             usage_figure.update_layout(yaxis2={{"overlaying": "y", "side": "right"}})
+        elif has_error(usage_rows):
+            usage_figure = _empty_figure(
+                f"Exasol query failed for queries/system/usage.sql: {{usage_rows[0]['_error']}}"
+            )
         else:
             usage_figure = _empty_figure("No usage data available.")
 
         business_figure = go.Figure()
-        if business_trend and "_error" not in business_trend[0]:
+        if business_trend and not has_error(business_trend):
             business_figure.add_trace(
                 go.Scatter(
                     x=[row.get("LABEL") for row in business_trend],
@@ -218,7 +231,7 @@ def create_dash_app(server, url_base_pathname, metadata):
                     name="Trend",
                 )
             )
-        elif business_trend and "_error" in business_trend[0]:
+        elif has_error(business_trend):
             business_figure = _empty_figure(
                 f"Exasol query failed for queries/business/trend.sql: {{business_trend[0]['_error']}}"
             )
@@ -227,7 +240,7 @@ def create_dash_app(server, url_base_pathname, metadata):
                 "queries/business/trend.sql returned no rows. Replace with a domain query that produces LABEL,VALUE rows."
             )
 
-        if sql_rows and "_error" not in sql_rows[0]:
+        if sql_rows and not has_error(sql_rows):
             counts = Counter(row.get("COMMAND_CLASS", "Unknown") or "Unknown" for row in sql_rows)
             if counts:
                 usage_figure.add_trace(
@@ -240,7 +253,7 @@ def create_dash_app(server, url_base_pathname, metadata):
                     )
                 )
 
-        if business_summary and "_error" in business_summary:
+        if business_summary and has_error(business_summary):
             business_summary_cards = render_error_panel(business_summary["_error"])
         else:
             business_summary_cards = _metric_cards(business_summary)

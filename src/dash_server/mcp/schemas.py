@@ -466,6 +466,26 @@ class SchemasMixin:
         }
 
 
+    def _app_promote_revision_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Hosted app name."},
+                "revision_number": {"type": "integer", "description": "Numeric revision to promote."},
+                "require_healthy": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, refuse to promote a revision with a recorded build-preflight "
+                        "failure or data-layer error against it (category deployment_healthcheck_failed). "
+                        "Defaults to false, matching the previous unconditional-promote behavior."
+                    ),
+                },
+            },
+            "required": ["name", "revision_number"],
+            "additionalProperties": False,
+        }
+
+
     def _app_diff_draft_vs_artifact_schema(self) -> dict[str, Any]:
         return {
             "type": "object",

@@ -521,6 +521,61 @@ def test_bug_014_app_validate_returns_top_level_summary(tmp_path: Path) -> None:
     assert "warning_count" in summary
 
 
+def test_ps26_bug018_validation_summary_counts_exasol_warnings_and_errors() -> None:
+    """PS26-BUG-018: `_validation_summary`'s `warning_count`/`error_count` used to look
+    for `report["exasol"]["warnings"]`/`["errors"]` keys that don't exist - the exasol
+    section is shaped `{"status": ..., "issues": [{"level": "warning"|"error"|"info"}]}` -
+    so its contribution was silently always zero regardless of `exasol.status`. The
+    counts must now reflect the real `issues` list, filtered by `level`.
+    """
+
+    from dash_server.mcp.handlers import _validation_summary
+
+    report = {
+        "is_valid": False,
+        "syntax": {"errors": []},
+        "requirements": {"invalid": []},
+        "credential_safety": {"errors": []},
+        "callbacks": {"errors": [], "warnings": []},
+        "consumption": {"issues": []},
+        "lint": {"warnings": []},
+        "exasol": {
+            "status": "failed",
+            "issues": [
+                {"level": "warning", "path": "queries/a.sql", "message": "warn 1"},
+                {"level": "warning", "path": "queries/b.sql", "message": "warn 2"},
+                {"level": "error", "path": "queries/c.sql", "message": "error 1"},
+                {"level": "info", "path": "queries/d.sql", "message": "dead sql"},
+            ],
+        },
+    }
+
+    summary = _validation_summary(report)
+
+    assert summary["warning_count"] == 2
+    assert summary["error_count"] == 1
+
+
+def test_ps26_bug018_validation_summary_is_zero_for_a_clean_exasol_report() -> None:
+    from dash_server.mcp.handlers import _validation_summary
+
+    report = {
+        "is_valid": True,
+        "syntax": {"errors": []},
+        "requirements": {"invalid": []},
+        "credential_safety": {"errors": []},
+        "callbacks": {"errors": [], "warnings": []},
+        "consumption": {"issues": []},
+        "lint": {"warnings": []},
+        "exasol": {"status": "passed", "issues": []},
+    }
+
+    summary = _validation_summary(report)
+
+    assert summary["warning_count"] == 0
+    assert summary["error_count"] == 0
+
+
 @pytest.mark.slow
 def test_bug_011_exasol_profile_create_local_default_no_overwrite(tmp_path: Path) -> None:
     """Calling `exasol_profile_create_local` twice with the same name and no

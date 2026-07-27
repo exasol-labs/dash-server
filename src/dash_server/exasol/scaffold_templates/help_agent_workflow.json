@@ -25,5 +25,10 @@
     "Generate the hosted app with app_create_exasol_dashboard or app_scaffold_from_schema.",
     "Copy only safe SQL and structural findings into queries/*.sql; keep credentials and connection setup in the dash-server profile.",
     "Deploy to a preview URL first, then promote the approved revision live."
-  ]
+  ],
+  "if_external_exasol_mcp_is_unreachable": {
+    "note": "The external Exasol MCP server is a separate, optional process; it can be unreachable, unconfigured, or fail (e.g. TLS certificate verification against a self-signed Exasol instance). dash-server does not depend on it for schema discovery.",
+    "fallback": "Call app_scaffold_from_schema with only profile_name (and optionally schema_name/table_name) to have dash-server introspect the schema itself through the same profile used at runtime, then generate a tailored dashboard scaffold from the discovered blueprint - no external MCP server required.",
+    "related_tools": ["app_scaffold_from_schema", "exasol_profile_create_local", "exasol_profile_validate"]
+  }
 }

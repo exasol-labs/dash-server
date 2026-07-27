@@ -176,6 +176,12 @@ def session_channel_guide(channel_status: dict[str, Any] | None = None) -> dict[
                 "console.log/warn/error during the command are captured on `console`.",
                 "A thrown error comes back as ok=false with name, message, stack, and `line` "
                 "relative to the code you submitted.",
+                "Mode detection is newline-based, not statement-based: "
+                "\"console.log('a'); console.warn('b'); 42\" as one physical line is "
+                "`statements` mode and returns undefined with no error, while the identical "
+                "logic split across newlines is `last_line` mode and returns 42. Always "
+                "check `eval_mode` in the result, or just use an explicit `return` — it "
+                "works in every mode and removes the ambiguity entirely.",
             ],
         },
         "ctx": list(_CTX_REFERENCE),

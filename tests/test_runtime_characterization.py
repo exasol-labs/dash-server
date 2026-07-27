@@ -125,6 +125,25 @@ def test_reconcile_app_unknown_is_skipped(make_app) -> None:
     }
 
 
+def test_ps26_bug016_app_with_no_desired_state_is_untracked_not_reconciled(make_app) -> None:
+    """PS26-BUG-016 regression: an app with no Git desired-state at all (neither live
+    nor preview - e.g. a registry row left over from before GitOps tracking existed,
+    or whose desired-state files were lost) used to get the identical `"reconciled"`
+    label as an app whose desired state was genuinely just applied, distinguishable
+    only by separately noticing both revision fields are null. It must report a
+    distinct status instead.
+    """
+
+    runtime = _runtime(make_app())
+    result = runtime.reconciler._reconcile_app_desired_state("demo", None, None, {})
+    assert result["status"] == "untracked"
+    assert result["live_revision"] is None
+    assert result["preview_revision"] is None
+
+    # A real desired-state reconcile (the common case) must still say "reconciled".
+    assert runtime.reconcile_app("demo")["status"] == "reconciled"
+
+
 def test_reconcile_git_desired_state_shape(make_app) -> None:
     runtime = _runtime(make_app())
     result = runtime.reconcile_git_desired_state()

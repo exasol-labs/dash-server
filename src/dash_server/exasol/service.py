@@ -24,6 +24,28 @@ from .secrets import ExasolSecretStore
 
 _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
+# PS26-BUG-008: schema-name patterns that belong to Exasol's own platform/catalog
+# infrastructure (its Semantic Views feature, in the environment this was found in)
+# rather than a user's business data. `app_scaffold_from_schema`'s blind auto-pick (no
+# explicit `schema_name`) scored a table from one of these above the real target purely
+# because its name happened to match a keyword-shaped scorer, and every one of its
+# `table_candidates` was drawn from the same two schemas - the real target never
+# appeared as a candidate at all. See `_is_platform_internal_schema` below.
+_PLATFORM_INTERNAL_SCHEMA_PREFIXES = ("SEMANTIC_", "JVS_", "JSON_VIEW")
+_PLATFORM_INTERNAL_SCHEMA_NAMES = {"SYS_SEMANTIC"}
+
+# PS26-BUG-009: column names that look numeric but are geo-coordinates, not measures -
+# `app_scaffold_from_schema` picked `LAT` as a table's "primary measure" and generated
+# a chart titled "LAT over READING_TS" for a sensor-readings table.
+_GEO_COORDINATE_COLUMN_NAMES = {"LAT", "LATITUDE", "LON", "LNG", "LONGITUDE"}
+
+
+def _is_platform_internal_schema(schema_name: str) -> bool:
+    upper = schema_name.upper()
+    return upper in _PLATFORM_INTERNAL_SCHEMA_NAMES or any(
+        upper.startswith(prefix) for prefix in _PLATFORM_INTERNAL_SCHEMA_PREFIXES
+    )
+
 
 class ExasolDashboardService:
     """Own Exasol profile metadata, secrets, validation, and scaffolds."""
@@ -337,6 +359,13 @@ class ExasolDashboardService:
             resolved_table = str(row.get("COLUMN_TABLE") or "")
             if not resolved_schema or not resolved_table:
                 continue
+            # PS26-BUG-008: only exclude platform-internal schemas (Exasol's own
+            # Semantic Views catalog, etc.) from *blind* auto-pick candidacy - a
+            # caller who explicitly names `schema_name` clearly wants that schema on
+            # purpose, and excluding it here would wipe out every one of its rows
+            # before the explicit-schema path ever sees them.
+            if schema_name is None and _is_platform_internal_schema(resolved_schema):
+                continue
             grouped.setdefault((resolved_schema, resolved_table), []).append(row)
         if not grouped:
             raise DashServerError(
@@ -428,7 +457,15 @@ class ExasolDashboardService:
             normalized_name = column_name.upper()
             if self._is_temporal_type(column_type):
                 time_columns.append(column_name)
-            elif self._is_numeric_type(column_type) and not normalized_name.endswith("_ID") and normalized_name != "ID":
+            elif (
+                self._is_numeric_type(column_type)
+                and not normalized_name.endswith("_ID")
+                and normalized_name != "ID"
+                # PS26-BUG-009: LAT/LON-shaped columns are numeric but describe a
+                # location, not a KPI - excluded from measure candidacy so
+                # `primary_measure` never picks "LAT" as a trend value.
+                and normalized_name not in _GEO_COORDINATE_COLUMN_NAMES
+            ):
                 measure_columns.append(column_name)
             elif self._is_dimension_type(column_type):
                 dimension_columns.append(column_name)
@@ -468,7 +505,16 @@ class ExasolDashboardService:
         selected_keys = {column_name.upper(): column_name for column_name in selected.get("key_columns", [])}
         if not selected_keys:
             return hints
-        for candidate in candidates[1:]:
+        # PS26-BUG-009: this used to skip `candidates[0]` unconditionally, i.e. "every
+        # candidate except the top-ranked one" - not "every candidate except the one
+        # actually selected." When `table_name` overrides the auto-ranked top pick,
+        # `selected` isn't `candidates[0]`, so `candidates[1:]` still included
+        # `selected` itself, producing a self-referential hint (a table's key column
+        # "related to" its own table) while skipping a real comparison against
+        # whichever table WAS `candidates[0]`.
+        for candidate in candidates:
+            if candidate is selected:
+                continue
             for key_name in candidate.get("key_columns", []):
                 upper_name = key_name.upper()
                 if upper_name in selected_keys:

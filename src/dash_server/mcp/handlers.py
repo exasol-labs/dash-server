@@ -29,18 +29,37 @@ def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
     def _len(node: Any, key: str) -> int:
         return len(node[key]) if isinstance(node, dict) and isinstance(node.get(key), list) else 0
 
+    def _len_by_level(node: Any, level: str) -> int:
+        # PS26-BUG-018: the `exasol` section (`exasol_lint.exasol_validation_report`)
+        # is shaped `{"status": ..., "issues": [{"level": "error"|"warning"|"info", ...}]}`
+        # - there is no separate `errors`/`warnings` key for `_len` to find, so the old
+        # `_len(report.get("exasol"), "errors"/"warnings")` calls always silently
+        # counted zero regardless of how many issues were actually present, while
+        # `exasol.status` was independently set to `"failed"`/`"passed_with_warnings"`
+        # from the very same `issues` list. Count by `level` instead so the two agree.
+        if not isinstance(node, dict):
+            return 0
+        issues = node.get("issues")
+        if not isinstance(issues, list):
+            return 0
+        return sum(1 for issue in issues if isinstance(issue, dict) and issue.get("level") == level)
+
     error_count = (
         _len(report.get("syntax"), "errors")
         + _len(report.get("requirements"), "invalid")
-        + _len(report.get("exasol"), "errors")
+        + _len_by_level(report.get("exasol"), "error")
         + _len(report.get("credential_safety"), "errors")
         + _len(report.get("callbacks"), "errors")
-        + _len(report.get("consumption"), "issues")
+        + _len_by_level(report.get("consumption"), "error")
     )
     warning_count = (
         _len(report.get("lint"), "warnings")
-        + _len(report.get("exasol"), "warnings")
+        + _len_by_level(report.get("exasol"), "warning")
         + _len(report.get("callbacks"), "warnings")
+        # PS26-BUG-014: the consumption section can now carry a non-blocking
+        # "exports disabled server-wide" notice - count it as a warning, not silently
+        # (the old `_len(..., "issues")` above miscounted it as an error instead).
+        + _len_by_level(report.get("consumption"), "warning")
     )
     return {
         "valid": bool(report.get("is_valid")),
@@ -214,6 +233,9 @@ class HandlersMixin:
         created = self.runtime_service.create_app(
             bundle, start_immediately=start_immediately
         )
+        preflight_error = self._preflight_failure_error(created)
+        if preflight_error is not None:
+            return self._tool_error_result("app_create", preflight_error, extra_payload=created)
         browser_url = self._absolute_url(created["app"]["route"])
         return self._tool_result(
             "app_create",
@@ -276,6 +298,9 @@ class HandlersMixin:
         created = self.runtime_service.create_app(bundle, start_immediately=start_immediately)
         if notes:
             created = {**created, "notes": notes}
+        preflight_error = self._preflight_failure_error(created)
+        if preflight_error is not None:
+            return self._tool_error_result("app_create_from_files", preflight_error, extra_payload=created)
         browser_url = self._absolute_url(created["app"]["route"])
         return self._tool_result(
             "app_create_from_files",
@@ -337,6 +362,9 @@ class HandlersMixin:
         }
         if notes:
             structured["notes"] = notes
+        preflight_error = self._preflight_failure_error(created)
+        if preflight_error is not None:
+            return self._tool_error_result("app_create_exasol_dashboard", preflight_error, extra_payload=structured)
         return self._tool_result(
             "app_create_exasol_dashboard",
             text=f"Created Exasol dashboard {created['app']['name']} at {browser_url}.",
@@ -383,14 +411,18 @@ class HandlersMixin:
         )
         created = self.runtime_service.create_app(bundle, start_immediately=start_immediately)
         browser_url = self._absolute_url(created["app"]["route"])
+        structured = {
+            **created,
+            "exasol_profile": profile_validation["profile"],
+            "schema_blueprint": bundle["schema_blueprint"],
+        }
+        preflight_error = self._preflight_failure_error(created)
+        if preflight_error is not None:
+            return self._tool_error_result("app_scaffold_from_schema", preflight_error, extra_payload=structured)
         return self._tool_result(
             "app_scaffold_from_schema",
             text=f"Created schema-tailored Exasol scaffold {created['app']['name']} at {browser_url}.",
-            structured_content={
-                **created,
-                "exasol_profile": profile_validation["profile"],
-                "schema_blueprint": bundle["schema_blueprint"],
-            },
+            structured_content=structured,
         )
 
 
@@ -403,27 +435,9 @@ class HandlersMixin:
             arguments.get("bundle"),
             force_clean=force_clean,
         )
-        preflight = built.get("preflight")
-        if isinstance(preflight, dict) and preflight.get("status") != "passed":
-            revision = built.get("revision", {})
-            revision_number = revision.get("revision_number")
-            exc = DashServerError(
-                category="artifact_preflight_failed",
-                summary=(
-                    f"Built revision {revision_number} but artifact preflight failed; "
-                    "fix the runtime issue before promoting it live."
-                ),
-                details={
-                    "app": built["app"]["name"],
-                    "revision_number": revision_number,
-                    "preflight": preflight,
-                },
-            )
-            return self._tool_error_result(
-                "app_build",
-                exc,
-                extra_payload=built,
-            )
+        preflight_error = self._preflight_failure_error(built)
+        if preflight_error is not None:
+            return self._tool_error_result("app_build", preflight_error, extra_payload=built)
         return self._tool_result(
             "app_build",
             text=f"Built revision {built['revision']['revision_number']} for app {built['app']['name']}.",
@@ -653,16 +667,30 @@ class HandlersMixin:
 
 
     def _tool_app_promote_revision(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        require_healthy = arguments.get("require_healthy", False)
+        if not isinstance(require_healthy, bool):
+            raise self._field_error("app_promote_revision", "require_healthy", "must be a boolean.")
         promoted = self.runtime_service.promote_revision(
             self._require_name(arguments),
             self._require_revision_number(arguments, "revision_number"),
+            require_healthy=require_healthy,
         )
+        text = (
+            f"Promoted revision {promoted['current_revision']['revision_number']} for app "
+            f"{promoted['app']['name']} to {self._absolute_url(promoted['app']['route'])}."
+        )
+        if not promoted["app"].get("mounted"):
+            # PS26-BUG-007: promote only moves the desired-state pointer; it does not
+            # itself mount/start a stopped app. Say so plainly in the human-readable
+            # summary an agent reads first, not only as generic if/then prose buried
+            # in the tool's static guidance.
+            text += (
+                " The app runtime is currently stopped, so this revision is not serving "
+                "traffic yet - call app_start to mount it."
+            )
         return self._tool_result(
             "app_promote_revision",
-            text=(
-                f"Promoted revision {promoted['current_revision']['revision_number']} for app "
-                f"{promoted['app']['name']} to {self._absolute_url(promoted['app']['route'])}."
-            ),
+            text=text,
             structured_content=promoted,
         )
 
@@ -2537,6 +2565,40 @@ class HandlersMixin:
             category="tool_validation_error",
             summary=f"{field_name} {detail}",
             details={"tool": tool_name, "field": field_name},
+        )
+
+
+    def _preflight_failure_error(self, created: dict[str, Any]) -> DashServerError | None:
+        """Build the `artifact_preflight_failed` error for a create/build result whose
+        embedded `preflight` didn't pass, or `None` if it passed (or wasn't run at all).
+
+        Shared by `app_build` and every tool that can produce an app's *first*
+        revision - `app_create`, `app_create_from_files`, `app_create_exasol_dashboard`,
+        `app_scaffold_from_schema` all route through `runtime_service.create_app`,
+        which now also runs preflight on that first revision (PS26-BUG-005 - it used
+        to be silently skipped only there, so a broken query could go straight to
+        `published: true` with no error, unlike every subsequent `app_build`).
+        """
+
+        preflight = created.get("preflight")
+        if not isinstance(preflight, dict) or preflight.get("status") == "passed":
+            return None
+        # `app_build`'s result has a top-level "revision" key; `create_app`'s (routed
+        # through `_serialize_status`) calls the same thing "current_revision" - accept
+        # either so this one helper covers both shapes.
+        revision = created.get("revision") or created.get("current_revision") or {}
+        revision_number = revision.get("revision_number")
+        return DashServerError(
+            category="artifact_preflight_failed",
+            summary=(
+                f"Created/built revision {revision_number} but artifact preflight failed; "
+                "fix the runtime issue before trusting this app as live."
+            ),
+            details={
+                "app": created["app"]["name"],
+                "revision_number": revision_number,
+                "preflight": preflight,
+            },
         )
 
 

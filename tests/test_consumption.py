@@ -107,13 +107,65 @@ def _consumption_contract(*, source_path: str = "queries/export.sql") -> dict[st
     }
 
 
-def _create_output_app(client, *, name: str = "finance-outputs", include_sql: bool = True):
+class _ConsumptionSmokeFakeConnection:
+    """A pyexasol connection stand-in that accepts any query and returns no rows.
+
+    PS26-BUG-005: `create_app`/`app_build` now always preflight the first revision,
+    which runs the `sql_smoke` probe against the bound Exasol profile. None of these
+    tests' queries reference a bad column, so a bare "the query parsed" success is
+    all the fixture needs - it does not need to fake real result rows.
+    """
+
+    def execute(self, sql_text: str, params: dict[str, object] | None = None) -> object:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class _ConsumptionSmokeFakePyExasolModule:
+    def connect(self, **kwargs: object) -> _ConsumptionSmokeFakeConnection:
+        return _ConsumptionSmokeFakeConnection()
+
+
+def _wire_fake_exasol_connector(app) -> None:
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = (
+        lambda: _ConsumptionSmokeFakePyExasolModule()
+    )
+
+
+def _create_analytics_prod_profile(client, *, request_id: int = 500) -> None:
+    response = _call_tool(
+        client,
+        "exasol_profile_create_local",
+        {
+            "name": "analytics-prod",
+            "backend": "onprem",
+            "credential_mode": "password",
+            "dsn": "demodb.exasol.com:8563",
+            "user": "sys",
+            "secret_value": "super-secret",
+        },
+        request_id=request_id,
+    )
+    assert response.status_code == 200
+
+
+def _create_output_app(app, client, *, name: str = "finance-outputs", include_sql: bool = True):
+    _wire_fake_exasol_connector(app)
+    _create_analytics_prod_profile(client)
     files = [{"path": "app.py", "content": _APP_PY}]
     if include_sql:
         files.append(
             {
                 "path": "queries/export.sql",
                 "content": "SELECT {period!s} AS PERIOD FROM DUAL\n",
+            }
+        )
+        files.append(
+            {
+                "path": "queries/sql_smoke.json",
+                "content": json.dumps({"queries/export.sql": {"period": "2026-07"}}) + "\n",
             }
         )
     response = _call_tool(
@@ -182,7 +234,7 @@ def _wait_for_job(client, job_id: str, expected: set[str] | None = None):
 
 @pytest.mark.slow
 def test_phase0_output_discovery_matches_mcp_resource_and_ui(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
 
     tool_response = _call_tool(
         client,
@@ -237,7 +289,7 @@ def test_phase0_output_discovery_matches_mcp_resource_and_ui(app, client):
 
 @pytest.mark.slow
 def test_output_get_and_execution_context_are_revision_and_principal_bound(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     response = _call_tool(
         client,
         "app_output_get",
@@ -281,6 +333,32 @@ def test_workspace_validation_fails_when_declared_output_source_is_missing(clien
     assert validation["consumption"]["issues"][0]["path"] == "queries/export.sql"
 
 
+def test_ps26_bug014_app_validate_warns_early_when_exports_are_disabled_server_wide(app, client) -> None:
+    """PS26-BUG-014 regression: previously an agent could author a valid
+    consumption.outputs contract, pass app_validate cleanly, build, and deploy live -
+    only discovering exports are disabled server-wide (DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED,
+    default False) at the very last step, when app_export_create fails. app_validate now
+    surfaces this as a non-blocking warning as early as validate/create time.
+    """
+
+    _create_output_app(app, client, name="finance-outputs-early-warning")
+
+    response = _call_tool(client, "app_validate", {"name": "finance-outputs-early-warning"})
+    result = response.get_json()["result"]
+    assert result["isError"] is False
+    report = result["structuredContent"]["validation"]
+
+    assert report["consumption"]["status"] == "passed_with_warnings"
+    assert report["is_valid"] is True
+    warning = report["consumption"]["issues"][0]
+    assert warning["level"] == "warning"
+    assert "exports are disabled server-wide" in warning["message"]
+    assert "consumption_exports_disabled" in warning["message"]
+
+    summary = result["structuredContent"]["validation_summary"]
+    assert summary["warning_count"] >= 1
+
+
 def test_contract_rejects_unsafe_source_and_unknown_parameter_schema_features():
     data_sources = {"primary": {"kind": "exasol", "profile": "analytics-prod"}}
     with pytest.raises(DashServerError) as unsafe_path:
@@ -301,7 +379,7 @@ def test_contract_rejects_unsafe_source_and_unknown_parameter_schema_features():
 
 @pytest.mark.slow
 def test_output_discovery_requires_app_export_authorization(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     service = app.extensions["consumption_service"]
     registry = app.extensions["registry"]
     principal = Principal.authenticated_user(
@@ -415,9 +493,28 @@ class TestHostedViewerOutputCatalogParity:
             "X-Forwarded-User": "stranger-1",
             "X-Forwarded-Email": "stranger@example.test",
         }
+        _wire_fake_exasol_connector(hosted_app)
+        profile_created = _call_tool(
+            hosted_client,
+            "exasol_profile_create_local",
+            {
+                "name": "analytics-prod",
+                "backend": "onprem",
+                "credential_mode": "password",
+                "dsn": "demodb.exasol.com:8563",
+                "user": "sys",
+                "secret_value": "super-secret",
+            },
+            headers=admin_headers,
+        )
+        assert profile_created.status_code == 200
         files = [
             {"path": "app.py", "content": _APP_PY},
             {"path": "queries/export.sql", "content": "SELECT {period!s} AS PERIOD FROM DUAL\n"},
+            {
+                "path": "queries/sql_smoke.json",
+                "content": json.dumps({"queries/export.sql": {"period": "2026-07"}}) + "\n",
+            },
         ]
         created = _call_tool(
             hosted_client,
@@ -537,7 +634,7 @@ class TestHostedViewerOutputCatalogParity:
 
 @pytest.mark.slow
 def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     executor = _FakeDatasetExecutor()
     service = _enable_phase1(app, executor)
 
@@ -612,7 +709,7 @@ def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client)
 
 @pytest.mark.slow
 def test_phase1_idempotency_and_parameter_validation(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     _enable_phase1(app)
     request = {
         "name": "finance-outputs",
@@ -644,7 +741,7 @@ def test_phase1_idempotency_and_parameter_validation(app, client):
 
 @pytest.mark.slow
 def test_phase1_ui_uses_csrf_and_same_job_service(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     _enable_phase1(app)
     page = client.get("/manage/apps/finance-outputs/consumption")
     assert page.status_code == 200
@@ -699,7 +796,7 @@ def test_phase1_ui_uses_csrf_and_same_job_service(app, client):
 
 @pytest.mark.slow
 def test_phase1_cancellation_publishes_no_partial_artifact(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     executor = _BlockingDatasetExecutor()
     service = _enable_phase1(app, executor)
     created = _call_tool(
@@ -725,7 +822,7 @@ def test_phase1_cancellation_publishes_no_partial_artifact(app, client):
 
 @pytest.mark.slow
 def test_phase1_row_limit_fails_without_artifact(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     service = _enable_phase1(app, _FakeDatasetExecutor())
     service.policy = replace(service.policy, max_rows=1)
     service.policy_version = service.policy.version
@@ -921,7 +1018,7 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
 
     from openpyxl import load_workbook
 
-    _create_output_app(client)
+    _create_output_app(app, client)
     _enable_phase1(app)
 
     outputs = _call_tool(client, "app_outputs_list", {"name": "finance-outputs"}).get_json()["result"][
@@ -978,7 +1075,7 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
 
 @pytest.mark.slow
 def test_phase2_retry_recovers_from_transient_failure(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     executor = _FlakyDatasetExecutor()
     _enable_phase1(app, executor)
 
@@ -1013,7 +1110,7 @@ def test_phase2_retry_recovers_from_transient_failure(app, client):
 def test_phase2_restart_reconciliation_strands_nothing(app, client):
     from dash_server.consumption.service import ConsumptionService
 
-    _create_output_app(client)
+    _create_output_app(app, client)
     _enable_phase1(app)
     job_ids = []
     for index in range(3):
@@ -1082,7 +1179,7 @@ def test_phase2_restart_reconciliation_strands_nothing(app, client):
 
 @pytest.mark.slow
 def test_phase2_policy_tightening_narrows_pinned_job_limits(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     service = _enable_phase1(app)
     held_jobs: list[str] = []
     service.coordinator.submit = held_jobs.append
@@ -1113,7 +1210,7 @@ def test_phase2_policy_tightening_narrows_pinned_job_limits(app, client):
 
 @pytest.mark.slow
 def test_phase2_quotas_bound_active_jobs(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     service = _enable_phase1(app)
     service.coordinator.submit = lambda job_id: None
     service.policy = replace(service.policy, max_active_jobs_per_principal=2, max_active_jobs_per_app=10)
@@ -1185,7 +1282,7 @@ def test_phase2_quotas_bound_active_jobs(app, client):
 
 @pytest.mark.slow
 def test_phase2_retention_prunes_jobs_and_releases_idempotency_keys(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     service = _enable_phase1(app)
 
     created = _call_tool(
@@ -1331,6 +1428,21 @@ def test_phase2_admin_job_view_requires_capability_and_redacts(tmp_path: Path):
     hosted_client = hosted_app.test_client()
     admin_headers = {"X-Forwarded-User": "admin-1", "X-Forwarded-Email": "admin@example.test"}
     viewer_headers = {"X-Forwarded-User": "viewer-1", "X-Forwarded-Email": "viewer@example.test"}
+    _wire_fake_exasol_connector(hosted_app)
+    profile_created = _call_tool(
+        hosted_client,
+        "exasol_profile_create_local",
+        {
+            "name": "analytics-prod",
+            "backend": "onprem",
+            "credential_mode": "password",
+            "dsn": "demodb.exasol.com:8563",
+            "user": "sys",
+            "secret_value": "super-secret",
+        },
+        headers=admin_headers,
+    )
+    assert profile_created.status_code == 200
     created = _call_tool(
         hosted_client,
         "app_create_from_files",
@@ -1341,6 +1453,10 @@ def test_phase2_admin_job_view_requires_capability_and_redacts(tmp_path: Path):
             "files": [
                 {"path": "app.py", "content": _APP_PY},
                 {"path": "queries/export.sql", "content": "SELECT {period!s} AS PERIOD FROM DUAL\n"},
+                {
+                    "path": "queries/sql_smoke.json",
+                    "content": json.dumps({"queries/export.sql": {"period": "2026-07"}}) + "\n",
+                },
             ],
         },
         headers=admin_headers,

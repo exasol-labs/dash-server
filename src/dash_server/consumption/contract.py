@@ -72,11 +72,13 @@ def validate_consumption_sources(
     consumption: dict[str, Any] | None,
     *,
     files: dict[str, str],
+    exports_enabled: bool = True,
 ) -> dict[str, Any]:
     """Validate that output source files exist in the current workspace snapshot."""
 
     issues: list[dict[str, Any]] = []
-    for output in (consumption or {}).get("outputs", []):
+    outputs = (consumption or {}).get("outputs", [])
+    for output in outputs:
         source = output.get("source", {})
         if source.get("type") != "exasol_sql":
             continue
@@ -114,10 +116,35 @@ def validate_consumption_sources(
                     "message": ("Consumption parameter(s) are not used by the SQL source: " + ", ".join(unused) + "."),
                 }
             )
+    if outputs and not exports_enabled:
+        # PS26-BUG-014: without this, an agent could author a valid consumption
+        # contract, build, and deploy live before discovering - only at the final
+        # `app_export_create` call - that exports are disabled server-wide via
+        # `DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED`. Surface it as early as `app_validate`.
+        # Appended last so it never displaces a source-file error at issues[0].
+        issues.append(
+            {
+                "level": "warning",
+                "output_id": None,
+                "path": None,
+                "message": (
+                    "This app declares consumption.outputs, but exports are disabled "
+                    "server-wide (DASH_SERVER_CONSUMPTION_EXPORTS_ENABLED=false). "
+                    "app_export_create will fail with consumption_exports_disabled "
+                    "until an operator enables exports on the server."
+                ),
+            }
+        )
+    if any(issue["level"] == "error" for issue in issues):
+        status = "failed"
+    elif any(issue["level"] == "warning" for issue in issues):
+        status = "passed_with_warnings"
+    else:
+        status = "passed"
     return {
-        "status": "failed" if issues else "passed",
+        "status": status,
         "contract_hash": consumption_contract_hash(consumption),
-        "output_count": len((consumption or {}).get("outputs", [])),
+        "output_count": len(outputs),
         "issues": issues,
     }
 

@@ -104,6 +104,24 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     )
     assert authoring_guide["factory_signature"] == "create_dash_app(server, url_base_pathname, metadata)"
     assert "Do not use global dash.callback for hosted apps." in authoring_guide["required_rules"]
+    # PS26-BUG-013: app_run_healthcheck's probes never execute a real callback, and the
+    # only in-band way to force one is a raw POST to _dash-update-component - document
+    # the exact request shape here so an agent doesn't have to reverse-engineer it.
+    trigger_guide = authoring_guide["triggering_callbacks_for_real"]
+    assert "_dash-update-component" in trigger_guide["note"]
+    assert trigger_guide["example"]["path"] == "{mount_path}/_dash-update-component"
+    assert set(trigger_guide["request_shape"]) == {"output", "outputs", "inputs", "changedPropIds", "state"}
+
+    # PS26-BUG-020: app_validate is a static/offline check and never verifies SQL
+    # schema/column references against a live connection - document that scope
+    # boundary so an agent doesn't mistake is_valid: true for a schema-correctness
+    # guarantee.
+    schema_typo_entry = next(
+        entry
+        for entry in authoring_guide["common_failures"]
+        if "nonexistent column" in entry["problem"]
+    )
+    assert "sql_smoke" in schema_typo_entry["fix"]
 
     workflows = _resource_json(
         client,

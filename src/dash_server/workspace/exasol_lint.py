@@ -89,6 +89,12 @@ def exasol_validation_report(
             continue
         normalized = content.upper()
         for match in _RESERVED_ALIAS_RE.finditer(content):
+            if _is_cast_target(content, match.start()):
+                # PS26-BUG-017: `CAST(x AS DATE)` is cast syntax, not a column alias -
+                # quoting the type (the warning's own suggested fix) would change what
+                # the cast does. Only flag `AS <word>` when it isn't the type half of a
+                # CAST(...).
+                continue
             issues.append(
                 {
                     "level": "warning",
@@ -169,6 +175,36 @@ def exasol_validation_report(
     else:
         status = "passed"
     return {"status": status, "issues": issues}
+
+
+def _is_cast_target(content: str, match_start: int) -> bool:
+    """True if the `AS <word>` at `match_start` is the type half of `CAST(expr AS type)`.
+
+    No SQL parser here, just enough paren-tracking to answer "is this AS inside a
+    CAST(...) whose opener is the word CAST": walk backward from the match counting
+    parenthesis depth to find the nearest *unclosed* `(` enclosing it, then check
+    whether the token immediately before that `(` is the whole word `CAST`.
+    """
+
+    depth = 0
+    i = match_start - 1
+    while i >= 0:
+        char = content[i]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            if depth == 0:
+                before = content[:i].rstrip()
+                if before.upper().endswith("CAST"):
+                    boundary_index = len(before) - len("CAST") - 1
+                    if boundary_index < 0 or not (
+                        before[boundary_index].isalnum() or before[boundary_index] == "_"
+                    ):
+                        return True
+                return False
+            depth -= 1
+        i -= 1
+    return False
 
 
 def _top_level_call(node: ast.stmt) -> ast.Call | None:

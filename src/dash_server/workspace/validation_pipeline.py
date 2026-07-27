@@ -64,6 +64,7 @@ class ValidationContext:
     python_files: dict[str, str]
     parsed_trees: dict[str, ast.AST]
     syntax_errors: list[dict[str, Any]]
+    consumption_exports_enabled: bool = True
     results: dict[str, CheckResult] = field(default_factory=dict)
 
     def payload(self, key: str) -> dict[str, Any]:
@@ -265,6 +266,7 @@ class ConsumptionCheck(Check):
         payload = validate_consumption_sources(
             ctx.manifest.consumption,
             files=ctx.files,
+            exports_enabled=ctx.consumption_exports_enabled,
         )
         return CheckResult(
             key=self.key,

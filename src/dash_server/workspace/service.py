@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from dash import Dash
-from flask import Flask
+from flask import Flask, current_app
 from packaging.requirements import InvalidRequirement, Requirement
 
 from dash_server.dash_apps.callback_isolation import (
@@ -290,6 +290,7 @@ class WorkspaceService:
             python_files=python_files,
             parsed_trees=parsed_trees,
             syntax_errors=syntax_errors,
+            consumption_exports_enabled=self._consumption_exports_enabled(),
         )
         reports, is_valid = run_pipeline(context)
         return {
@@ -299,6 +300,23 @@ class WorkspaceService:
             **reports,
             "is_valid": is_valid,
         }
+
+    def _consumption_exports_enabled(self) -> bool:
+        """Read the live server-wide exports policy, if a Flask app context is active.
+
+        PS26-BUG-014: `app_validate` runs inside the MCP request's Flask app context, so
+        `current_app.extensions["consumption_service"].policy.exports_enabled` reflects the
+        same flag `dash://runtime/status` reports. Falls back to the permissive default
+        (no warning) outside an app context, e.g. direct unit tests of this service.
+        """
+
+        try:
+            consumption_service = current_app.extensions.get("consumption_service")
+        except RuntimeError:
+            return True
+        if consumption_service is None:
+            return True
+        return bool(consumption_service.policy.exports_enabled)
 
     def _parse_python_files(
         self,
@@ -1228,6 +1246,26 @@ def create_dash_app(server, url_base_pathname, metadata):
                 "traceback": traceback_text,
                 "missing_dependency": missing_dependency,
                 "declared_in_requirements": declared,
+            }
+        if "Exasol dashboard service is not registered on the Flask server" in error_text:
+            # PS26-BUG-010: the import-smoke-check sandbox builds a bare Flask server
+            # with no `exasol_dashboard_service` extension, so a query run directly in
+            # `create_dash_app()` (rather than inside an `@app.callback`) always raises
+            # this - regardless of whether the profile/query are actually valid. Left
+            # as a generic `import_error`, the message reads exactly like a broken or
+            # unbound profile; name the real fix instead.
+            return {
+                "status": "failed",
+                "category": "exasol_query_outside_callback",
+                "error": (
+                    f"{error_text} This is not a broken Exasol profile - "
+                    "load_rows/load_row/query_rows/query_one only work inside an "
+                    "@app.callback (validation and the real server both wire the Exasol "
+                    "connection onto the server only once request handling starts). Move "
+                    "this query into a callback, e.g. one triggered by "
+                    "dcc.Interval(max_intervals=1) if it only needs to run once at load."
+                ),
+                "traceback": traceback_text,
             }
         return {
             "status": "failed",

@@ -12,6 +12,7 @@ left untouched) and reuses the shared ``call_mcp``/``wait_for`` plumbing.
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import sqlite3
 from threading import Event
 from typing import Any
@@ -74,12 +75,50 @@ def _consumption_contract() -> dict[str, Any]:
     }
 
 
-def _create_output_app(client, *, name: str = "finance-outputs") -> None:
+class _ConsumptionSmokeFakeConnection:
+    """PS26-BUG-005: `create_app` now always preflights revision 1, which runs the
+    `sql_smoke` probe against the bound Exasol profile - a bare "parses fine" success
+    is all this fixture needs since none of its queries reference a bad column.
+    """
+
+    def execute(self, sql_text: str, params: dict[str, Any] | None = None) -> object:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class _ConsumptionSmokeFakePyExasolModule:
+    def connect(self, **kwargs: Any) -> _ConsumptionSmokeFakeConnection:
+        return _ConsumptionSmokeFakeConnection()
+
+
+def _create_output_app(app, client, *, name: str = "finance-outputs") -> None:
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = (
+        lambda: _ConsumptionSmokeFakePyExasolModule()
+    )
+    profile_response = call_mcp(
+        client,
+        "exasol_profile_create_local",
+        {
+            "name": "analytics-prod",
+            "backend": "onprem",
+            "credential_mode": "password",
+            "dsn": "demodb.exasol.com:8563",
+            "user": "sys",
+            "secret_value": "super-secret",
+        },
+    )
+    assert profile_response.status_code == 200
     files = [
         {"path": "app.py", "content": _APP_PY},
         {
             "path": "queries/export.sql",
             "content": "SELECT {period!s} AS PERIOD FROM DUAL\n",
+        },
+        {
+            "path": "queries/sql_smoke.json",
+            "content": json.dumps({"queries/export.sql": {"period": "2026-07"}}) + "\n",
         },
     ]
     response = call_mcp(
@@ -144,7 +183,7 @@ def _export_get(client, job_id: str) -> dict[str, Any]:
 
 
 def test_export_job_lifecycle_queued_running_succeeded(app, client):
-    _create_output_app(client)
+    _create_output_app(app, client)
     executor = _BlockingDatasetExecutor()
     service = _enable_phase1(app, executor)
 

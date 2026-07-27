@@ -378,3 +378,21 @@ def test_guide_is_readable_even_when_the_channel_is_disabled() -> None:
     assert guide["channel"]["disabled_reason"] == "hosted_mode"
     assert "Local mode only" in guide["availability"]
     assert guide["recipes"], "the guide carries the discoverability the tool schema cannot"
+
+
+def test_ps26_bug021_guide_documents_newline_sensitive_eval_mode_detection() -> None:
+    """PS26-BUG-021 regression: `eval_mode` detection is newline-based, not
+    statement-based - the identical logic as one physical line resolves to `statements`
+    mode (returns undefined, no error) while split across newlines it resolves to
+    `last_line` mode (returns the trailing value). This is the one place in the channel
+    where an agent gets a silently "wrong" answer with zero error signal, so the guide
+    must call it out explicitly rather than relying on the literal wording to cover it.
+    """
+
+    guide = session_channel_guide()
+    notes = guide["eval_semantics"]["notes"]
+    newline_note = next((note for note in notes if "newline" in note.lower()), None)
+    assert newline_note is not None, "guide must document eval_mode's newline sensitivity"
+    assert "statements" in newline_note
+    assert "last_line" in newline_note
+    assert "return" in newline_note
