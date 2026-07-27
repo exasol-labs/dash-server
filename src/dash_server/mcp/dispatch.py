@@ -15,6 +15,7 @@ from dash_server.dash_apps.factory import (
     app_create_schema_help,
 )
 from dash_server.errors import (
+    JSONRPC_INTERNAL_ERROR,
     JSONRPC_INVALID_PARAMS,
     JSONRPC_INVALID_REQUEST,
     JSONRPC_METHOD_NOT_FOUND,
@@ -76,6 +77,25 @@ class DispatchMixin:
         except DashServerError as exc:
             self._log_mcp_error(method, params, exc)
             return self._error_response(request_id, exc.to_error_object(), 200)
+        except Exception as exc:
+            # PS26-BUG-003 backstop: this method's own dispatch (resources/list,
+            # resources/read, tools/list, ...) has the same shape of risk as
+            # `_call_tool` below - anything raised here that isn't a `DashServerError`
+            # used to propagate straight past this handler with no catch anywhere
+            # above it, so Flask's default error handling turned it into a raw HTML
+            # 500 instead of a JSON-RPC response. `_call_tool` has its own matching
+            # backstop for `tools/call` specifically (see below) so its errors come
+            # back tool-shaped; this one covers everything else that reaches
+            # `handle_jsonrpc`, with a plain JSON-RPC error object.
+            LOGGER.exception("Unhandled exception dispatching MCP method=%s", method)
+            return self._error_response(
+                request_id,
+                {
+                    "code": JSONRPC_INTERNAL_ERROR,
+                    "message": f"Unexpected server error handling {method}: {type(exc).__name__}: {exc}",
+                },
+                200,
+            )
 
         return self._error_response(
             request_id, {"code": JSONRPC_METHOD_NOT_FOUND, "message": f"Method not found: {method}"}, 200
@@ -122,6 +142,29 @@ class DispatchMixin:
         except DashServerError as exc:
             self._log_mcp_error("tools/call", params, exc)
             return self._tool_error_result(str(name), exc)
+        except Exception as exc:
+            # PS26-BUG-003: two concurrent `app_build` calls for the same app used to
+            # let one of them raise a raw, non-`DashServerError` exception (a git
+            # `CalledProcessError`, a `sqlite3.IntegrityError`, ...) straight out of
+            # `handler(arguments)` above. Nothing between here and Flask's own
+            # unhandled-exception page caught anything but `DashServerError`, so the
+            # caller got an HTML 500 instead of a JSON-RPC response, and - because
+            # `_log_mcp_error` is only ever called from a `DashServerError` branch -
+            # no diagnostics record was left anywhere to explain it afterward.
+            # `AppRuntimeService._locked_app_operation` now serializes the specific
+            # racy calls (build/put_files/patch_file/delete_file/start_preview/
+            # promote_revision/rollback) so this shouldn't fire for that class of bug
+            # anymore, but it stays as the backstop for every other tool too: any
+            # unexpected exception, from anywhere, always comes back as a clean
+            # tool-shaped JSON-RPC error rather than leaking transport-level.
+            LOGGER.exception("Unhandled exception in tool call name=%s", name)
+            synthetic = DashServerError(
+                category="unexpected_runtime_error",
+                summary=f"{name} failed with an unexpected error: {type(exc).__name__}: {exc}",
+                details={"tool": str(name), "exception_type": type(exc).__name__},
+            )
+            self._log_mcp_error("tools/call", params, synthetic)
+            return self._tool_error_result(str(name), synthetic)
 
 
     def _enforce_tool_capability(self, tool_name: str, arguments: dict[str, Any]) -> None:

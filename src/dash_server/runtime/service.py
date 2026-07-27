@@ -8,7 +8,11 @@ import json
 import os
 import shutil
 import sqlite3
+import threading
+import traceback
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -98,6 +102,83 @@ class AppRuntimeService:
     @cached_property
     def prober(self) -> HealthProber:
         return HealthProber(self)
+
+    @cached_property
+    def _app_locks_guard(self) -> threading.Lock:
+        # Guards creation of entries in `_app_locks` below, not the app operations
+        # themselves — a plain Lock held only for the few instructions it takes to
+        # look up-or-create one app's RLock (PS26-BUG-003).
+        return threading.Lock()
+
+    @cached_property
+    def _app_locks(self) -> dict[str, threading.RLock]:
+        return {}
+
+    def _lock_for_app(self, name: str) -> threading.RLock:
+        with self._app_locks_guard:
+            lock = self._app_locks.get(name)
+            if lock is None:
+                # Reentrant: a handler that calls e.g. `build_revision` and then
+                # `promote_revision` for the same app within one request thread must
+                # not deadlock against itself. A *different* thread racing the same
+                # app still gets a clean rejection below rather than blocking, since
+                # `_locked_app_operation` uses a non-blocking acquire.
+                lock = threading.RLock()
+                self._app_locks[name] = lock
+            return lock
+
+    @contextmanager
+    def _locked_app_operation(self, name: str, operation: str, *, source: str = "build") -> Iterator[None]:
+        """Serialize one app's mutating operations and convert stray exceptions.
+
+        PS26-BUG-003: two concurrent `app_build` calls for the same app could race on
+        revision-number allocation, artifact-directory writes, and git tag/commit
+        creation (all keyed by a revision number computed *before* the registry's own
+        atomic insert), producing raw `CalledProcessError`/`IntegrityError`-style
+        exceptions. Those weren't `DashServerError`, so they escaped every
+        `except DashServerError` handler between here and the MCP dispatcher and
+        surfaced as an unhandled Flask 500 (HTML, not JSON-RPC) with no diagnostics
+        entry recorded anywhere.
+
+        This closes both gaps: only one operation runs at a time per app name (a
+        losing concurrent caller gets an immediate, structured `app_operation_in_progress`
+        rejection instead of silently corrupting shared state or blocking indefinitely),
+        and any exception that isn't already a `DashServerError` is recorded to
+        diagnostics and re-raised as one, so it always reaches the caller as a clean
+        JSON-RPC error.
+        """
+
+        lock = self._lock_for_app(name)
+        if not lock.acquire(blocking=False):
+            raise DashServerError(
+                category="app_operation_in_progress",
+                summary=(
+                    f"Another operation ({operation}) is already in progress for app {name}. "
+                    "Wait for it to finish and retry."
+                ),
+                details={"app": name, "operation": operation},
+            )
+        try:
+            yield
+        except DashServerError:
+            raise
+        except Exception as exc:
+            traceback_text = traceback.format_exc()
+            error_record = self.diagnostics_service.record_error(
+                name,
+                source=source,
+                category="unexpected_runtime_error",
+                summary=f"An unexpected error occurred during {operation}.",
+                details={"app": name, "operation": operation, "exception_type": type(exc).__name__},
+                traceback_text=traceback_text,
+            )
+            raise DashServerError(
+                category="unexpected_runtime_error",
+                summary=f"{operation} failed unexpectedly ({type(exc).__name__}): {exc}",
+                details={"app": name, "operation": operation, "error_id": error_record.get("id")},
+            ) from exc
+        finally:
+            lock.release()
 
     def _stop_worker_for_mount(self, mount_path: str) -> None:
         """Dispatcher unmount-observer: tear down the worker behind a mount path."""
@@ -447,166 +528,170 @@ class AppRuntimeService:
         *,
         force_clean: bool = False,
     ) -> dict[str, Any]:
-        app = self._require_app(name)
-        if bundle is not None:
-            manifest, _ = validate_bundle(bundle)
-            self._validate_workspace_identity(app, manifest)
-            self.workspace_service.ensure_workspace_from_bundle(bundle, overwrite=True)
+        with self._locked_app_operation(name, "app_build"):
+            app = self._require_app(name)
+            if bundle is not None:
+                manifest, _ = validate_bundle(bundle)
+                self._validate_workspace_identity(app, manifest)
+                self.workspace_service.ensure_workspace_from_bundle(bundle, overwrite=True)
 
-        validation = self._safe_workspace_validation(name, force_clean=force_clean)
-        if not validation["is_valid"] or validation["requirements"]["invalid"]:
-            category = self._classify_validation_category(validation)
-            error_record = self.diagnostics_service.record_error(
-                name,
-                source="build",
-                category=category,
-                summary="Workspace validation failed; fix the draft before building.",
-                details={"validation": validation},
-                traceback_text=validation["imports"].get("traceback"),
-            )
-            self.diagnostics_service.record_build_result(
-                name,
-                status="failed",
-                summary="Workspace validation failed during build.",
-                validation=validation,
-                error=error_record,
-            )
-            raise DashServerError(
-                category="workspace_validation_error",
-                summary="Workspace validation failed; fix the draft before building.",
-                details={"app": name, "validation": validation},
-            )
-
-        manifest = validate_manifest_payload(json.loads(self.workspace_service.read_file(name, APP_MANIFEST_FILENAME)))
-        self._validate_workspace_identity(app, manifest)
-
-        next_revision_number = self.registry.next_revision_number(name)
-        artifact_path, source_hash, dependency_lock_hash = self._write_workspace_artifact(
-            name,
-            next_revision_number,
-        )
-        git_revision = self._materialize_git_revision(
-            name,
-            next_revision_number,
-            source_hash=source_hash,
-            dependency_lock_hash=dependency_lock_hash,
-            artifact_path=artifact_path,
-        )
-        revision = self.registry.create_revision(
-            name,
-            manifest,
-            {
-                "source_files": self.workspace_service.list_files(name),
-                "draft_candidate_version": self.workspace_service.draft_summary(name)["candidate_version"],
-            },
-            artifact_path=artifact_path,
-            source_hash=source_hash,
-            dependency_lock_hash=dependency_lock_hash,
-            commit_sha=git_revision["commit_sha"],
-            git_tag=git_revision["git_tag"],
-            git_branch=git_revision["git_branch"],
-            release_manifest_path=git_revision["release_manifest_path"],
-        )
-        # Phase 4a: when validation produced a per-app env, persist its identity on the
-        # revision row so _mount_revision_isolated doesn't have to recompute it later and
-        # Phase 4d GC can join revisions against envs by id.
-        dep_install = validation.get("dependency_install") if isinstance(validation, dict) else None
-        if isinstance(dep_install, dict):
-            env_id = dep_install.get("environment_id")
-            env_python = dep_install.get("python_executable")
-            if isinstance(env_id, str) and env_id:
-                self.registry.update_revision_environment(
-                    revision.id,
-                    dependency_environment_id=env_id,
-                    env_python_executable=env_python or "",
+            validation = self._safe_workspace_validation(name, force_clean=force_clean)
+            if not validation["is_valid"] or validation["requirements"]["invalid"]:
+                category = self._classify_validation_category(validation)
+                error_record = self.diagnostics_service.record_error(
+                    name,
+                    source="build",
+                    category=category,
+                    summary="Workspace validation failed; fix the draft before building.",
+                    details={"validation": validation},
+                    traceback_text=validation["imports"].get("traceback"),
                 )
-        self.git_repo_service.publish_release_to_main(
-            app_name=name,
-            revision_number=revision.revision_number,
-            artifact_path=revision.artifact_path,
-            commit_sha=revision.commit_sha,
-            git_tag=revision.git_tag,
-            source_hash=revision.source_hash,
-            dependency_lock_hash=revision.dependency_lock_hash,
-            release_manifest_path=revision.release_manifest_path,
-        )
-        self._append_canonical_event(
-            name,
-            "revision_built",
-            revision_id=revision.id,
-            data={"revision_number": revision.revision_number, "artifact_path": revision.artifact_path},
-            commit_message=f"app/{name}: audit revision build r{revision.revision_number:06d}",
-        )
-        preflight = self.preflight_revision(name, revision.revision_number)
-        build_error = None
-        build_status = "succeeded"
-        build_summary = f"Built revision {revision.revision_number}."
-        log_level = "info"
-        if preflight["preflight"]["status"] != "passed":
-            build_error = self.diagnostics_service.record_error(
+                self.diagnostics_service.record_build_result(
+                    name,
+                    status="failed",
+                    summary="Workspace validation failed during build.",
+                    validation=validation,
+                    error=error_record,
+                )
+                raise DashServerError(
+                    category="workspace_validation_error",
+                    summary="Workspace validation failed; fix the draft before building.",
+                    details={"app": name, "validation": validation},
+                )
+
+            manifest = validate_manifest_payload(
+                json.loads(self.workspace_service.read_file(name, APP_MANIFEST_FILENAME))
+            )
+            self._validate_workspace_identity(app, manifest)
+
+            next_revision_number = self.registry.next_revision_number(name)
+            artifact_path, source_hash, dependency_lock_hash = self._write_workspace_artifact(
                 name,
-                source="build",
-                category=self._preflight_failure_category(preflight["preflight"]),
-                summary=f"Artifact preflight failed for revision {revision.revision_number}.",
-                details={
-                    "app": name,
-                    "revision_number": revision.revision_number,
-                    "preflight": preflight["preflight"],
+                next_revision_number,
+            )
+            git_revision = self._materialize_git_revision(
+                name,
+                next_revision_number,
+                source_hash=source_hash,
+                dependency_lock_hash=dependency_lock_hash,
+                artifact_path=artifact_path,
+            )
+            revision = self.registry.create_revision(
+                name,
+                manifest,
+                {
+                    "source_files": self.workspace_service.list_files(name),
+                    "draft_candidate_version": self.workspace_service.draft_summary(name)["candidate_version"],
                 },
-                traceback_text=self._preflight_traceback_text(preflight["preflight"]),
+                artifact_path=artifact_path,
+                source_hash=source_hash,
+                dependency_lock_hash=dependency_lock_hash,
+                commit_sha=git_revision["commit_sha"],
+                git_tag=git_revision["git_tag"],
+                git_branch=git_revision["git_branch"],
+                release_manifest_path=git_revision["release_manifest_path"],
+            )
+            # Phase 4a: when validation produced a per-app env, persist its identity on the
+            # revision row so _mount_revision_isolated doesn't have to recompute it later and
+            # Phase 4d GC can join revisions against envs by id.
+            dep_install = validation.get("dependency_install") if isinstance(validation, dict) else None
+            if isinstance(dep_install, dict):
+                env_id = dep_install.get("environment_id")
+                env_python = dep_install.get("python_executable")
+                if isinstance(env_id, str) and env_id:
+                    self.registry.update_revision_environment(
+                        revision.id,
+                        dependency_environment_id=env_id,
+                        env_python_executable=env_python or "",
+                    )
+            self.git_repo_service.publish_release_to_main(
+                app_name=name,
                 revision_number=revision.revision_number,
+                artifact_path=revision.artifact_path,
+                commit_sha=revision.commit_sha,
+                git_tag=revision.git_tag,
+                source_hash=revision.source_hash,
+                dependency_lock_hash=revision.dependency_lock_hash,
+                release_manifest_path=revision.release_manifest_path,
             )
-            build_status = "failed"
-            build_summary = (
-                f"Built revision {revision.revision_number}, but artifact preflight failed."
-            )
-            log_level = "error"
             self._append_canonical_event(
                 name,
-                "revision_preflight_failed",
+                "revision_built",
                 revision_id=revision.id,
-                data={
-                    "revision_number": revision.revision_number,
-                    "preflight_status": preflight["preflight"]["status"],
-                },
-                commit_message=f"app/{name}: audit preflight failure r{revision.revision_number:06d}",
+                data={"revision_number": revision.revision_number, "artifact_path": revision.artifact_path},
+                commit_message=f"app/{name}: audit revision build r{revision.revision_number:06d}",
             )
-        self.diagnostics_service.record_build_result(
-            name,
-            status=build_status,
-            summary=build_summary,
-            revision_number=revision.revision_number,
-            artifact_path=revision.artifact_path,
-            validation=validation,
-            preflight=preflight["preflight"],
-            error=build_error,
-        )
-        self.diagnostics_service.append_log(
-            name,
-            "build",
-            build_summary,
-            revision_number=revision.revision_number,
-            level=log_level,
-            data={"artifact_path": revision.artifact_path},
-        )
-        return {
-            **self._serialize_revision_details(app, revision),
-            "validation": validation,
-            "preflight": preflight["preflight"],
-            "force_clean": force_clean,
-        }
+            preflight = self.preflight_revision(name, revision.revision_number)
+            build_error = None
+            build_status = "succeeded"
+            build_summary = f"Built revision {revision.revision_number}."
+            log_level = "info"
+            if preflight["preflight"]["status"] != "passed":
+                build_error = self.diagnostics_service.record_error(
+                    name,
+                    source="build",
+                    category=self._preflight_failure_category(preflight["preflight"]),
+                    summary=f"Artifact preflight failed for revision {revision.revision_number}.",
+                    details={
+                        "app": name,
+                        "revision_number": revision.revision_number,
+                        "preflight": preflight["preflight"],
+                    },
+                    traceback_text=self._preflight_traceback_text(preflight["preflight"]),
+                    revision_number=revision.revision_number,
+                )
+                build_status = "failed"
+                build_summary = (
+                    f"Built revision {revision.revision_number}, but artifact preflight failed."
+                )
+                log_level = "error"
+                self._append_canonical_event(
+                    name,
+                    "revision_preflight_failed",
+                    revision_id=revision.id,
+                    data={
+                        "revision_number": revision.revision_number,
+                        "preflight_status": preflight["preflight"]["status"],
+                    },
+                    commit_message=f"app/{name}: audit preflight failure r{revision.revision_number:06d}",
+                )
+            self.diagnostics_service.record_build_result(
+                name,
+                status=build_status,
+                summary=build_summary,
+                revision_number=revision.revision_number,
+                artifact_path=revision.artifact_path,
+                validation=validation,
+                preflight=preflight["preflight"],
+                error=build_error,
+            )
+            self.diagnostics_service.append_log(
+                name,
+                "build",
+                build_summary,
+                revision_number=revision.revision_number,
+                level=log_level,
+                data={"artifact_path": revision.artifact_path},
+            )
+            return {
+                **self._serialize_revision_details(app, revision),
+                "validation": validation,
+                "preflight": preflight["preflight"],
+                "force_clean": force_clean,
+            }
 
     def put_files(self, name: str, files: list[dict[str, Any]]) -> dict[str, Any]:
-        self._require_app(name)
-        result = self.workspace_service.put_files(name, files)
-        self.registry.append_event(name, "workspace_updated", data=result)
-        self.diagnostics_service.append_log(
-            name,
-            "build",
-            "Updated draft files.",
-            data=result,
-        )
-        return self._serialize_workspace(name, result)
+        with self._locked_app_operation(name, "app_put_files"):
+            self._require_app(name)
+            result = self.workspace_service.put_files(name, files)
+            self.registry.append_event(name, "workspace_updated", data=result)
+            self.diagnostics_service.append_log(
+                name,
+                "build",
+                "Updated draft files.",
+                data=result,
+            )
+            return self._serialize_workspace(name, result)
 
     def patch_file(
         self,
@@ -617,30 +702,32 @@ class AppRuntimeService:
         *,
         replace_all: bool = False,
     ) -> dict[str, Any]:
-        self._require_app(name)
-        result = self.workspace_service.patch_file(
-            name, path, search, replace, replace_all=replace_all
-        )
-        self.registry.append_event(name, "workspace_patched", data=result)
-        self.diagnostics_service.append_log(
-            name,
-            "build",
-            f"Patched draft file {path}.",
-            data=result,
-        )
-        return self._serialize_workspace(name, result)
+        with self._locked_app_operation(name, "app_patch_file"):
+            self._require_app(name)
+            result = self.workspace_service.patch_file(
+                name, path, search, replace, replace_all=replace_all
+            )
+            self.registry.append_event(name, "workspace_patched", data=result)
+            self.diagnostics_service.append_log(
+                name,
+                "build",
+                f"Patched draft file {path}.",
+                data=result,
+            )
+            return self._serialize_workspace(name, result)
 
     def delete_file(self, name: str, path: str) -> dict[str, Any]:
-        self._require_app(name)
-        result = self.workspace_service.delete_file(name, path)
-        self.registry.append_event(name, "workspace_deleted", data=result)
-        self.diagnostics_service.append_log(
-            name,
-            "build",
-            f"Deleted draft file {path}.",
-            data=result,
-        )
-        return self._serialize_workspace(name, result)
+        with self._locked_app_operation(name, "app_delete_file"):
+            self._require_app(name)
+            result = self.workspace_service.delete_file(name, path)
+            self.registry.append_event(name, "workspace_deleted", data=result)
+            self.diagnostics_service.append_log(
+                name,
+                "build",
+                f"Deleted draft file {path}.",
+                data=result,
+            )
+            return self._serialize_workspace(name, result)
 
     def validate_workspace(self, name: str, *, force_clean: bool = False) -> dict[str, Any]:
         self._require_app(name)
@@ -1358,118 +1445,121 @@ class AppRuntimeService:
         }
 
     def start_preview(self, name: str, revision_number: int) -> dict[str, Any]:
-        app = self._require_app(name)
-        revision = self._require_revision(name, revision_number)
-        preview_path = self.preview_path(name, revision.revision_number)
-        self._write_preview_desired_state_for_revision(
-            name,
-            revision,
-            commit_message=f"app/{name}: start preview r{revision.revision_number:06d}",
-        )
-        self._reconcile_or_raise(name)
-        self._append_canonical_event(
-            name,
-            "preview_started",
-            revision_id=revision.id,
-            data={"revision_number": revision.revision_number, "preview_path": preview_path},
-            commit_message=f"app/{name}: audit preview start r{revision.revision_number:06d}",
-        )
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            f"Started preview for revision {revision.revision_number}.",
-            revision_number=revision.revision_number,
-            data={"preview_path": preview_path},
-        )
-        return self._serialize_status(app.name)
+        with self._locked_app_operation(name, "app_start_preview", source="runtime"):
+            app = self._require_app(name)
+            revision = self._require_revision(name, revision_number)
+            preview_path = self.preview_path(name, revision.revision_number)
+            self._write_preview_desired_state_for_revision(
+                name,
+                revision,
+                commit_message=f"app/{name}: start preview r{revision.revision_number:06d}",
+            )
+            self._reconcile_or_raise(name)
+            self._append_canonical_event(
+                name,
+                "preview_started",
+                revision_id=revision.id,
+                data={"revision_number": revision.revision_number, "preview_path": preview_path},
+                commit_message=f"app/{name}: audit preview start r{revision.revision_number:06d}",
+            )
+            self.diagnostics_service.append_log(
+                name,
+                "runtime",
+                f"Started preview for revision {revision.revision_number}.",
+                revision_number=revision.revision_number,
+                data={"preview_path": preview_path},
+            )
+            return self._serialize_status(app.name)
 
     def promote_revision(self, name: str, revision_number: int) -> dict[str, Any]:
-        app = self._require_app(name)
-        revision = self._require_revision(name, revision_number)
-        previous_current = self.registry.get_current_revision(name)
-        previous_preview = self.registry.get_preview_revision(name)
-        self._write_live_desired_state_for_revision(
-            name,
-            revision,
-            clear_preview=True,
-            commit_message=f"app/{name}: promote r{revision.revision_number:06d} to live",
-        )
-        self._reconcile_or_raise(name)
-        if previous_preview is not None:
+        with self._locked_app_operation(name, "app_promote_revision", source="runtime"):
+            app = self._require_app(name)
+            revision = self._require_revision(name, revision_number)
+            previous_current = self.registry.get_current_revision(name)
+            previous_preview = self.registry.get_preview_revision(name)
+            self._write_live_desired_state_for_revision(
+                name,
+                revision,
+                clear_preview=True,
+                commit_message=f"app/{name}: promote r{revision.revision_number:06d} to live",
+            )
+            self._reconcile_or_raise(name)
+            if previous_preview is not None:
+                self._append_canonical_event(
+                    name,
+                    "preview_cleared",
+                    revision_id=previous_preview.id,
+                    data={"revision_number": previous_preview.revision_number, "reason": "promote"},
+                    commit_message=f"app/{name}: audit preview clear after promote",
+                )
             self._append_canonical_event(
                 name,
-                "preview_cleared",
-                revision_id=previous_preview.id,
-                data={"revision_number": previous_preview.revision_number, "reason": "promote"},
-                commit_message=f"app/{name}: audit preview clear after promote",
+                "revision_promoted",
+                revision_id=revision.id,
+                data={
+                    "revision_number": revision.revision_number,
+                    "previous_revision_number": (
+                        previous_current.revision_number if previous_current is not None else None
+                    ),
+                },
+                commit_message=f"app/{name}: audit promotion r{revision.revision_number:06d}",
             )
-        self._append_canonical_event(
-            name,
-            "revision_promoted",
-            revision_id=revision.id,
-            data={
-                "revision_number": revision.revision_number,
-                "previous_revision_number": (
-                    previous_current.revision_number if previous_current is not None else None
-                ),
-            },
-            commit_message=f"app/{name}: audit promotion r{revision.revision_number:06d}",
-        )
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            f"Promoted revision {revision.revision_number} to live.",
-            revision_number=revision.revision_number,
-            data={"route": app.route},
-        )
-        return self._serialize_status(app.name)
+            self.diagnostics_service.append_log(
+                name,
+                "runtime",
+                f"Promoted revision {revision.revision_number} to live.",
+                revision_number=revision.revision_number,
+                data={"route": app.route},
+            )
+            return self._serialize_status(app.name)
 
     def rollback(self, name: str) -> dict[str, Any]:
-        self._require_app(name)  # raises if the app doesn't exist
-        rollback_revision = self.registry.get_rollback_revision(name)
-        if rollback_revision is None:
-            raise DashServerError(
-                category="rollback_unavailable",
-                summary=f"App {name} does not have a rollback target.",
-                details={"app": name},
-            )
+        with self._locked_app_operation(name, "app_rollback", source="runtime"):
+            self._require_app(name)  # raises if the app doesn't exist
+            rollback_revision = self.registry.get_rollback_revision(name)
+            if rollback_revision is None:
+                raise DashServerError(
+                    category="rollback_unavailable",
+                    summary=f"App {name} does not have a rollback target.",
+                    details={"app": name},
+                )
 
-        current_revision = self.registry.get_current_revision(name)
-        previous_preview = self.registry.get_preview_revision(name)
-        self._write_live_desired_state_for_revision(
-            name,
-            rollback_revision,
-            clear_preview=True,
-            commit_message=f"app/{name}: rollback live to r{rollback_revision.revision_number:06d}",
-        )
-        self._reconcile_or_raise(name)
-        if previous_preview is not None:
+            current_revision = self.registry.get_current_revision(name)
+            previous_preview = self.registry.get_preview_revision(name)
+            self._write_live_desired_state_for_revision(
+                name,
+                rollback_revision,
+                clear_preview=True,
+                commit_message=f"app/{name}: rollback live to r{rollback_revision.revision_number:06d}",
+            )
+            self._reconcile_or_raise(name)
+            if previous_preview is not None:
+                self._append_canonical_event(
+                    name,
+                    "preview_cleared",
+                    revision_id=previous_preview.id,
+                    data={"revision_number": previous_preview.revision_number, "reason": "rollback"},
+                    commit_message=f"app/{name}: audit preview clear after rollback",
+                )
             self._append_canonical_event(
                 name,
-                "preview_cleared",
-                revision_id=previous_preview.id,
-                data={"revision_number": previous_preview.revision_number, "reason": "rollback"},
-                commit_message=f"app/{name}: audit preview clear after rollback",
+                "rolled_back",
+                revision_id=rollback_revision.id,
+                data={
+                    "revision_number": rollback_revision.revision_number,
+                    "previous_revision_number": (
+                        current_revision.revision_number if current_revision is not None else None
+                    ),
+                },
+                commit_message=f"app/{name}: audit rollback r{rollback_revision.revision_number:06d}",
             )
-        self._append_canonical_event(
-            name,
-            "rolled_back",
-            revision_id=rollback_revision.id,
-            data={
-                "revision_number": rollback_revision.revision_number,
-                "previous_revision_number": (
-                    current_revision.revision_number if current_revision is not None else None
-                ),
-            },
-            commit_message=f"app/{name}: audit rollback r{rollback_revision.revision_number:06d}",
-        )
-        self.diagnostics_service.append_log(
-            name,
-            "runtime",
-            f"Rolled back to revision {rollback_revision.revision_number}.",
-            revision_number=rollback_revision.revision_number,
-        )
-        return self._serialize_status(name)
+            self.diagnostics_service.append_log(
+                name,
+                "runtime",
+                f"Rolled back to revision {rollback_revision.revision_number}.",
+                revision_number=rollback_revision.revision_number,
+            )
+            return self._serialize_status(name)
 
     def start_app(self, name: str) -> dict[str, Any]:
         app = self._require_app(name)
