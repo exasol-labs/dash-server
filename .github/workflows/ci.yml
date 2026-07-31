@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check src tests
+
+      - name: Ruff format check
+        # Advisory only (see pyproject.toml's ruff section) — the codebase has pre-existing
+        # formatting drift that isn't auto-formatted yet, so this doesn't block CI.
+        run: ruff format --check src tests
+        continue-on-error: true
+
+      - name: mypy
+        # dash_server/mcp/{resources,dispatch,schemas,handlers}.py use a mixin pattern that
+        # mypy can't resolve across sibling mixins, producing a known, stable set of
+        # false-positive "has no attribute" errors. Non-blocking until that's refactored.
+        run: mypy src/dash_server src/dash_server_runtime
+        continue-on-error: true
+
+      - name: pytest
+        run: pytest -m "not slow"

@@ -4,10 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dash-server"
-version = "0.5.0"
+version = "0.1.0"
 description = "Agent-controlled Dash hosting server for Exasol."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
+authors = [
+  { name = "Exasol Labs", email = "labs@exasol.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
   "Flask>=3.1,<4.0",
   "dash>=4.3,<5.0",
@@ -28,6 +42,12 @@ dev = [
 
 [project.scripts]
 dash-server = "dash_server.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/exasol-labs/dash-server"
+Repository = "https://github.com/exasol-labs/dash-server"
+Documentation = "https://github.com/exasol-labs/dash-server/tree/main/docs"
+Issues = "https://github.com/exasol-labs/dash-server/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

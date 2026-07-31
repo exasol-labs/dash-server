@@ -13,6 +13,7 @@
   <a href="docs/exasol.md"><img alt="Exasol Ready" src="https://img.shields.io/badge/Exasol-ready-1E5EFF?style=flat-square&logo=databricks&logoColor=white"></a>
   <a href="docs/architecture.md"><img alt="GitOps Backed" src="https://img.shields.io/badge/GitOps-backed-0F766E?style=flat-square&logo=git&logoColor=white"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square"></a>
 </p>
 
 `dash-server` is an agent-first host for Dash apps, optimized for turning database questions into working dashboards.
@@ -292,3 +293,11 @@ code, so **when a skill and a resource disagree, the resource is right.**
 . .venv/bin/activate
 pytest
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
+## License
+
+[MIT](LICENSE)
