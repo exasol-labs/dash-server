@@ -362,19 +362,119 @@ function (nIntervals, meta) {
       };
     }
 
-    function returnLastLine(code) {
-      var lines = code.split("\n");
-      var index = -1;
-      for (var i = lines.length - 1; i >= 0; i--) {
-        if (lines[i].trim() !== "") {
-          index = i;
-          break;
+    /*
+     * PS27-BUG-007 / PS27-BUG-013: the previous implementation found the trailing
+     * expression by taking the last non-blank *physical line* and wrapping only that
+     * in `return (...)`. That broke in two related, independently-found ways: (a) a
+     * semicolon-joined one-liner (`console.log('a'); const x = 42; x`) put more than
+     * one statement on "the last line", producing invalid syntax when wrapped whole,
+     * so it silently fell through to plain `statements` mode with no explicit
+     * `return` -> `undefined`, no error; (b) a trailing expression that itself spans
+     * multiple physical lines (a wrapped array/object literal, a chained `.then()`)
+     * meant "the last line" was only a fragment of it (e.g. a lone closing `]`),
+     * which doesn't compile as an expression on its own, hitting the same silent
+     * fallback.
+     *
+     * Both are the same underlying bug: line-based splitting instead of
+     * statement-based splitting. This scans the code once, tracking bracket/string/
+     * comment/template-literal context, and only treats a `;` as a real statement
+     * separator when it's not nested inside any of those and not inside a `${...}`
+     * template substitution. The segment after the *last* such top-level `;` (or the
+     * whole code, if there is none) is the trailing statement/expression, regardless
+     * of how many physical lines it spans or what precedes it on its own line.
+     *
+     * Known limitation: regex literals are not distinguished from division (a
+     * classically hard, context-sensitive call even for full parsers), so a `;`
+     * inside a bare `/pattern;here/` regex literal could be mis-treated as a
+     * separator. This degrades gracefully rather than regressing: `compileCode`'s
+     * caller already falls through to plain `statements` mode if the resulting wrap
+     * doesn't compile, exactly as it did before this fix for any other
+     * `last_line`-mode failure.
+     */
+    function lastTopLevelStatementStart(code) {
+      var stack = [];
+      var n = code.length;
+      var lastSemicolon = -1;
+      var i = 0;
+      while (i < n) {
+        var ch = code.charAt(i);
+        var top = stack.length ? stack[stack.length - 1] : null;
+
+        if (top === "template") {
+          if (ch === "\\") {
+            i += 2;
+            continue;
+          }
+          if (ch === "`") {
+            stack.pop();
+            i += 1;
+            continue;
+          }
+          if (ch === "$" && code.charAt(i + 1) === "{") {
+            stack.push("brace");
+            i += 2;
+            continue;
+          }
+          i += 1;
+          continue;
         }
+
+        if (ch === "/" && code.charAt(i + 1) === "/") {
+          i += 2;
+          while (i < n && code.charAt(i) !== "\n") {
+            i += 1;
+          }
+          continue;
+        }
+        if (ch === "/" && code.charAt(i + 1) === "*") {
+          i += 2;
+          while (i < n && !(code.charAt(i) === "*" && code.charAt(i + 1) === "/")) {
+            i += 1;
+          }
+          i += 2;
+          continue;
+        }
+        if (ch === "'" || ch === '"') {
+          var quote = ch;
+          i += 1;
+          while (i < n && code.charAt(i) !== quote) {
+            i += code.charAt(i) === "\\" ? 2 : 1;
+          }
+          i += 1;
+          continue;
+        }
+        if (ch === "`") {
+          stack.push("template");
+          i += 1;
+          continue;
+        }
+        if (ch === "(" || ch === "[" || ch === "{") {
+          stack.push(ch);
+          i += 1;
+          continue;
+        }
+        if (ch === ")" || ch === "]" || ch === "}") {
+          if (stack.length) {
+            stack.pop();
+          }
+          i += 1;
+          continue;
+        }
+        if (ch === ";" && stack.length === 0) {
+          lastSemicolon = i;
+        }
+        i += 1;
       }
-      if (index < 0) {
+      return lastSemicolon + 1;
+    }
+
+    function returnLastLine(code) {
+      var start = lastTopLevelStatementStart(code);
+      var trailing = code.slice(start);
+      var trimmed = trailing.trim();
+      if (trimmed === "") {
         return null;
       }
-      var trimmed = lines[index].trim();
       // Word-boundary matching matters here: a plain `indexOf` prefix test would
       // disqualify `format(x)` because it starts with `for`, and `letters` because it
       // starts with `let`.
@@ -388,10 +488,12 @@ function (nIntervals, meta) {
       if (trimmed.indexOf("//") === 0 || trimmed.indexOf("/*") === 0) {
         return null;
       }
-      var expression = trimmed.replace(/;$/, "");
-      var copy = lines.slice();
-      copy[index] = "return (" + expression + ");";
-      return copy.join("\n");
+      // Preserve every original character before the split point - including
+      // newlines - so a thrown error's reported `line` stays accurate. Only a
+      // trailing `;` is stripped (not surrounding whitespace), leaving the prefix
+      // and the trailing expression's own internal line breaks untouched.
+      var expression = trailing.replace(/;\s*$/, "");
+      return code.slice(0, start) + "return (" + expression + ");";
     }
 
     function describeError(err, lineOffset) {
@@ -910,6 +1012,27 @@ function (nIntervals, meta) {
      * box/lasso selections live in `_fullLayout` and never reach the server, so a
      * server-side journal cannot see them at all.
      */
+    /*
+     * PS27-BUG-010: `readPlots()` used to read `.id` directly off the `.js-plotly-plot`
+     * div, but that node is Plotly's own inner element and never carries the
+     * Dash-assigned id itself - `dcc.Graph(id="trend-chart")` renders a wrapper
+     * `<div id="trend-chart">` containing an id-less `.js-plotly-plot` child
+     * (confirmed against a real rendered page), so every plot's documented `id` field
+     * came back `null` regardless of the component's real id. Walk up to the nearest
+     * ancestor that actually has one instead of assuming exactly one wrapper level, in
+     * case a future layout nests the graph deeper.
+     */
+    function nearestId(node) {
+      var current = node;
+      while (current) {
+        if (current.id) {
+          return current.id;
+        }
+        current = current.parentElement;
+      }
+      return null;
+    }
+
     function readPlots(budget) {
       var plots = [];
       var nodes = document.querySelectorAll(".js-plotly-plot");
@@ -930,7 +1053,7 @@ function (nIntervals, meta) {
           }
         }
         plots.push({
-          id: gd.getAttribute ? gd.getAttribute("id") : null,
+          id: nearestId(gd),
           trace_count: data.length,
           trace_types: traceTypes,
           points_per_trace: pointsPerTrace,
@@ -1075,6 +1198,7 @@ function (nIntervals, meta) {
      * install time to watch `_dash-update-component` traffic.
      */
     function waitForIdle(maxMs) {
+      trackClientsideCallbacks(tracker);
       var started = now();
       tracker.fired = [];
       tracker.lastSettle = 0;
@@ -1169,6 +1293,81 @@ function (nIntervals, meta) {
         } else {
           local.fired.push(outputId);
         }
+      });
+    }
+
+    /*
+     * PS27-BUG-004: `waitForIdle` used to watch `fetch` traffic exclusively, so a
+     * reactive chain driven entirely by `clientside_callback`s (no server round trip -
+     * exactly what Dash recommends for cheap derived values) never set `lastSettle`,
+     * and `idle` could never become true: the full `maxMs` always elapsed even when the
+     * update had completed instantly. `dash_clientside`'s dispatch has no public hook,
+     * so this wraps every registered clientside function directly - both the
+     * hash-keyed inline-string form (`_dashprivate_clientside_funcs`) and the
+     * namespaced form (`window.dash_clientside.<namespace>.<function>`) - so invoking
+     * one marks the tracker settled the same way a `_dash-update-component` response
+     * does. Run lazily from `waitForIdle` itself (not at page-load time) so it always
+     * sees whatever is registered by the time an agent actually calls it, regardless of
+     * script-load ordering relative to Dash's own bootstrap.
+     *
+     * The real output id a clientside function targets is declared Python-side and not
+     * recoverable from the browser alone, so `fired` gets a best-effort
+     * `"clientside:<key>"` / `"clientside:<namespace>.<name>"` tag rather than a real
+     * `id.prop` string - callers should treat this as "something clientside fired",
+     * not as an addressable output reference.
+     */
+    function trackClientsideCallbacks(local) {
+      var ns = W.dash_clientside;
+      if (!ns || typeof ns !== "object") {
+        return;
+      }
+      function wrap(owner, key, tag) {
+        var fn = owner[key];
+        if (typeof fn !== "function" || fn.__dashServerTracked) {
+          return;
+        }
+        var wrapped = function () {
+          var result = fn.apply(this, arguments);
+          if (result && typeof result.then === "function") {
+            result.then(
+              function (value) {
+                local.lastSettle = now();
+                local.fired.push(tag);
+                return value;
+              },
+              function (err) {
+                local.lastSettle = now();
+                local.fired.push(tag);
+                throw err;
+              }
+            );
+          } else {
+            local.lastSettle = now();
+            local.fired.push(tag);
+          }
+          return result;
+        };
+        wrapped.__dashServerTracked = true;
+        owner[key] = wrapped;
+      }
+
+      var privateFuncs = ns._dashprivate_clientside_funcs;
+      if (privateFuncs && typeof privateFuncs === "object") {
+        Object.keys(privateFuncs).forEach(function (key) {
+          wrap(privateFuncs, key, "clientside:" + key);
+        });
+      }
+      Object.keys(ns).forEach(function (namespaceKey) {
+        if (namespaceKey === "_dashprivate_clientside_funcs") {
+          return;
+        }
+        var namespaceObj = ns[namespaceKey];
+        if (!namespaceObj || typeof namespaceObj !== "object") {
+          return;
+        }
+        Object.keys(namespaceObj).forEach(function (fnKey) {
+          wrap(namespaceObj, fnKey, "clientside:" + namespaceKey + "." + fnKey);
+        });
       });
     }
 

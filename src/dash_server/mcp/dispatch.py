@@ -581,6 +581,12 @@ class DispatchMixin:
                     )
                 else:
                     lines.append("Callback validation failed for the current draft.")
+                # PS27-BUG-005: name the actual fix directly in the visible text when the
+                # failure is a Dash pattern-matching (ALL/MATCH/ALLSMALLER) id, since that's
+                # the standard "dynamically-rendered component" idiom, not a typo.
+                hint = callbacks.get("hint")
+                if isinstance(hint, str) and hint:
+                    lines.append(hint)
             elif callbacks.get("count", 0):
                 lines.append(f"Registered callbacks: {callbacks.get('count', 0)}")
 

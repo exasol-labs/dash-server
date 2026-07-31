@@ -380,19 +380,47 @@ def test_guide_is_readable_even_when_the_channel_is_disabled() -> None:
     assert guide["recipes"], "the guide carries the discoverability the tool schema cannot"
 
 
-def test_ps26_bug021_guide_documents_newline_sensitive_eval_mode_detection() -> None:
-    """PS26-BUG-021 regression: `eval_mode` detection is newline-based, not
-    statement-based - the identical logic as one physical line resolves to `statements`
-    mode (returns undefined, no error) while split across newlines it resolves to
-    `last_line` mode (returns the trailing value). This is the one place in the channel
-    where an agent gets a silently "wrong" answer with zero error signal, so the guide
-    must call it out explicitly rather than relying on the literal wording to cover it.
+def test_ps27_bug013_guide_documents_the_still_recommended_explicit_return_practice() -> None:
+    """PS26-BUG-021 (round 1) documented that `eval_mode` detection was newline-based,
+    not statement-based - a semicolon-joined one-liner silently returned `undefined`
+    with no error while the identical logic split across newlines worked. Round 2
+    (PS27-BUG-007/013) actually fixed the underlying detector to be statement-boundary-
+    aware rather than line-based, so that specific failure no longer reproduces - but
+    an explicit `return` still sidesteps the whole class of "which mode did this fall
+    into" ambiguity, so the guide must keep recommending it.
     """
 
     guide = session_channel_guide()
     notes = guide["eval_semantics"]["notes"]
-    newline_note = next((note for note in notes if "newline" in note.lower()), None)
-    assert newline_note is not None, "guide must document eval_mode's newline sensitivity"
-    assert "statements" in newline_note
-    assert "last_line" in newline_note
-    assert "return" in newline_note
+    mode_note = next((note for note in notes if "last_line" in note and "statements" in note), None)
+    assert mode_note is not None, "guide must document the eval_mode contract"
+    assert "return" in mode_note
+
+
+def test_ps27_bug008_guide_documents_the_inactive_tab_read_write_asymmetry() -> None:
+    """PS27-BUG-008: ctx.props()/ctx.dom() cannot see components inside an inactive
+    dcc.Tabs panel at any tier, but ctx.setProps() can still silently write to them
+    and trigger real callbacks - actively misleading for an agent deciding whether a
+    component exists/is controllable. Must be documented since it isn't fixable
+    without changing what Dash itself keeps mounted.
+    """
+
+    guide = session_channel_guide()
+    caveat = guide["prop_tiers"]["inactive_tab_caveat"]
+    assert "setProps" in caveat
+    assert "dcc.Tabs" in caveat
+
+
+def test_ps27_bug012_guide_has_a_switch_tab_recipe() -> None:
+    """PS27-BUG-012: a dcc.Tabs without an explicit id/value has no addressable prop
+    for ctx.setProps, and the guide's recipes previously only covered form-style
+    setProps interactions - "switch tabs, then do X" is one of the most common first
+    steps in testing any multi-tab app.
+    """
+
+    guide = session_channel_guide()
+    recipes = guide["recipes"]
+    switch_tab_recipe = next((r for r in recipes if "switch" in r["goal"].lower()), None)
+    assert switch_tab_recipe is not None, "guide must document a tab-switching recipe"
+    assert "querySelectorAll" in switch_tab_recipe["code"]
+    assert ".click()" in switch_tab_recipe["code"]

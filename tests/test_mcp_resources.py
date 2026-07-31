@@ -154,6 +154,15 @@ def test_runtime_status_reports_configured_port_settings(client):
     assert runtime_status["worker_host"] == "127.0.0.1"
     assert runtime_status["worker_port_range"] is None
 
+    # PS27 round-2 recommendation #1: an agent must be able to tell whether the running
+    # process predates the source tree it's reading docs/schemas from.
+    build = runtime_status["build"]
+    assert "process_started_at" in build
+    assert build["source"] in {"git", "unknown"}
+    if build["source"] == "git":
+        assert build["commit_sha"]
+        assert build["commit_timestamp"]
+
 
 @pytest.mark.slow
 def test_repo_status_reports_dirty_worktrees_after_draft_edit(client):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ssl
 import threading
+import time
 from importlib import import_module
 from typing import Any
 from collections.abc import Callable
@@ -12,6 +13,15 @@ from dash_server.exceptions import DashServerError
 from dash_server.exasol._pyexasol_types import ExaConnectionLike
 from dash_server.exasol.models import ExasolProfile
 from dash_server.exasol.secrets import ExasolSecretStore
+
+# PS27-BUG-001 (round-2 persona study): a cached connection used to live for the
+# lifetime of its worker thread, released only via incidental error-triggered
+# invalidation - never proactively. Under real concurrent load this exhausted
+# Exasol Personal's connection license for 25-30 minutes at a stretch, with no
+# correlation between reduced query activity and faster recovery. This default
+# bounds how long an unused cached connection can survive before the next
+# `connect()` call on that thread evicts and replaces it.
+_DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 
 
 def _classify_connection_error(error_text: str) -> dict[str, str] | None:
@@ -143,17 +153,26 @@ class ExasolConnectionManager:
         is a connect-time setting that applies to every statement executed on that
         session, setting it here at cache-miss time covers every subsequent cached
         query for this profile on this thread.
+
+        PS27-BUG-001: a cached connection idle for longer than
+        `query_defaults.connection_idle_timeout_seconds` (default 300s) is evicted
+        and replaced here rather than reused, so a long-lived-but-unused connection
+        doesn't hold an Exasol license slot indefinitely.
         """
 
         cache = self._thread_cache()
         cached = cache.get(profile.name)
         if cached is not None:
-            return cached
+            connection, last_used = cached
+            if time.monotonic() - last_used <= self.connection_idle_timeout_seconds(profile):
+                cache[profile.name] = (connection, time.monotonic())
+                return connection
+            self.invalidate(profile.name)
         connection = self.connect_uncached(
             profile,
             query_timeout_seconds=self.statement_timeout_seconds(profile),
         )
-        cache[profile.name] = connection
+        cache[profile.name] = (connection, time.monotonic())
         return connection
 
     def connect_uncached(
@@ -187,9 +206,10 @@ class ExasolConnectionManager:
         """
 
         cache = self._thread_cache()
-        connection = cache.pop(profile_name, None)
-        if connection is None:
+        cached = cache.pop(profile_name, None)
+        if cached is None:
             return
+        connection, _last_used = cached
         close = getattr(connection, "close", None)
         if callable(close):
             try:
@@ -228,7 +248,27 @@ class ExasolConnectionManager:
         except (TypeError, ValueError):
             return None
 
-    def _thread_cache(self) -> dict[str, ExaConnectionLike]:
+    @staticmethod
+    def connection_idle_timeout_seconds(profile: ExasolProfile) -> float:
+        """How long a cached connection may sit unused before `connect()` evicts it.
+
+        Reads `query_defaults.connection_idle_timeout_seconds` off the profile,
+        defensively (same tolerance as `statement_timeout_seconds`: a missing or
+        non-coercible value falls back to the server default rather than disabling
+        eviction entirely - PS27-BUG-001 was about an *unbounded* lifetime, so an
+        unset override should not mean "never evict").
+        """
+
+        query_defaults = profile.query_defaults or {}
+        value = query_defaults.get("connection_idle_timeout_seconds")
+        if value is None:
+            return _DEFAULT_IDLE_TIMEOUT_SECONDS
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return _DEFAULT_IDLE_TIMEOUT_SECONDS
+
+    def _thread_cache(self) -> dict[str, tuple[ExaConnectionLike, float]]:
         cache = getattr(self._local, "connections", None)
         if cache is None:
             cache = {}

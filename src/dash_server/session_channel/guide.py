@@ -133,6 +133,20 @@ _RECIPES: tuple[dict[str, str], ...] = (
         "goal": "Confirm the tab is the one the user is looking at.",
         "code": "({session: ctx.session, page: ctx.page(), hidden: document.hidden})",
     },
+    {
+        "goal": (
+            "Switch to a different tab by its visible label (PS27-BUG-012: a "
+            "dcc.Tabs without an explicit id/value has no addressable prop for "
+            "ctx.setProps - Dash renders each tab as a plain <div class=\"tab\">, "
+            "not role=\"tab\", so finding it by visible text and clicking it "
+            "directly is the reliable approach for any multi-tab app)."
+        ),
+        "code": (
+            "Array.from(document.querySelectorAll('div.tab'))"
+            ".find(el => el.textContent === 'Cohort Retention')"
+            ".click()"
+        ),
+    },
 )
 
 
@@ -176,12 +190,15 @@ def session_channel_guide(channel_status: dict[str, Any] | None = None) -> dict[
                 "console.log/warn/error during the command are captured on `console`.",
                 "A thrown error comes back as ok=false with name, message, stack, and `line` "
                 "relative to the code you submitted.",
-                "Mode detection is newline-based, not statement-based: "
-                "\"console.log('a'); console.warn('b'); 42\" as one physical line is "
-                "`statements` mode and returns undefined with no error, while the identical "
-                "logic split across newlines is `last_line` mode and returns 42. Always "
-                "check `eval_mode` in the result, or just use an explicit `return` — it "
-                "works in every mode and removes the ambiguity entirely.",
+                "Multi-statement bodies auto-return their trailing expression "
+                "(`eval_mode: \"last_line\"`) whether it's semicolon-joined onto one "
+                "physical line (\"console.log('a'); 42\") or spans several lines of its "
+                "own (a wrapped array/object literal) — this is now statement-boundary-"
+                "aware, not line-based. It can still fall back to `statements` mode "
+                "(requiring an explicit `return`) for code shapes it can't confidently "
+                "split, e.g. a semicolon inside a bare regex literal; always check "
+                "`eval_mode` in the result, or just use an explicit `return` — it works "
+                "in every mode and removes the ambiguity entirely.",
             ],
         },
         "ctx": list(_CTX_REFERENCE),
@@ -197,6 +214,19 @@ def session_channel_guide(channel_status: dict[str, Any] | None = None) -> dict[
                 "Every result states the tier it used. Treat `partial: true` or a lower tier "
                 "than expected as a real limitation and say so, rather than presenting a "
                 "partial prop set as complete."
+            ),
+            "inactive_tab_caveat": (
+                "PS27-BUG-008: ctx.props()/ctx.dom() cannot see components inside an "
+                "inactive dcc.Tabs panel at any tier - Dash does not keep an inactive "
+                "tab's content mounted in the React tree for the standard "
+                "'children as tab content' pattern, so a missing id there reads as fully "
+                "nonexistent, not merely partial. This does NOT mean the component is "
+                "uncontrollable: ctx.setProps() still succeeds and still fires real "
+                "downstream callbacks for an id in a currently-inactive tab, since Dash's "
+                "callback dispatch routes by the declared dependency graph, independent "
+                "of what's currently mounted. Switch to the tab first (see the "
+                "'Switch to a different tab' recipe below) before concluding a component "
+                "in another tab doesn't exist just because a read came back empty."
             ),
         },
         "truncation": {

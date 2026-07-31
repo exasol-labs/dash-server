@@ -130,6 +130,21 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     )
     assert any(workflow["name"] == "create_from_files" for workflow in workflows["workflows"])
 
+    # PS27-BUG-011 regression: both entries used to omit a step this project's own
+    # persona studies confirmed necessary in practice - shipping the scaffold's
+    # placeholder SQL live, and promoting an unreviewed preview without a healthcheck.
+    by_name = {workflow["name"]: workflow for workflow in workflows["workflows"]}
+    create_exasol = by_name["create_exasol_dashboard"]
+    assert "app_validate" in create_exasol["steps"]
+    assert "app_deploy_draft" in create_exasol["steps"] or "app_build" in create_exasol["steps"]
+    manual_revision = by_name["manual_revision_control"]
+    assert manual_revision["steps"].index("app_run_healthcheck") == (
+        manual_revision["steps"].index("app_start_preview") + 1
+    )
+    assert manual_revision["steps"].index("app_promote_revision") > manual_revision["steps"].index(
+        "app_run_healthcheck"
+    )
+
     repo_status = _resource_json(
         client,
         "dash://repo/status",

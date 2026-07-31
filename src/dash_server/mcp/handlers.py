@@ -569,6 +569,16 @@ class HandlersMixin:
                     name,
                     built["revision"]["revision_number"],
                 )
+                if not deployed["app"].get("mounted"):
+                    # PS27-BUG-006: promote_revision only updates current_revision_number -
+                    # it never mounts a stopped app. Without this, the single most common
+                    # case (a brand-new app's very first live deployment, created with
+                    # start_immediately=false) either reported a misleadingly successful
+                    # deploy for an app that wasn't actually running, or - with
+                    # auto_rollback_on_health_failure=true - raised a confusing
+                    # "failed health checks and was rolled back" error with nothing valid
+                    # to roll back to, for what is not really a health failure at all.
+                    deployed = self.runtime_service.start_app(name)
             health = self.runtime_service.run_healthcheck(name, target=deployment_target)
         except DashServerError as exc:
             diagnostics = self.runtime_service.collect_diagnostics(name)

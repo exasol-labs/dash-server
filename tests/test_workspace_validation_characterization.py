@@ -453,3 +453,111 @@ def test_ps26_bug017_cast_detection_ignores_a_same_named_identifier_prefix(tmp_p
         if issue["path"] == "queries/q.sql" and "reserved word as a bare alias" in issue["message"]
     ]
     assert reserved_alias_messages == ['AS DATE uses an Exasol reserved word as a bare alias. Quote it: AS "DATE".']
+
+
+PATTERN_MATCHING_APP = (
+    "from dash import Dash, Input, Output, State, ALL, html\n\n"
+    "def create_dash_app(server, url_base_pathname, metadata):\n"
+    "    app = Dash(__name__, server=server, routes_pathname_prefix='/', "
+    "requests_pathname_prefix=url_base_pathname.rstrip('/') + '/'{suppress_kwarg})\n"
+    "    app.layout = html.Div([html.Div(id='container'), html.Div(id='ack-store')])\n"
+    "    @app.callback(\n"
+    "        Output('ack-store', 'children'),\n"
+    "        Input({{'type': 'ack-btn', 'index': ALL}}, 'n_clicks'),\n"
+    "        State('ack-store', 'children'),\n"
+    "        prevent_initial_call=True,\n"
+    "    )\n"
+    "    def ack(_clicks, current):\n"
+    "        return current\n"
+    "    return app\n"
+)
+
+
+def test_ps27_bug005_pattern_matching_callback_gets_an_actionable_hint(tmp_path: Path):
+    """PS27-BUG-005 regression: a standard Dash pattern-matching (ALL/MATCH/ALLSMALLER)
+    callback whose concrete components are rendered dynamically by another callback
+    fails validation (as it always has, without suppress_callback_exceptions=True) but
+    used to give zero hint that this was the fix - reading exactly like a genuine typo.
+    """
+
+    workspace = _build_workspace(
+        tmp_path,
+        manifest=METRIC_MANIFEST,
+        app_source=PATTERN_MATCHING_APP.format(suppress_kwarg=""),
+    )
+    payload = workspace.validate_workspace("test", mount_path="/apps/test")
+
+    assert payload["callbacks"]["status"] == "failed"
+    assert payload["is_valid"] is False
+    hint = payload["callbacks"]["hint"]
+    assert "suppress_callback_exceptions=True" in hint
+    assert "ack-btn" in hint
+
+
+def test_ps27_bug005_pattern_matching_callback_passes_with_suppress_callback_exceptions(tmp_path: Path):
+    workspace = _build_workspace(
+        tmp_path,
+        manifest=METRIC_MANIFEST,
+        app_source=PATTERN_MATCHING_APP.format(suppress_kwarg=", suppress_callback_exceptions=True"),
+    )
+    payload = workspace.validate_workspace("test", mount_path="/apps/test")
+
+    assert payload["callbacks"]["status"] == "passed_with_warnings"
+    assert payload["is_valid"] is True
+    assert "hint" not in payload["callbacks"]
+
+
+def test_ps27_bug005_a_genuine_missing_plain_id_gets_no_wildcard_hint(tmp_path: Path):
+    """A real typo/bug (a plain, non-pattern id that's simply missing from the layout)
+    must not get the pattern-matching hint - only genuine wildcard-shaped ids should.
+    """
+
+    app_source = (
+        "from dash import Dash, Input, Output, html\n\n"
+        "def create_dash_app(server, url_base_pathname, metadata):\n"
+        "    app = Dash(__name__, server=server, routes_pathname_prefix='/', "
+        "requests_pathname_prefix=url_base_pathname.rstrip('/') + '/')\n"
+        "    app.layout = html.Div([html.Div(id='out')])\n"
+        "    @app.callback(Output('out', 'children'), Input('typo-id', 'value'))\n"
+        "    def show(value):\n"
+        "        return value\n"
+        "    return app\n"
+    )
+    workspace = _build_workspace(tmp_path, manifest=METRIC_MANIFEST, app_source=app_source)
+    payload = workspace.validate_workspace("test", mount_path="/apps/test")
+
+    assert payload["callbacks"]["status"] == "failed"
+    assert payload["callbacks"]["missing_layout_ids"] == ["typo-id"]
+    assert "hint" not in payload["callbacks"]
+
+
+def test_ps27_bug003_read_all_files_ignores_a_hidden_binary_file_in_the_workspace(tmp_path: Path):
+    """PS27-BUG-003 regression: an app's own code can create an arbitrary binary file in
+    its workspace as an import-time side effect (e.g. diskcache.Cache() for the
+    background-callback pattern) - previously this made read_all_files() (used by
+    app_build/app_validate/diffing) crash with an unhandled UnicodeDecodeError trying to
+    read it as UTF-8 text. A hidden (dot-prefixed) file/directory - the conventional
+    home for this class of generated cache/tool cruft - must now be excluded entirely
+    rather than crash the read.
+    """
+
+    workspace = _build_workspace(tmp_path, manifest=METRIC_MANIFEST, app_source=GOOD_APP)
+    binary_dir = tmp_path / "workspaces" / "test" / ".diskcache"
+    binary_dir.mkdir(parents=True)
+    (binary_dir / "cache.db").write_bytes(bytes([0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x00, 0x8A]))
+
+    files = workspace.read_all_files("test")
+
+    assert "app.py" in files
+    assert not any(".diskcache" in path for path in files)
+
+
+def test_ps27_bug003_is_artifact_source_part_excludes_any_hidden_path_component():
+    from dash_server.artifacts_io import is_artifact_source_part
+
+    assert is_artifact_source_part(Path("app.py")) is True
+    assert is_artifact_source_part(Path("queries/detail.sql")) is True
+    assert is_artifact_source_part(Path(".diskcache/cache.db")) is False
+    assert is_artifact_source_part(Path("nested/.cache/data.bin")) is False
+    assert is_artifact_source_part(Path(".git/HEAD")) is False
+    assert is_artifact_source_part(Path("__pycache__/app.cpython-310.pyc")) is False

@@ -412,18 +412,47 @@ class DiagnosticsService:
         return path
 
     def _append_jsonl(self, path: Path, payload: dict[str, Any]) -> None:
+        # PS27-BUG-002: this used to be two separate `write()` calls (the payload, then
+        # "\n"), so two threads appending to the same file around the same moment could
+        # interleave mid-record - confirmed on disk as two complete JSON objects
+        # concatenated with no separating newline. Building the full line first and
+        # issuing one `write()` call keeps each append atomic for the record sizes this
+        # module actually writes (diagnostics entries, well under the size where a
+        # single local-filesystem write() call would ever get split by the OS).
         path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(payload) + "\n"
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload))
-            handle.write("\n")
+            handle.write(line)
 
     def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
         if not path.exists():
             return []
         records: list[dict[str, Any]] = []
+        decoder = json.JSONDecoder()
         for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                records.append(json.loads(line))
+            stripped = line.strip()
+            if not stripped:
+                continue
+            index = 0
+            length = len(stripped)
+            while index < length:
+                while index < length and stripped[index].isspace():
+                    index += 1
+                if index >= length:
+                    break
+                try:
+                    record, end = decoder.raw_decode(stripped, index)
+                except json.JSONDecodeError:
+                    # PS27-BUG-002: a pre-existing corrupt/partial line (from before
+                    # the atomic-write fix above, or any other on-disk damage) must not
+                    # take down every subsequent read of this log - skip the
+                    # unparseable remainder instead of raising. `raw_decode`'s
+                    # loop-per-object shape also means a line holding two
+                    # concatenated-with-no-newline JSON objects (the exact corruption
+                    # this bug produced) recovers both records instead of losing them.
+                    break
+                records.append(record)
+                index = end
         return records
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:

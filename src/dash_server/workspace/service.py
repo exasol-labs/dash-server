@@ -889,13 +889,35 @@ def create_dash_app(server, url_base_pathname, metadata):
         else:
             status = "passed"
 
-        return {
+        report: dict[str, Any] = {
             "status": status,
             "count": len(callbacks),
             "callbacks": callbacks,
             "missing_layout_ids": sorted(missing_layout_ids),
             "suppress_callback_exceptions": suppress_callback_exceptions,
         }
+        # PS27-BUG-005: a completely standard, valid Dash idiom - pattern-matching
+        # (ALL/MATCH/ALLSMALLER) components rendered dynamically by another callback,
+        # never present in the static initial layout - fails here with no hint that
+        # `suppress_callback_exceptions=True` is the fix. Found independently by two
+        # personas in the round-2 study on unrelated apps. Not auto-passing this (a
+        # plain missing id can also be a genuine typo/bug the layout-presence check is
+        # right to catch) - just naming the fix explicitly when the shape says it's
+        # actually a wildcard pattern, not a typo.
+        if missing_layout_ids and not suppress_callback_exceptions:
+            wildcard_ids = sorted(
+                missing_id for missing_id in missing_layout_ids if _looks_like_pattern_matching_id(missing_id)
+            )
+            if wildcard_ids:
+                report["hint"] = (
+                    "The following missing_layout_ids look like Dash pattern-matching ids "
+                    f"(ALL/MATCH/ALLSMALLER): {wildcard_ids}. If these components are rendered "
+                    "dynamically by another callback rather than present in the initial "
+                    "layout - the standard Dash idiom for e.g. 'acknowledge one of N "
+                    "dynamically-rendered rows' - set suppress_callback_exceptions=True in the "
+                    "Dash(...) constructor."
+                )
+        return report
 
     def _serialize_callback_dependencies(self, dependencies: Any) -> list[dict[str, Any]]:
         serialized: list[dict[str, Any]] = []
@@ -1305,3 +1327,28 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_to_jsonable(item) for item in value]
     return repr(value)
+
+
+_PATTERN_MATCHING_WILDCARDS = ({"ALL"}, {"MATCH"}, {"ALLSMALLER"})
+
+
+def _looks_like_pattern_matching_id(candidate_id: str) -> bool:
+    """Whether a `missing_layout_ids` entry is a serialized Dash wildcard-pattern id.
+
+    Dash's own `callback_map` pre-serializes a pattern-matching component id (e.g.
+    ``{"type": "ack-btn", "index": ALL}``) into a canonical JSON string with each
+    wildcard sentinel rendered as a single-element list, e.g.
+    ``'{"index":["ALL"],"type":"ack-btn"}'`` (confirmed directly against Dash's
+    `callback_map` representation) - this is exactly the shape every entry in
+    `missing_layout_ids` has, since non-string (dict-shaped) ids are already
+    filtered out before this list is built. Used only to decide whether to attach an
+    actionable hint - never to change pass/fail status.
+    """
+
+    try:
+        parsed = json.loads(candidate_id)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    return any(isinstance(value, list) and set(value) in _PATTERN_MATCHING_WILDCARDS for value in parsed.values())

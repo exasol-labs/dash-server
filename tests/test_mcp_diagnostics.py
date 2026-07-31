@@ -467,3 +467,80 @@ def test_collect_diagnostics_and_inspect_traceback_attribute_artifact_mismatch(c
         "Compare the current draft against the latest built artifact"
     )
 
+
+
+def test_ps27_bug002_append_jsonl_writes_one_atomic_line(tmp_path, monkeypatch) -> None:
+    """PS27-BUG-002 regression: `_append_jsonl` used to issue two separate `write()`
+    calls (the payload, then a trailing newline), so two threads appending around the
+    same moment could interleave mid-record. Confirm it's now built as one string and
+    written in a single call.
+    """
+    from pathlib import Path
+
+    from dash_server.diagnostics.service import DiagnosticsService
+
+    service = DiagnosticsService(str(tmp_path))
+    path = tmp_path / "app" / "channel.jsonl"
+
+    writes: list[str] = []
+    real_open = Path.open
+
+    class _RecordingHandle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def write(self, data):
+            writes.append(data)
+            return self._handle.write(data)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self._handle.close()
+            return False
+
+    def recording_open(self, *args, **kwargs):
+        return _RecordingHandle(real_open(self, *args, **kwargs))
+
+    monkeypatch.setattr(Path, "open", recording_open)
+    service._append_jsonl(path, {"id": "a"})
+
+    assert len(writes) == 1, "the payload and its trailing newline must be a single write() call"
+    assert writes[0] == '{"id": "a"}\n'
+
+
+def test_ps27_bug002_read_jsonl_recovers_records_from_a_corrupted_no_newline_join(tmp_path) -> None:
+    """PS27-BUG-002 regression: an unlocked concurrent-append interleave used to leave
+    two complete JSON objects concatenated with no separating newline on one physical
+    line, and `_read_jsonl` raised `JSONDecodeError` on it - breaking every subsequent
+    read of that log (`app_build`, `app_tail_logs`, `app_collect_diagnostics` all funnel
+    through this reader). It must now recover both records instead.
+    """
+    from dash_server.diagnostics.service import DiagnosticsService
+
+    service = DiagnosticsService(str(tmp_path))
+    path = tmp_path / "app" / "channel.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"id": "good-1"}\n{"id": "d03"}{"id": "027f"}\n{"id": "good-2"}\n')
+
+    records = service._read_jsonl(path)
+
+    assert [r["id"] for r in records] == ["good-1", "d03", "027f", "good-2"]
+
+
+def test_ps27_bug002_read_jsonl_skips_a_genuinely_unparseable_remainder(tmp_path) -> None:
+    """A truly garbled line (not just a lost newline between two valid objects) must be
+    skipped rather than crash the whole read - any parseable records before the
+    garbled point on a line are still salvaged.
+    """
+    from dash_server.diagnostics.service import DiagnosticsService
+
+    service = DiagnosticsService(str(tmp_path))
+    path = tmp_path / "app" / "channel.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"id": "good-1"}\n{"id": "good-2"}{not valid json at all\n{"id": "good-3"}\n')
+
+    records = service._read_jsonl(path)
+
+    assert [r["id"] for r in records] == ["good-1", "good-2", "good-3"]

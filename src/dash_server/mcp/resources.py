@@ -17,6 +17,7 @@ from typing import Any
 
 from flask import current_app, has_request_context
 
+from dash_server.build_info import server_build_status
 from dash_server.dash_apps.factory import (
     app_authoring_guide,
     app_create_from_files_schema_help,
@@ -586,6 +587,11 @@ class ResourcesMixin:
                 "See plans/app-runtime-isolation-and-dependency-environments-plan.md."
             ),
             **self._runtime_isolation_snapshot(),
+            # Round-2 persona study, recommendation #1: lets an agent notice the running
+            # process predates the current source tree (a long-lived shared instance was
+            # never restarted after a schema/behavior-affecting commit landed) instead of
+            # independently correlating `git log` timestamps against process start time.
+            "build": server_build_status(),
         }
         if self.consumption_service is not None:
             payload["consumption_coordinator"] = self.consumption_service.coordinator_status()
@@ -678,7 +684,17 @@ class ResourcesMixin:
                 },
                 {
                     "name": "create_exasol_dashboard",
-                    "steps": ["exasol_profile_create_local", "exasol_profile_validate", "app_create_exasol_dashboard"],
+                    # PS27-BUG-011: this used to stop at app_create_exasol_dashboard, so
+                    # an agent that trusted this list alone as the canonical recipe would
+                    # ship the generator's placeholder SQL live without ever validating
+                    # or building it - confirmed directly in the round-2 persona study.
+                    "steps": [
+                        "exasol_profile_create_local",
+                        "exasol_profile_validate",
+                        "app_create_exasol_dashboard",
+                        "app_validate",
+                        "app_deploy_draft",
+                    ],
                 },
                 {
                     "name": "create_exasol_dashboard_with_external_mcp",
@@ -690,7 +706,17 @@ class ResourcesMixin:
                 },
                 {
                     "name": "manual_revision_control",
-                    "steps": ["app_validate", "app_build", "app_start_preview", "app_promote_revision"],
+                    # PS27-BUG-011: this used to skip straight from app_start_preview to
+                    # app_promote_revision, omitting the healthcheck gate every other
+                    # documented practice (and this project's own persona studies) treats
+                    # as mandatory between previewing a revision and promoting it live.
+                    "steps": [
+                        "app_validate",
+                        "app_build",
+                        "app_start_preview",
+                        "app_run_healthcheck",
+                        "app_promote_revision",
+                    ],
                 },
                 {
                     "name": "diagnose_failure",

@@ -24,6 +24,16 @@ REQUIREMENTS_FILENAME = "requirements.txt"
 def is_artifact_source_part(relative: Path) -> bool:
     """Whether a path relative to an artifact root is a real source file (not build cruft)."""
 
+    # PS27-BUG-003: an app's own import-time code can create arbitrary binary files in
+    # its workspace as a side effect (e.g. a diskcache.Cache() sqlite file, needed for
+    # the background-callback pattern) - these used to fall through this filter and
+    # then crash `read_all_files()` with an unhandled UnicodeDecodeError trying to read
+    # them as UTF-8 text. No hosted-app source file is legitimately dot-prefixed, so
+    # excluding every hidden file/directory (the conventional home for exactly this
+    # class of generated cache/tool cruft) covers this - and any other hidden
+    # tool-generated artifact - in one general rule rather than an enumerated list.
+    if any(part.startswith(".") for part in relative.parts):
+        return False
     return "__pycache__" not in relative.parts and relative.suffix != ".pyc"
 
 

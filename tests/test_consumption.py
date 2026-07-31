@@ -359,6 +359,68 @@ def test_ps26_bug014_app_validate_warns_early_when_exports_are_disabled_server_w
     assert summary["warning_count"] >= 1
 
 
+def test_ps27_bug009_app_export_create_accepts_view_formats_at_the_schema_level(app, client) -> None:
+    """PS27-BUG-009 regression: `app_export_create`'s format schema used to hardcode
+    `enum: ["csv", "xlsx"]`, so a "view" kind output's own advertised
+    `allowed_formats` (pdf/png/pptx, per `app_outputs_list`'s policy) were structurally
+    unreachable through the only tool that could ever act on them - rejected with a
+    generic `tool_validation_error` before the already-correct, format-availability-
+    aware check in `ConsumptionService.create_export` ever ran. The schema must now
+    accept every format the consumption contract supports, and delegate "is this
+    format actually executable for this output" to that existing, more specific check.
+    """
+
+    create_response = _call_tool(
+        client,
+        "app_create_from_files",
+        {
+            "name": "view-output-app",
+            "title": "View Output App",
+            "consumption": {
+                "outputs": [
+                    {
+                        "id": "dashboard-snapshot",
+                        "title": "Dashboard snapshot",
+                        "description": "A PDF snapshot of the live dashboard.",
+                        "kind": "view",
+                        "source": {"type": "dash_route", "path": "/"},
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": False,
+                        },
+                        "formats": ["pdf", "png"],
+                        "classification": "internal",
+                    }
+                ]
+            },
+            "files": [{"path": "app.py", "content": _APP_PY}],
+        },
+    )
+    assert create_response.get_json()["result"]["isError"] is False
+
+    outputs = _call_tool(client, "app_outputs_list", {"name": "view-output-app"}).get_json()["result"][
+        "structuredContent"
+    ]
+    format_availability = outputs["outputs"][0]["policy"]["format_availability"]
+    assert format_availability["pdf"]["reason"] in {"exports_disabled", "renderer_not_available"}
+
+    export_response = _call_tool(
+        client,
+        "app_export_create",
+        {"name": "view-output-app", "output_id": "dashboard-snapshot", "format": "pdf", "parameters": {}},
+    )
+    result = export_response.get_json()["result"]
+    assert result["isError"] is True
+    error = result["structuredContent"]["error"]
+    # The request must fail for a *governance* reason (exports off, or the view
+    # renderer not yet implemented) - never a schema-level "'pdf' is not one of
+    # ['csv', 'xlsx']" rejection, which is what this bug produced unconditionally.
+    assert error["category"] in {"consumption_exports_disabled", "consumption_format_unavailable"}
+    assert error["category"] != "tool_validation_error"
+
+
 def test_contract_rejects_unsafe_source_and_unknown_parameter_schema_features():
     data_sources = {"primary": {"kind": "exasol", "profile": "analytics-prod"}}
     with pytest.raises(DashServerError) as unsafe_path:

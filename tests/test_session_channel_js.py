@@ -131,6 +131,71 @@ def test_an_explicit_return_still_works() -> None:
     assert result["eval_mode"] == "statements"
 
 
+def test_ps27_bug013_semicolon_joined_one_liner_trailing_expression_is_returned() -> None:
+    """PS27-BUG-013 / round-1 finding, now actually fixed rather than just documented:
+    multiple statements semicolon-joined onto one physical line used to make the
+    trailing expression unreachable (the old detector only ever looked at "the last
+    physical line" as a whole, and wrapping several semicolon-separated statements in
+    one `return (...)` is invalid syntax) - it silently fell through to `statements`
+    mode and returned `undefined` with no error. A real, top-level-`;`-aware scan must
+    now find the true trailing expression regardless of line layout.
+    """
+
+    result = _result("console.log('a'); console.warn('b'); 42")
+    assert result["ok"] is True
+    assert result["value"] == 42
+    assert result["eval_mode"] == "last_line"
+
+
+def test_ps27_bug007_a_multiline_trailing_expression_is_returned() -> None:
+    """PS27-BUG-007: a trailing expression that itself spans multiple physical lines
+    (a wrapped array literal is the common real-world shape) used to be split at
+    exactly the wrong point - "the last physical line" was only the closing `]`,
+    which isn't a valid expression on its own - falling through to `statements` mode
+    and silently returning `undefined`.
+    """
+
+    code = "const parts = [1, 2, 3];\n[\n  parts.length,\n  parts[0]\n]"
+    result = _result(code)
+    assert result["ok"] is True
+    assert result["value"] == [3, 1]
+    assert result["eval_mode"] == "last_line"
+
+
+def test_ps27_bug007_a_multiline_trailing_expression_after_a_semicolon_joined_prefix() -> None:
+    """Both known failure shapes combined: semicolon-joined statements *and* a
+    multi-line trailing expression in the same script."""
+
+    code = "const a = 1; const b = 2;\n({\n  sum: a + b,\n  product: a * b\n})"
+    result = _result(code)
+    assert result["ok"] is True
+    assert result["value"] == {"sum": 3, "product": 2}
+    assert result["eval_mode"] == "last_line"
+
+
+def test_ps27_bug007_a_semicolon_inside_a_string_is_not_mistaken_for_a_statement_boundary() -> None:
+    result = _result("const label = 'a;b;c';\n({label: label, len: label.length})")
+    assert result["ok"] is True
+    assert result["value"] == {"label": "a;b;c", "len": 5}
+    assert result["eval_mode"] == "last_line"
+
+
+def test_ps27_bug007_a_semicolon_inside_a_template_literal_interpolation_is_not_a_boundary() -> None:
+    code = "const n = 3;\n`total: ${(function () { const x = n; return x + 1; })()};done`"
+    result = _result(code)
+    assert result["ok"] is True
+    assert result["value"] == "total: 4;done"
+    assert result["eval_mode"] == "last_line"
+
+
+def test_ps27_bug007_a_trailing_expression_with_a_nested_function_containing_semicolons() -> None:
+    code = "const helper = function () { const a = 1; const b = 2; return a + b; };\nhelper() * 10"
+    result = _result(code)
+    assert result["ok"] is True
+    assert result["value"] == 30
+    assert result["eval_mode"] == "last_line"
+
+
 def test_a_last_line_starting_with_a_keyword_is_not_mistaken_for_an_expression() -> None:
     """Guards the word-boundary fix: `format(...)` must not read as the `for` keyword."""
 
@@ -406,6 +471,103 @@ def test_ctx_wait_for_idle_returns_promptly_when_no_callbacks_are_running() -> N
     assert idle["inflight"] == 0
     assert idle["fired"] == []
     assert idle["timed_out"] is True, "no callback traffic ever settled, which is reported honestly"
+
+
+def test_ps27_bug004_wait_for_idle_detects_an_inline_clientside_callback_settling() -> None:
+    """PS27-BUG-004 regression: `waitForIdle` used to watch `fetch` traffic exclusively,
+    so a reactive chain driven entirely by a `clientside_callback` (registered under
+    `dash_clientside._dashprivate_clientside_funcs`, the inline-string form) never set
+    `lastSettle` - the full requested timeout always elapsed even when the update had
+    completed instantly. Simulates the real-world shape: the function fires shortly
+    after `waitForIdle` starts polling (as it would after a real `ctx.setProps` kicks
+    off Dash's reactive dispatch), not before.
+    """
+
+    code = (
+        "window.dash_clientside._dashprivate_clientside_funcs = "
+        "{myhash: function (v) { return v + 1; }};"
+        "const p = ctx.waitForIdle(3000);"
+        "setTimeout(function () { "
+        "window.dash_clientside._dashprivate_clientside_funcs.myhash(41); "
+        "}, 30);"
+        "return await p;"
+    )
+    result = _result(code)
+
+    idle = result["value"]
+    assert idle["timed_out"] is False, "a clientside-only settle must resolve before the full timeout"
+    assert idle["idle_after_ms"] < 3000
+    assert idle["fired"] == ["clientside:myhash"]
+
+
+def test_ps27_bug004_wait_for_idle_detects_a_namespaced_clientside_callback_settling() -> None:
+    code = (
+        "window.dash_clientside.myns = {echo: function (v) { return v; }};"
+        "const p = ctx.waitForIdle(3000);"
+        "setTimeout(function () { window.dash_clientside.myns.echo('hi'); }, 30);"
+        "return await p;"
+    )
+    result = _result(code)
+
+    idle = result["value"]
+    assert idle["timed_out"] is False
+    assert idle["fired"] == ["clientside:myns.echo"]
+
+
+def test_ps27_bug010_ctx_plots_reads_the_id_off_the_dash_assigned_wrapper() -> None:
+    """PS27-BUG-010 regression: `readPlots()` used to read `.id` directly off the
+    `.js-plotly-plot` div, but that node is Plotly's own inner element and never
+    carries the Dash-assigned id - `dcc.Graph(id="trend-chart")` renders a wrapper
+    `<div id="trend-chart">` containing an id-less `.js-plotly-plot` child, confirmed
+    against a real rendered page. Every plot's documented `id` field came back `null`
+    regardless of the component's real id. Fakes the two-level DOM shape directly
+    (this file's harness stubs `document.querySelectorAll` to `[]` since Plotly graph
+    divs normally need a real browser - overriding it here is enough to exercise the
+    id-walking logic itself without one).
+    """
+
+    code = (
+        "document.querySelectorAll = function (selector) {"
+        "  if (selector !== '.js-plotly-plot') { return []; }"
+        "  var wrapper = {id: 'trend-chart', parentElement: null};"
+        "  var inner = {"
+        "    id: '',"
+        "    parentElement: wrapper,"
+        "    data: [{type: 'scatter'}],"
+        "    _fullLayout: {},"
+        "    layout: {}"
+        "  };"
+        "  return [inner];"
+        "};"
+        "return ctx.plots();"
+    )
+    result = _result(code)
+
+    plots = result["value"]
+    assert len(plots) == 1
+    assert plots[0]["id"] == "trend-chart"
+
+
+def test_ps27_bug010_ctx_plots_walks_past_multiple_id_less_ancestors() -> None:
+    code = (
+        "document.querySelectorAll = function (selector) {"
+        "  if (selector !== '.js-plotly-plot') { return []; }"
+        "  var namedAncestor = {id: 'chart-container', parentElement: null};"
+        "  var idLessWrapper = {id: '', parentElement: namedAncestor};"
+        "  var inner = {"
+        "    id: '',"
+        "    parentElement: idLessWrapper,"
+        "    data: [],"
+        "    _fullLayout: {},"
+        "    layout: {}"
+        "  };"
+        "  return [inner];"
+        "};"
+        "return ctx.plots();"
+    )
+    result = _result(code)
+
+    assert result["value"][0]["id"] == "chart-container"
 
 
 def test_console_output_during_a_command_is_captured() -> None:

@@ -225,6 +225,44 @@ def test_app_deploy_draft_runs_validate_build_and_promote_in_one_step(client):
     assert "App Callback Revision" in one_shot_texts
 
 
+def test_ps27_bug006_app_deploy_draft_mounts_a_never_started_app_before_healthchecking_it(client):
+    """PS27-BUG-006 regression: `app_deploy_draft` used to call `promote_revision` (which
+    only updates `current_revision_number`, it never mounts a stopped app) and then
+    immediately healthcheck the app - so a brand-new app created with
+    `start_immediately=false` (never started) always failed its post-deploy healthcheck
+    with `auto_rollback_on_health_failure=true`, and had nothing valid to roll back to
+    since this was revision 1. `app_deploy_draft` must now mount the app itself before
+    healthchecking when the target is live and the app isn't already running.
+    """
+
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_create",
+            "arguments": {"bundle": {"name": "cold-start-deploy"}, "start_immediately": False},
+        },
+        request_id=140,
+    )
+
+    deploy_response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_deploy_draft",
+            "arguments": {"name": "cold-start-deploy", "auto_rollback_on_health_failure": True},
+        },
+        request_id=141,
+    )
+    assert deploy_response.status_code == 200
+    deploy_result = deploy_response.get_json()["result"]
+    assert deploy_result["isError"] is False
+    payload = deploy_result["structuredContent"]
+    assert payload["app"]["mounted"] is True
+    assert payload["health"]["health"]["status"] == "healthy"
+    assert client.get("/apps/cold-start-deploy").status_code == 200
+
+
 @pytest.mark.slow
 def test_app_build_force_clean_bypasses_cached_dependency_state(app, client, monkeypatch):
     installer = app.extensions["dependency_installer"]

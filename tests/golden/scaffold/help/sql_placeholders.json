@@ -3,7 +3,8 @@
     "Using :name like SQLAlchemy or psycopg2; pyexasol does not recognize it.",
     "Using %s or %(name)s; pyexasol does not recognize it.",
     "Writing AS VALUE (or AS COUNT, AS SUM, AS TYPE, AS KEY) without quoting. These are reserved in Exasol.",
-    "Treating '' the same as NULL; in Exasol they are equivalent for equality, which can produce zero rows from a 'show-all' filter."
+    "Treating '' the same as NULL; in Exasol they are equivalent for equality, which can produce zero rows from a 'show-all' filter.",
+    "Hardcoding a literal list of 'all known values' as the empty-selection fallback for an IN (...) filter, instead of querying SELECT DISTINCT live - the literal list silently stops covering reality as soon as the column gains a new value."
   ],
   "placeholders": [
     {
@@ -78,7 +79,9 @@
     "Never write :name placeholders. Exasol rejects them with 0A000 / 'Feature not supported: host parameter specification'.",
     "Parameterized queries in queries/*.sql need sample values in queries/sql_smoke.json before live promotion can pass SQL smoke preflight.",
     "Reserved identifiers in AS clauses must be quoted. Common offenders include: VALUE, COUNT, SUM, KEY, TYPE, NAME, STATUS, DAY, MONTH, YEAR, LEVEL, ORDER, GROUP, USER, ROLE, SESSION, TIME, ZONE. Quote with double quotes: AS \"VALUE\".",
-    "Empty Python strings substitute to NULL. Branch on None/'' in Python rather than relying on '= ''' filters."
+    "Empty Python strings substitute to NULL. Branch on None/'' in Python rather than relying on '= ''' filters.",
+    "pyexasol's {name!s}/{name!d} list-placeholder formatting raises 'Trying to format an empty list' when bound to an empty Python list, so an empty-selection filter (\"no value chosen -> show everything\") cannot pass an empty list through - it needs a non-empty stand-in. Do not hardcode that stand-in as a literal list of every known value: a literal list silently goes stale the moment the underlying column gains a new distinct value, and nothing in app_validate/app_build/app_run_healthcheck checks whether a hardcoded value list still matches the live column - confirmed directly (a hardcoded 3-region fallback silently undercounted a 4-region table's true total by 32% with every automated check reporting healthy). Query 'SELECT DISTINCT <column>' live instead of hardcoding the fallback list.",
+    "For a rolling/window-function query, double-check every PARTITION BY in the query lists the same grouping columns as its sibling window functions - a WHERE/GROUP BY typo fails loudly (sql_smoke or a database error), but a PARTITION BY that's missing one grouping column silently merges series that should stay separate and produces a plausible-looking but wrong result with no error anywhere in the validate/build/healthcheck pipeline. Spot-check a rolling/window-function query's output against an independently-computed known case before trusting it."
   ],
   "summary": "How to parameterize SQL files in hosted dashboards. dash-server uses pyexasol's client-side format-style placeholders. SQL-driver-style :name placeholders are NOT supported and produce 'Feature not supported: host parameter specification' from Exasol."
 }

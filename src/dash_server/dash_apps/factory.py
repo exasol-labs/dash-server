@@ -222,6 +222,36 @@ def app_authoring_guide() -> dict[str, Any]:
                 "runs each queries/*.sql file against the bound profile and catches this. Run it "
                 "early rather than trusting app_validate alone for schema correctness.",
             },
+            {
+                "problem": "app_validate fails with callbacks.status: failed and "
+                "missing_layout_ids containing something like "
+                '\'{"index":["ALL"],"type":"my-id"}\'',
+                "cause": "A callback uses a Dash pattern-matching id (Input({'type': ..., "
+                "'index': ALL}, ...) or MATCH/ALLSMALLER) whose concrete components are "
+                "rendered dynamically by another callback, not present in the app's static "
+                "initial layout - the standard Dash idiom for e.g. 'acknowledge one of N "
+                "dynamically-rendered rows'. The response's callbacks.hint field names this "
+                "directly when it applies.",
+                "fix": "Set suppress_callback_exceptions=True in the Dash(__name__, ...) "
+                "constructor. This is expected and safe for this pattern - it does not "
+                "suppress genuine errors in registered callbacks, only the layout-presence "
+                "check for ids Dash can't yet see in the initial render.",
+            },
+            {
+                "problem": "A dashboard's 'no filter selected -> show everything' KPI is "
+                "quietly wrong (undercounts or overcounts), even though app_validate, "
+                "app_build, and app_run_healthcheck all report healthy",
+                "cause": "pyexasol's {name!s}/{name!d} list-placeholder formatting raises on "
+                "an empty Python list, so an empty-selection filter can't pass one through - a "
+                "common fix is a hardcoded stand-in list of 'every known value' for the "
+                "IN (...) clause. That literal list silently stops covering reality the moment "
+                "the underlying column gains a new distinct value - confirmed directly: a "
+                "hardcoded 3-region fallback undercounted a table that grew a 4th region by "
+                "32%, with every automated check reporting healthy throughout, since none of "
+                "them check whether a hardcoded value list still matches live data.",
+                "fix": "Query 'SELECT DISTINCT <column>' live instead of hardcoding the "
+                "fallback list for an empty-selection filter.",
+            },
         ],
         "recommended_workflow": [
             "Use app_create for a starter app or app_create_from_files for source bootstrap.",

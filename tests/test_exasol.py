@@ -1121,6 +1121,75 @@ def test_ps26_bug001_statement_timeout_seconds_coerces_and_tolerates_bad_values(
     assert ExasolConnectionManager.statement_timeout_seconds(none_profile) is None
 
 
+def test_ps27_bug001_connection_idle_timeout_seconds_coerces_and_tolerates_bad_values() -> None:
+    good = _profile(tls_verify=False, query_defaults={"connection_idle_timeout_seconds": 45})
+    assert ExasolConnectionManager.connection_idle_timeout_seconds(good) == 45
+
+    missing = _profile(tls_verify=False, query_defaults={})
+    assert ExasolConnectionManager.connection_idle_timeout_seconds(missing) == 300
+
+    bogus = _profile(tls_verify=False, query_defaults={"connection_idle_timeout_seconds": "not-a-number"})
+    assert ExasolConnectionManager.connection_idle_timeout_seconds(bogus) == 300
+
+    none_profile = _profile(tls_verify=False, query_defaults=None)
+    assert ExasolConnectionManager.connection_idle_timeout_seconds(none_profile) == 300
+
+
+def test_ps27_bug001_connect_evicts_a_connection_idle_past_the_timeout(tmp_path, monkeypatch) -> None:
+    """PS27-BUG-001 regression: `ExasolConnectionManager.connect()` used to cache one
+    connection per (profile, thread) forever, releasing it only via incidental
+    error-triggered invalidation - never proactively. Under real concurrent load this
+    exhausted Exasol Personal's connection license for 25-30 minutes at a stretch. A
+    cached connection idle longer than `connection_idle_timeout_seconds` must now be
+    closed and replaced by the next `connect()` call rather than reused.
+    """
+    monkeypatch.setenv("EXA_PASSWORD", "test")
+    fake = _ConnectKwargsCapture()
+    cm = ExasolConnectionManager(
+        ExasolSecretStore(str(tmp_path)),
+        connector_loader=lambda: fake,
+    )
+    profile = _profile(tls_verify=False, query_defaults={"connection_idle_timeout_seconds": 5})
+
+    fake_now = [1000.0]
+    monkeypatch.setattr("dash_server.exasol.connection_manager.time.monotonic", lambda: fake_now[0])
+
+    first = cm.connect(profile)
+    assert len(fake.connect_calls) == 1
+
+    fake_now[0] += 2  # well within the 5s idle timeout
+    assert cm.connect(profile) is first
+    assert len(fake.connect_calls) == 1, "still-fresh connection must be reused, not reopened"
+
+    fake_now[0] += 10  # now past the 5s idle timeout
+    second = cm.connect(profile)
+    assert second is not first, "an idle-past-timeout connection must be evicted and replaced"
+    assert len(fake.connect_calls) == 2
+
+
+def test_ps27_bug001_connect_refreshes_last_used_on_every_reuse(tmp_path, monkeypatch) -> None:
+    """A connection must not be evicted just because it was opened long ago - only
+    because it has been *unused* longer than the idle timeout. Touching it via
+    `connect()` resets the idle clock.
+    """
+    monkeypatch.setenv("EXA_PASSWORD", "test")
+    fake = _ConnectKwargsCapture()
+    cm = ExasolConnectionManager(
+        ExasolSecretStore(str(tmp_path)),
+        connector_loader=lambda: fake,
+    )
+    profile = _profile(tls_verify=False, query_defaults={"connection_idle_timeout_seconds": 5})
+
+    fake_now = [1000.0]
+    monkeypatch.setattr("dash_server.exasol.connection_manager.time.monotonic", lambda: fake_now[0])
+
+    first = cm.connect(profile)
+    for _ in range(4):
+        fake_now[0] += 3  # each step is under the timeout, but 4 steps sum to more than it
+        assert cm.connect(profile) is first
+    assert len(fake.connect_calls) == 1, "repeated use within the timeout must never evict"
+
+
 def test_ps26_bug001_sql_smoke_passes_profile_statement_timeout_to_uncached_connect(tmp_path, monkeypatch) -> None:
     """The SQL-smoke preflight's one-shot probe connection should honor the same
     configured timeout as the runtime path, so a query that would hang forever in a
@@ -1418,6 +1487,27 @@ def test_sql_placeholders_help_resource_is_reachable(app, client) -> None:
     assert "{name!s}" in syntaxes or "{name} or {name!s}" in syntaxes
     assert any("Feature not supported: host parameter" in rule for rule in payload["rules"])
     assert any("queries/sql_smoke.json" in rule for rule in payload["rules"])
+
+    # PS27 round-2 synthesis recommendation R1: warn against hardcoding an "all known
+    # values" fallback list for an empty-selection IN (...) filter, since nothing in
+    # app_validate/app_build/app_run_healthcheck checks whether it still matches live
+    # data - confirmed to silently undercount a real dashboard's KPI by 32%.
+    assert any("SELECT DISTINCT" in rule and "stale" in rule for rule in payload["rules"])
+    assert any("SELECT DISTINCT" in mistake for mistake in payload["common_mistakes"])
+
+    # R2: nothing in the pipeline checks a window function's semantic plausibility, so
+    # the guide should at least prompt an author to spot-check one manually.
+    assert any("PARTITION BY" in rule for rule in payload["rules"])
+
+
+def test_ps27_r1_app_authoring_guide_documents_the_hardcoded_fallback_list_pitfall(app, client) -> None:
+    guide = _resource_json(client, "dash://meta/app-authoring-guide", request_id=911)
+    entry = next(
+        (item for item in guide["common_failures"] if "empty-selection" in item.get("cause", "")),
+        None,
+    )
+    assert entry is not None, "app-authoring-guide must document the hardcoded-fallback-list pitfall"
+    assert "SELECT DISTINCT" in entry["fix"]
 
 
 def _create_sql_smoke_profile(client, *, request_id: int) -> None:

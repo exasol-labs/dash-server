@@ -711,12 +711,22 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         handler='_tool_app_export_create',
         app_capability=DASHBOARD_EXPORT,
         title='Create dataset export',
-        description='Queue a governed CSV or XLSX export from a registered output on the current live revision.',
+        description=(
+            'Queue a governed export from a registered output on the current live '
+            'revision. Accepts any format the consumption contract supports '
+            '(csv, xlsx for dataset outputs; pdf, png, pptx for view outputs), but '
+            "only dataset formats are currently executable - a view output's formats "
+            'are structurally valid here yet always fail with '
+            'consumption_format_unavailable (reason renderer_not_available) until view '
+            'rendering ships. Check app_outputs_list\'s per-format '
+            'policy.format_availability before queuing to see which formats are '
+            'actually executable right now.'
+        ),
         input_schema={'type': 'object',
          'properties': {'name': {'type': 'string', 'description': 'Hosted app name.'},
                         'output_id': {'type': 'string',
                                       'description': 'Registered dataset output id.'},
-                        'format': {'type': 'string', 'enum': ['csv', 'xlsx']},
+                        'format': {'type': 'string', 'enum': ['csv', 'xlsx', 'pdf', 'png', 'pptx']},
                         'parameters': {'type': 'object',
                                        'description': 'Values allowed by the output parameter '
                                                       'schema.'},
