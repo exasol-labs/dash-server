@@ -51,7 +51,7 @@ def app_create_schema_help() -> dict[str, Any]:
         ),
         "template_guide": {
             "metric-cards": "Generic Dash starter with simple metric cards and no profile-bound SQL helpers.",
-            "exasol-analytics": "Profile-bound Exasol scaffold with SQL files and runtime helpers. Prefer app_create_exasol_dashboard or app_scaffold_from_schema for this path.",
+            "exasol-analytics": "Profile-bound Exasol scaffold with SQL files and runtime helpers. Pass this template to app_create_from_files to have dash_server_exasol.py injected beside your own files.",
         },
         "required_shape": {
             "metadata_bundle": {
@@ -174,7 +174,7 @@ def app_authoring_guide() -> dict[str, Any]:
             "For Exasol-backed apps, do not call pyexasol.connect(...) directly from app code.",
         ],
         "exasol_rules": [
-            "Prefer app_create_exasol_dashboard when starting an Exasol-backed app.",
+            "For an Exasol-backed app you have designed, use app_create_from_files with template=exasol-analytics; the server injects dash_server_exasol.py. app_create_exasol_dashboard and app_scaffold_from_schema are for prebuilt patterns and schema exploration.",
             "If an external Exasol MCP server is available, use it for schema discovery and SQL design, not for runtime execution inside the hosted app.",
             "If editing an Exasol-backed app, keep the profile name in dash-app.json and let dash_server_exasol.py or server-side helpers execute queries.",
             "Do not read EXASOL_* or EXA_* credential environment variables in app code.",
@@ -254,7 +254,8 @@ def app_authoring_guide() -> dict[str, Any]:
             },
         ],
         "recommended_workflow": [
-            "Use app_create for a starter app or app_create_from_files for source bootstrap.",
+            "Use app_create_from_files when you have already designed the dashboard - it is the shortest path and, with template=exasol-analytics, still injects dash_server_exasol.py. Use app_create only for a metadata-only starter.",
+            "Use app_scaffold_from_schema to explore an unfamiliar Exasol schema, not as the default creation path: it emits 12 files for you to triage.",
             "Use metric-cards for generic dashboard starters and exasol-analytics for profile-bound Exasol scaffolds.",
             "Use app_put_files or app_patch_file to edit the draft workspace.",
             "Run app_validate until validation passes.",
