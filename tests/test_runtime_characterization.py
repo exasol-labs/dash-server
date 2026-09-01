@@ -36,6 +36,7 @@ def test_run_healthcheck_shape(make_app) -> None:
         "dash_layout",
         "dash_dependencies",
         "static_assets",
+        "callback_execution",
         "data_layer",
         "sql_smoke",
         "worker_alive",
@@ -48,6 +49,9 @@ def test_run_healthcheck_shape(make_app) -> None:
         ("dash_layout", "passed"),
         ("dash_dependencies", "passed"),
         ("static_assets", "passed"),
+        # The seeded demo app's callback is really executed via
+        # _dash-update-component, not merely GET-probed.
+        ("callback_execution", "passed"),
         ("data_layer", "passed"),
         ("sql_smoke", "not_applicable"),
         ("worker_alive", "not_applicable"),

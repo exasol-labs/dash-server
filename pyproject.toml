@@ -169,6 +169,7 @@ ignore_missing_imports = true
 module = [
   "dash_server.timestamps",
   "dash_server.diagnostics.*",
+  "dash_server.runtime.callback_probe",
   "dash_server.runtime.dispatcher",
   "dash_server.runtime.worker_manager",
   "dash_server.runtime.worker_proxy",

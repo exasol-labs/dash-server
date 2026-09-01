@@ -1,14 +1,16 @@
 """Health-probe suite for :class:`AppRuntimeService`.
 
 ``HealthProber`` owns the runtime health probes (HTTP readiness, Dash layout/
-dependencies, static assets, data-layer, SQL smoke, and the isolated-worker
-liveness/HTTP probes) plus the small helpers that assemble the HTTP probe suite
-and downgrade the overall status. The service keeps ``run_healthcheck`` /
-``preflight_revision`` and delegates the individual probes here.
+dependencies, static assets, callback execution, data-layer, SQL smoke, and the
+isolated-worker liveness/HTTP probes) plus the small helpers that assemble the
+HTTP probe suite and downgrade the overall status. The service keeps
+``run_healthcheck`` / ``preflight_revision`` and delegates the individual probes
+here.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +18,12 @@ from werkzeug.test import Client as WSGIClient
 from werkzeug.wrappers import Response as WSGIResponse
 
 from dash_server.registry.models import AppRevision
+
+from . import callback_probe
+
+# Enough of a non-JSON error body to identify the fault, not enough to bloat a
+# stored health record with a full HTML error page.
+_MAX_PROBE_BODY_BYTES = 4000
 
 if TYPE_CHECKING:
     from .service import AppRuntimeService
@@ -28,7 +36,7 @@ class HealthProber:
         self.svc = svc
 
     def _run_http_probe_suite(self, mount_path: str) -> tuple[list[dict[str, Any]], str]:
-        """Run the four HTTP probes against a mounted app; return (probes, overall)."""
+        """Run the HTTP probe suite against a mounted app; return (probes, overall)."""
 
         homepage_probe = self._http_probe(
             mount_path,
@@ -58,16 +66,33 @@ class HealthProber:
         layout_probe["name"] = "dash_layout"
         dependency_probe["name"] = "dash_dependencies"
         asset_probe["name"] = "static_assets"
+
+        # Only worth firing callbacks once we know the two endpoints they are
+        # reconstructed from actually answer; otherwise the probe would report a
+        # fetch failure the suite has already reported better.
+        if layout_probe["status"] == "passed" and dependency_probe["status"] == "passed":
+            execution_probe = self._callback_execution_probe(mount_path)
+        else:
+            execution_probe = self._skipped_probe(
+                "callback_execution",
+                "Skipped because the layout or dependencies endpoint did not answer.",
+            )
+        probes.append(execution_probe)
+        # A failed callback downgrades rather than condemns, matching how `sql_smoke`
+        # treats the same class of fault: the shell is up and serving, one or more
+        # callbacks are not. `_downgrade` leaves an already-unhealthy suite alone.
+        overall_status = self._downgrade(overall_status, execution_probe)
         return probes, overall_status
 
     def _skipped_http_probes(self, message: str) -> list[dict[str, Any]]:
-        """The four HTTP probes marked skipped with ``message`` (name-carrying)."""
+        """The HTTP probe suite marked skipped with ``message`` (name-carrying)."""
 
         return [
             self._skipped_probe("http_ready", message),
             self._skipped_probe("dash_layout", message),
             self._skipped_probe("dash_dependencies", message),
             self._skipped_probe("static_assets", message),
+            self._skipped_probe("callback_execution", message),
         ]
 
     @staticmethod
@@ -168,6 +193,169 @@ class HealthProber:
             f"Asset returned {asset_response.status_code}.",
             details={"path": asset_path, "status_code": asset_response.status_code},
         )
+
+    def _callback_execution_probe(self, mount_path: str) -> dict[str, Any]:
+        """Execute the app's initial-render callbacks and report what came back.
+
+        This is the only probe in the suite that runs the app's own Python. It
+        reconstructs the burst of ``_dash-update-component`` requests a browser sends
+        on first paint - see :mod:`dash_server.runtime.callback_probe` for how the
+        request bodies are rebuilt - and then asserts two things per callback: that
+        Dash did not answer with an error, and that the rendered output does not
+        carry a data-layer error envelope.
+
+        Statuses, and why each one is what it is:
+
+        ``not_applicable``
+            The app registers no callbacks. A static dashboard is not unhealthy.
+        ``skipped``
+            Nothing could be executed - the endpoints did not answer, or every
+            callback was one the probe deliberately does not fire. ``details``
+            names each one and the reason, because a probe that quietly proves
+            nothing is worse than one that admits it.
+        ``failed``
+            At least one callback errored. ``first_failed_callback`` names it.
+        ``passed``
+            At least one callback ran and none failed.
+
+        Bounded on purpose: at most
+        :data:`~dash_server.runtime.callback_probe.MAX_CALLBACKS` callbacks, and no
+        new request is started once
+        :data:`~dash_server.runtime.callback_probe.TIME_BUDGET_SECONDS` has elapsed.
+        The budget caps how many requests the probe starts, not how long a single one
+        may block - an individual callback is bounded by whatever bounds the live
+        route, so a callback that hangs for a browser hangs here too. That is the
+        honest answer rather than a probe-only timeout that would report a healthy
+        app as broken.
+        """
+
+        client = WSGIClient(self.svc.dispatcher, WSGIResponse)
+
+        dependencies, fetch_error = self._fetch_probe_json(
+            client, f"{mount_path}/_dash-dependencies"
+        )
+        if fetch_error is not None:
+            return self._skipped_probe("callback_execution", fetch_error)
+        if not isinstance(dependencies, list) or not dependencies:
+            return {
+                "name": "callback_execution",
+                "status": "not_applicable",
+                "details": {
+                    "reason": "no_callbacks",
+                    "message": (
+                        "The app registers no @app.callback, so there is nothing to execute."
+                    ),
+                    "mount_path": mount_path,
+                },
+            }
+
+        layout, fetch_error = self._fetch_probe_json(client, f"{mount_path}/_dash-layout")
+        if fetch_error is not None:
+            return self._skipped_probe("callback_execution", fetch_error)
+
+        layout_props = callback_probe.index_layout_props(layout)
+        plans, skipped = callback_probe.plan_callbacks(dependencies, layout_props)
+
+        outcomes: list[callback_probe.CallbackOutcome] = []
+        deadline = time.monotonic() + callback_probe.TIME_BUDGET_SECONDS
+        for index, plan in enumerate(plans):
+            if time.monotonic() >= deadline:
+                skipped.extend(
+                    callback_probe.SkippedCallback(
+                        output=remaining.output,
+                        reason="time_budget_exhausted",
+                        detail=f"Stopped after executing {len(outcomes)} callback(s).",
+                    )
+                    for remaining in plans[index:]
+                )
+                break
+            outcomes.append(self._post_callback(client, mount_path, plan))
+
+        details = callback_probe.summarize(outcomes, skipped)
+        details["mount_path"] = mount_path
+        details["callbacks_registered"] = len(dependencies)
+
+        if any(not outcome.ok for outcome in outcomes):
+            details["message"] = (
+                f"Callback {details['first_failed_callback']} failed when executed. "
+                "The route, layout and asset probes cannot see this: the page serves, "
+                "then errors on render."
+            )
+            return {"name": "callback_execution", "status": "failed", "details": details}
+
+        if not outcomes:
+            details["message"] = (
+                "No callback was executed, so nothing about this app's callbacks is "
+                "proven. See details.skipped for the per-callback reason."
+            )
+            return {"name": "callback_execution", "status": "skipped", "details": details}
+
+        details["message"] = (
+            f"Executed {len(outcomes)} callback(s) via _dash-update-component with no errors."
+        )
+        return {"name": "callback_execution", "status": "passed", "details": details}
+
+    def _post_callback(
+        self,
+        client: WSGIClient,
+        mount_path: str,
+        plan: callback_probe.CallbackPlan,
+    ) -> callback_probe.CallbackOutcome:
+        """POST one planned callback and classify the answer.
+
+        Every exception becomes a failed outcome. A health check that raises because
+        the app it is checking is broken would be its own bug - and an app whose
+        callback raises is precisely what this probe exists to catch.
+        """
+
+        try:
+            response = client.post(
+                f"{mount_path}/_dash-update-component",
+                json=plan.body,
+            )
+        # Broad on purpose: the app under test may raise anything at all.
+        except Exception as exc:
+            return callback_probe.CallbackOutcome(
+                output=plan.output,
+                status_code=0,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        payload: Any = None
+        body_text = ""
+        try:
+            payload = response.get_json(silent=True)
+            if payload is None:
+                body_text = response.get_data(as_text=True)[:_MAX_PROBE_BODY_BYTES]
+        # An unreadable body is a probe finding, not a reason to crash the check.
+        except Exception:
+            payload = None
+        return callback_probe.classify_response(
+            plan.output,
+            response.status_code,
+            payload,
+            body_text=body_text,
+        )
+
+    def _fetch_probe_json(
+        self,
+        client: WSGIClient,
+        path: str,
+    ) -> tuple[Any, str | None]:
+        """GET ``path`` and decode JSON; return ``(payload, None)`` or ``(None, reason)``."""
+
+        try:
+            response = client.get(path)
+        # Broad on purpose - see _post_callback.
+        except Exception as exc:
+            return None, f"Could not read {path}: {type(exc).__name__}: {exc}"
+        if response.status_code != 200:
+            return None, f"{path} returned {response.status_code}."
+        payload = response.get_json(silent=True)
+        if payload is None:
+            return None, f"{path} did not return a JSON body."
+        return payload, None
 
     def _failed_probe(
         self,

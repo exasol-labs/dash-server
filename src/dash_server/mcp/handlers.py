@@ -2053,7 +2053,7 @@ class HandlersMixin:
             {
                 "name": "app_run_healthcheck",
                 "title": "Run app health checks",
-                "description": "Probe the mounted live or preview route, layout endpoint, dependencies endpoint, and static assets.",
+                "description": "Probe the mounted live or preview route, layout endpoint, dependencies endpoint, static assets, and a real callback run via _dash-update-component.",
                 "inputSchema": self._app_healthcheck_schema(),
             },
             {

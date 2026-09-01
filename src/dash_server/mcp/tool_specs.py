@@ -144,7 +144,18 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='app_create_from_files',
         handler='_tool_app_create_from_files',
         title='Create a hosted Dash app from files',
-        description='Create a hosted app and seed its draft workspace from explicit files. Use this when you already have app.py, requirements.txt, or assets. template=metric-cards means a generic starter manifest; template=exasol-analytics means the files should follow the Exasol SQL-helper scaffold shape. Do not embed Exasol credentials or direct pyexasol.connect(...) code in uploaded files; use server-side Exasol profiles instead.',
+        description=(
+            'Create a hosted app and seed its draft workspace from explicit files. '
+            'This is the recommended way to create a dashboard you have already '
+            'designed - pass app.py, dash-app.json, requirements.txt and any '
+            'queries/*.sql in one call. template=metric-cards means a generic '
+            'starter manifest; template=exasol-analytics means the files follow the '
+            'Exasol SQL-helper scaffold shape, and the server auto-injects '
+            'dash_server_exasol.py when you do not supply it - so you get the Exasol '
+            'runtime helper without running app_scaffold_from_schema. Do not embed '
+            'Exasol credentials or direct pyexasol.connect(...) code in uploaded '
+            'files; use server-side Exasol profiles instead.'
+        ),
         input_schema='_app_create_from_files_schema',
         guidance={'next_step': 'Validate the uploaded draft before building or deploying it.',
          'suggested_tools': ['app_read_file', 'app_validate', 'app_deploy_draft'],
@@ -174,10 +185,23 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='app_scaffold_from_schema',
         handler='_tool_app_scaffold_from_schema',
         title='Create a schema-tailored Exasol dashboard',
-        description='Introspect Exasol catalog metadata for a profile, choose analytically useful columns and relationship hints, and generate a tailored exasol-analytics scaffold with business SQL wired to the selected schema and table.',
+        description=(
+            'Explore an unfamiliar Exasol schema: introspect catalog metadata for a '
+            'profile, choose analytically useful columns and relationship hints, and '
+            'generate a tailored exasol-analytics scaffold with business SQL wired to '
+            'the selected schema and table. Use this to discover what is worth '
+            'charting - it emits 12 files, including SCHEMA_NOTES.md and '
+            'catalog-backed queries/business/*.sql, and you keep whichever of them '
+            'are useful. If you already know what the dashboard should be, prefer '
+            'app_create_from_files with template=exasol-analytics: it takes your own '
+            'files, injects dash_server_exasol.py just the same, and skips the '
+            'delete-what-you-did-not-want step.'
+        ),
         input_schema='_app_scaffold_from_schema_schema',
-        guidance={'next_step': 'Inspect SCHEMA_NOTES.md and the generated business SQL, then preview the '
-                      'revision before promoting it live.',
+        guidance={'next_step': 'Inspect SCHEMA_NOTES.md and the generated business SQL for the '
+                      "column choices, then preview the revision before promoting it live. If "
+                      "you are keeping only a little of it, rebuild the app with "
+                      'app_create_from_files rather than deleting files one at a time.',
          'suggested_tools': ['app_read_file',
                              'app_validate',
                              'app_deploy_draft',
@@ -426,11 +450,17 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         title='Run app health checks',
         description=(
             'Probe the mounted live or preview route, layout endpoint, dependencies '
-            'endpoint, static assets, and (for Exasol-backed apps) each queries/*.sql '
-            'file via sql_smoke. A "healthy" result does not mean any @app.callback has '
-            'actually executed: sql_smoke runs SQL files directly, independent of '
-            'app.py, and the other probes are plain GETs. To force a real callback run, '
-            'POST to {mount_path}/_dash-update-component - see '
+            'endpoint, static assets, a real callback run, and (for Exasol-backed apps) '
+            'each queries/*.sql file via sql_smoke. The callback_execution probe '
+            'reconstructs the _dash-update-component requests a browser sends on first '
+            'render and fails when a callback raises OR when it returns HTTP 200 having '
+            'rendered a data-layer error envelope - the case where the page serves and '
+            'then shows the user nothing but an error. Read that probe status before '
+            'trusting a "healthy" result: not_applicable means the app has no '
+            'callbacks, and skipped means none could be run on the initial render '
+            '(details.skipped names each callback and why, e.g. prevent_initial_call or '
+            'a pattern-matching id). To drive one specific callback with your own input '
+            'values, POST to {mount_path}/_dash-update-component - see '
             'dash://meta/app-authoring-guide triggering_callbacks_for_real for the '
             'exact request shape.'
         ),
