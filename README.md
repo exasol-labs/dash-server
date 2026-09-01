@@ -128,7 +128,7 @@ The intended flow is:
 
 1. Start `dash-server` with an Exasol profile already bootstrapped on the server
 2. Let the agent validate or reuse that profile
-3. Generate a scaffold with `app_create_exasol_dashboard` or `app_scaffold_from_schema`
+3. Create the app with `app_create_from_files` (template `exasol-analytics`) once the dashboard is designed — the server injects `dash_server_exasol.py` — or generate a scaffold with `app_scaffold_from_schema` while the schema is still unfamiliar
 4. Let the agent refine the SQL and Dash code
 5. Deploy to `/preview/{name}/{revision}` for review, then promote to `/apps/{name}`
 

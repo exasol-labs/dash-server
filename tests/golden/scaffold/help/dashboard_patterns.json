@@ -1,4 +1,33 @@
 {
+  "choosing_a_creation_path": {
+    "default": "app_create_from_files",
+    "paths": [
+      {
+        "files": [
+          "app.py",
+          "dash-app.json",
+          "requirements.txt",
+          "dash_server_exasol.py"
+        ],
+        "files_emitted": 4,
+        "note": "Pass template=exasol-analytics and the server injects dash_server_exasol.py if you did not supply it, so skipping the scaffold costs you nothing. Add your queries/*.sql in the same call.",
+        "tool": "app_create_from_files",
+        "use_when": "The dashboard is designed: you have written app.py and know which SQL it runs."
+      },
+      {
+        "files_emitted": 12,
+        "note": "An exploration tool. Read SCHEMA_NOTES.md and the generated queries/business/*.sql for the column choices, then keep what is useful. If the app is already designed, most of the 12 files get deleted one app_delete_file call at a time - use app_create_from_files instead.",
+        "tool": "app_scaffold_from_schema",
+        "use_when": "The schema is unfamiliar and you want the server to pick columns, relationship hints and catalog-backed SQL for you."
+      },
+      {
+        "note": "The overview and kpi-trend patterns emit demo SELECT … FROM DUAL stubs, not catalog-backed queries.",
+        "tool": "app_create_exasol_dashboard",
+        "use_when": "You want one of the prebuilt patterns below as-is - analytics-hub or ops-monitor for real SQL."
+      }
+    ],
+    "rule_of_thumb": "Already designed the dashboard? app_create_from_files. Still discovering the schema? app_scaffold_from_schema, then keep what it taught you."
+  },
   "patterns": [
     {
       "best_for": "The default exasol-analytics scaffold: a multi-tab app with system health, query history, and a business analytics placeholder ready for schema-specific SQL.",
@@ -15,7 +44,7 @@
       "sql_kind": "real"
     },
     {
-      "best_for": "Demo-only KPI/detail layout. Use this when you want to look at the layout shape before binding real SQL — the generated `queries/summary.sql` and `queries/detail.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers, not catalog-backed queries. For a real schema-bound scaffold, call `app_scaffold_from_schema` instead.",
+      "best_for": "Demo-only KPI/detail layout. Use this when you want to look at the layout shape before binding real SQL — the generated `queries/summary.sql` and `queries/detail.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers, not catalog-backed queries. For a real dashboard, write it and call `app_create_from_files`; to have the server propose one from the catalog, call `app_scaffold_from_schema`.",
       "generated_files": [
         "queries/summary.sql",
         "queries/detail.sql"
@@ -24,7 +53,7 @@
       "sql_kind": "demo_placeholder"
     },
     {
-      "best_for": "Demo-only KPI + trend + detail layout. Like `overview`, the generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded data. For a real schema-bound trend dashboard, call `app_scaffold_from_schema` (it picks a date column from your schema and emits catalog-backed SQL).",
+      "best_for": "Demo-only KPI + trend + detail layout. Like `overview`, the generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded data. For a real trend dashboard, write it and call `app_create_from_files`; to have the server pick a date column from your schema and emit catalog-backed SQL, call `app_scaffold_from_schema`.",
       "generated_files": [
         "queries/summary.sql",
         "queries/trend.sql",
@@ -46,11 +75,11 @@
       "sql_kind": "real"
     }
   ],
-  "recommendation": "For catalog-bound business dashboards prefer `app_scaffold_from_schema` over `app_create_exasol_dashboard {pattern: kpi-trend/overview}` — the schema-aware path emits real SQL against a chosen table, while `kpi-trend` and `overview` ship demo `SELECT … FROM DUAL` stubs. Use `analytics-hub` as the default Exasol scaffold and `ops-monitor` for database-operations views.",
+  "recommendation": "Default to `app_create_from_files` with template=exasol-analytics. You supply app.py, dash-app.json and requirements.txt; the server injects `dash_server_exasol.py` for you, so the app lands as 4 files and every one of them is used. Reach for `app_scaffold_from_schema` when you do not yet know the data and want the server to introspect the catalog and propose a starting point - it emits 12 files, which is exactly right for exploring and mostly ceremony to delete once the dashboard is already designed. `app_create_exasol_dashboard {pattern: kpi-trend/overview}` ships demo `SELECT … FROM DUAL` stubs and is never a starting point for real data; use `analytics-hub` or `ops-monitor` when their prebuilt SQL is what you actually want.",
   "resource": "dash://exasol/help/dashboard-patterns",
   "summary": "Built-in Exasol dashboard patterns for profile-bound hosted app scaffolds.",
   "template_guide": {
-    "exasol-analytics": "Profile-bound analytical scaffold with SQL files, a runtime helper, and a multi-tab structure designed for live Exasol queries.",
+    "exasol-analytics": "Profile-bound analytical scaffold with SQL files, a runtime helper, and a multi-tab structure designed for live Exasol queries. Also the template to pass to app_create_from_files so your own files get the Exasol runtime helper injected.",
     "metric-cards": "Generic starter app with static metric cards. Use it when you are not building around a live Exasol profile."
   }
 }

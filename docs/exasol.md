@@ -16,6 +16,7 @@ The current Exasol-specific surface includes:
 - `exasol_profiles_list`
 - `exasol_profile_create_local`
 - `exasol_profile_validate`
+- `app_create_from_files` (with `template=exasol-analytics` — the recommended creation path once the dashboard is designed; not Exasol-only, but it injects `dash_server_exasol.py`)
 - `app_create_exasol_dashboard`
 - `app_scaffold_from_schema`
 - `dash://exasol/help/connection-modes`
@@ -86,7 +87,7 @@ By default, `app_create_exasol_dashboard` now generates an `analytics-hub` app w
 - a `Query History` tab wired to `EXA_SQL_LAST_DAY`
 - a `Business Analytics` tab with placeholder SQL the agent can replace
 
-If you already know which schema to target, `app_scaffold_from_schema` will inspect visible Exasol tables and columns, choose a likely analytical table, and seed the business SQL files from that schema.
+When the schema is unfamiliar, `app_scaffold_from_schema` will inspect visible Exasol tables and columns, choose a likely analytical table, and seed the business SQL files from that schema. Treat it as an exploration tool: it emits 12 files, and once you know what the dashboard should be, `app_create_from_files` with `template=exasol-analytics` is the shorter path — it takes your own `app.py` and `queries/*.sql` and still injects `dash_server_exasol.py`.
 
 ## The Important Setup Rule
 

@@ -1791,8 +1791,10 @@ class HandlersMixin:
                 "title": "Create a hosted Dash app from files",
                 "description": (
                     "Create a hosted app and seed its draft workspace from explicit files. "
-                    "Use this when you already have app.py, requirements.txt, or assets. "
-                    "template=metric-cards means a generic starter manifest; template=exasol-analytics means the files should follow the Exasol SQL-helper scaffold shape. "
+                    "This is the recommended way to create a dashboard you have already designed - pass app.py, dash-app.json, "
+                    "requirements.txt and any queries/*.sql in one call. "
+                    "template=metric-cards means a generic starter manifest; template=exasol-analytics means the files follow the Exasol SQL-helper scaffold shape, "
+                    "and the server auto-injects dash_server_exasol.py when you do not supply it - so you get the Exasol runtime helper without running app_scaffold_from_schema. "
                     "Do not embed Exasol credentials or direct pyexasol.connect(...) code in uploaded files; "
                     "use server-side Exasol profiles instead."
                 ),
@@ -1803,8 +1805,10 @@ class HandlersMixin:
                 "title": "Create an Exasol dashboard",
                 "description": (
                     "Generate an Exasol-backed exasol-analytics scaffold from a validated profile and create it as a hosted app. "
-                    "This is the preferred Exasol path because the hosted app only stores a profile reference and the server supplies credentials. "
-                    "The default analytics-hub pattern creates a multi-tab app with system health, query history, and a business analytics placeholder."
+                    "Use this when one of the prebuilt patterns is what you want as-is: the default analytics-hub creates a multi-tab app "
+                    "with system health, query history, and a business analytics placeholder, and ops-monitor covers database operations. "
+                    "If you have already designed the dashboard, prefer app_create_from_files with template=exasol-analytics. "
+                    "Either way the hosted app only stores a profile reference and the server supplies the credentials."
                 ),
                 "inputSchema": self._app_create_exasol_dashboard_schema(),
             },
@@ -1812,8 +1816,11 @@ class HandlersMixin:
                 "name": "app_scaffold_from_schema",
                 "title": "Create a schema-tailored Exasol dashboard",
                 "description": (
-                    "Introspect Exasol catalog metadata for a profile, choose analytically useful columns and relationship hints, "
-                    "and generate a tailored exasol-analytics scaffold with business SQL wired to the selected schema and table."
+                    "Explore an unfamiliar Exasol schema: introspect catalog metadata for a profile, choose analytically useful columns and relationship hints, "
+                    "and generate a tailored exasol-analytics scaffold with business SQL wired to the selected schema and table. "
+                    "Use this to discover what is worth charting - it emits 12 files, including SCHEMA_NOTES.md and catalog-backed queries/business/*.sql, "
+                    "and you keep whichever of them are useful. If you already know what the dashboard should be, prefer app_create_from_files "
+                    "with template=exasol-analytics: it takes your own files, injects dash_server_exasol.py just the same, and skips the delete-what-you-did-not-want step."
                 ),
                 "inputSchema": self._app_scaffold_from_schema_schema(),
             },
