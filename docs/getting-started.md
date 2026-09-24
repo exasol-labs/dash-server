@@ -45,6 +45,11 @@ export DASH_SERVER_EXASOL_DSN='localhost:8563'
 export DASH_SERVER_EXASOL_USER='sys'
 ```
 
+For a `localhost` DSN, TLS certificate verification is off by default, since local Exasol
+installs such as Exasol Personal use a self-signed certificate. For a remote instance with a
+self-signed certificate, also set `DASH_SERVER_EXASOL_TLS_VERIFY='false'`. The full variable
+list is in [exasol.md](exasol.md#fastest-setup-path).
+
 Then start the server:
 
 ```bash

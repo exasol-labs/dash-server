@@ -135,8 +135,8 @@ class HandlersMixin:
             field_name="user",
             tool_name="exasol_profile_create_local",
         )
-        tls_verify = arguments.get("tls_verify", True)
-        if not isinstance(tls_verify, bool):
+        tls_verify = arguments.get("tls_verify")
+        if tls_verify is not None and not isinstance(tls_verify, bool):
             raise self._field_error("exasol_profile_create_local", "tls_verify", "must be a boolean.")
         secret_value = arguments.get("secret_value")
         if secret_value is not None and not isinstance(secret_value, str):

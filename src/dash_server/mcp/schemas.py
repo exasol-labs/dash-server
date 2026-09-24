@@ -74,8 +74,11 @@ class SchemasMixin:
                 },
                 "tls_verify": {
                     "type": "boolean",
-                    "description": "Enable TLS certificate validation. Defaults to true.",
-                    "default": True,
+                    "description": (
+                        "Enable TLS certificate validation (TLS itself is always on). When omitted: "
+                        "false if every DSN host is loopback (localhost/127.0.0.1/::1, where local "
+                        "Exasol installs use self-signed certificates), true otherwise."
+                    ),
                 },
                 "secret_value": {
                     "type": "string",

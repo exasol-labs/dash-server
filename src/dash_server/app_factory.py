@@ -348,7 +348,11 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
         dsn=str(dsn),
         user=str(user),
         description=app.config.get("EXASOL_BOOTSTRAP_DESCRIPTION"),
-        tls_verify=bool(app.config["EXASOL_BOOTSTRAP_TLS_VERIFY"]),
+        tls_verify=(
+            None
+            if app.config.get("EXASOL_BOOTSTRAP_TLS_VERIFY") is None
+            else coerce_bool(app.config["EXASOL_BOOTSTRAP_TLS_VERIFY"])
+        ),
         secret_env_var=str(secret_env_var),
         statement_timeout_seconds=int(app.config["EXASOL_BOOTSTRAP_STATEMENT_TIMEOUT_SECONDS"]),
         row_limit=int(app.config["EXASOL_BOOTSTRAP_ROW_LIMIT"]),

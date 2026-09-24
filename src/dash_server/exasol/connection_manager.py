@@ -45,7 +45,7 @@ def _classify_connection_error(error_text: str) -> dict[str, str] | None:
             "kind": "tls_cert_verify_failed",
             "hint": (
                 "TLS certificate verification failed. If the Exasol instance "
-                "uses a self-signed certificate (Nano, Exasol Community Edition, "
+                "uses a self-signed certificate (Exasol Personal, Nano, Exasol Community Edition, "
                 "or a corporate dev cluster) set tls_verify=false on the profile."
             ),
         }

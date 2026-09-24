@@ -202,7 +202,19 @@ Optional startup settings:
 export DASH_SERVER_EXASOL_DESCRIPTION='Primary analytics database'
 export DASH_SERVER_EXASOL_SECRET_ENV_VAR='EXA_PASSWORD'
 export DASH_SERVER_EXASOL_CREDENTIAL_MODE='password'
+export DASH_SERVER_EXASOL_TLS_VERIFY='false'   # see below
 ```
+
+**TLS certificate verification.** The connection is always TLS-encrypted;
+`DASH_SERVER_EXASOL_TLS_VERIFY` only controls whether the server certificate is verified.
+When it is unset, verification is **off for a loopback DSN** (`localhost`, `127.0.0.1`,
+`::1`) — local Exasol installs such as Exasol Personal ship a self-signed certificate — and
+**on for any other host**. Set it to `false` explicitly for a remote instance with a
+self-signed certificate (for example Exasol Personal deployed to a cloud VM), or `true` to
+force verification on localhost.
+
+All bootstrap variables, including backend, statement timeout, and row limit, are listed in
+[docs/exasol.md](docs/exasol.md#fastest-setup-path).
 
 Then start the server:
 

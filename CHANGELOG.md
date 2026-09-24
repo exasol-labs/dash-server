@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Exasol profiles created without an explicit `tls_verify` (the `DASH_SERVER_EXASOL_TLS_VERIFY`
+  bootstrap variable unset, or `exasol_profile_create_local` called without it) now default to
+  `tls_verify=false` when every DSN host is loopback, and `true` otherwise. The README's
+  bootstrap block (`localhost:8563`) now connects to Exasol Personal's self-signed certificate
+  out of the box. TLS stays on either way, and existing profiles are not rewritten.
+  `DASH_SERVER_EXASOL_TLS_VERIFY` and the other bootstrap variables are now documented.
+
 ### Fixed
 - The built-in `demo` app is now seeded on first start even when the Exasol bootstrap
   profile env vars (`DASH_SERVER_EXASOL_PROFILE_NAME` etc.) are set. Previously the profile

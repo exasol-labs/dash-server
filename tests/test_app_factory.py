@@ -10,6 +10,7 @@ from dash import Dash, html
 from flask import Flask, abort, request
 import pytest
 
+from _helpers import base_test_config
 from dash_server.app_factory import create_app
 from dash_server.dash_apps.branding import apply_hosted_footer
 
@@ -1695,6 +1696,8 @@ def test_create_app_bootstraps_exasol_profile_from_server_config(tmp_path):
     assert profile_payload["dsn"] == "demodb.exasol.com:8563"
     assert profile_payload["user"] == "sys"
     assert profile_payload["secret_ref"] == {"provider": "env", "key": "EXA_PASSWORD"}
+    # Remote DSN, DASH_SERVER_EXASOL_TLS_VERIFY unset: verification stays on.
+    assert profile_payload["tls_verify"] is True
 
     # The profile bootstrap commits to the GitOps repo before the demo seed runs;
     # that commit must not make the fresh repo look already-initialized.
@@ -1703,6 +1706,30 @@ def test_create_app_bootstraps_exasol_profile_from_server_config(tmp_path):
     assert "demo" in repo_status["desired_live_apps"]
     assert "dash-server/demo/r000001" in repo_status["release_tags"]
     assert app.test_client().get("/apps/demo").status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(None, False), ("true", True), (True, True), ("false", False)],
+)
+def test_exasol_bootstrap_tls_verify_defaults_off_for_localhost_and_honors_explicit_value(
+    tmp_path, configured, expected
+):
+    """BUG-05: the README's bootstrap block (DSN localhost:8563) must work against
+    Exasol Personal's self-signed certificate without an extra variable."""
+
+    config = base_test_config(
+        tmp_path,
+        EXASOL_BOOTSTRAP_PROFILE_NAME="analytics-prod",
+        EXASOL_BOOTSTRAP_DSN="localhost:8563",
+        EXASOL_BOOTSTRAP_USER="sys",
+        EXASOL_BOOTSTRAP_SECRET_ENV_VAR="EXA_PASSWORD",
+        EXASOL_BOOTSTRAP_TLS_VERIFY=configured,
+    )
+    app = create_app(config)
+
+    profile_path = Path(app.extensions["git_repo_service"].repo_root) / "profiles" / "exasol" / "analytics-prod.json"
+    assert json.loads(profile_path.read_text())["tls_verify"] is expected
 
 
 @pytest.mark.slow

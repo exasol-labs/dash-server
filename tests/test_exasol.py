@@ -219,6 +219,8 @@ def test_exasol_profile_create_validate_and_resources(app, client) -> None:
     assert create_payload["profile"]["name"] == "analytics-prod"
     assert create_payload["profile"]["secret_ref"]["provider"] == "local_file"
     assert create_payload["profile"]["secret_ref"]["exposed_value"] is False
+    # Remote DSN with tls_verify omitted keeps certificate verification on.
+    assert create_payload["profile"]["tls_verify"] is True
 
     repo_profile_path = Path(app.config["GITOPS_REPO_PATH"]) / "profiles" / "exasol" / "analytics-prod.json"
     assert repo_profile_path.exists()
@@ -2012,3 +2014,55 @@ def test_exasol_helper_auto_seeded_for_exasol_analytics_template(app, client) ->
     )
     notes = structured.get("notes", [])
     assert any("dash_server_exasol.py" in n for n in notes), notes
+
+
+@pytest.mark.parametrize(
+    ("dsn", "loopback"),
+    [
+        ("localhost:8563", True),
+        ("LOCALHOST:8563", True),
+        ("127.0.0.1:8563", True),
+        ("127.0.0.2", True),
+        ("[::1]:8563", True),
+        ("localhost,127.0.0.1:8563", True),
+        ("localhost/0123456789ABCDEF:8563", True),
+        ("demodb.exasol.com:8563", False),
+        ("192.168.64.2:8563", False),
+        ("localhost,10.0.0.5:8563", False),
+        ("localhost.example.com:8563", False),
+        ("exa1..3:8563", False),
+        ("", False),
+    ],
+)
+def test_dsn_is_loopback_only(dsn: str, loopback: bool) -> None:
+    from dash_server.exasol.service import default_tls_verify, dsn_is_loopback_only
+
+    assert dsn_is_loopback_only(dsn) is loopback
+    assert default_tls_verify(dsn) is (not loopback)
+
+
+def test_profile_create_defaults_tls_verify_off_for_loopback_dsn_and_honors_explicit_value(client) -> None:
+    """BUG-05: local Exasol installs (Exasol Personal) ship self-signed certificates, so a
+    localhost profile created without tls_verify must not fail certificate verification."""
+
+    def create(name: str, **extra: Any) -> dict[str, Any]:
+        response = _call_mcp(
+            client,
+            "tools/call",
+            {
+                "name": "exasol_profile_create_local",
+                "arguments": {
+                    "name": name,
+                    "backend": "onprem",
+                    "credential_mode": "password",
+                    "dsn": "localhost:8563",
+                    "user": "sys",
+                    "secret_env_var": "EXA_PASSWORD",
+                    **extra,
+                },
+            },
+        )
+        return response.get_json()["result"]["structuredContent"]["profile"]
+
+    assert create("local-default")["tls_verify"] is False
+    assert create("local-forced", tls_verify=True)["tls_verify"] is True

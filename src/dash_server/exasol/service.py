@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any
 
@@ -23,6 +24,46 @@ from .scaffold import (
 from .secrets import ExasolSecretStore
 
 _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def dsn_is_loopback_only(dsn: str) -> bool:
+    """Return whether every host in a pyexasol DSN is a loopback address.
+
+    Accepts pyexasol's DSN shapes: comma-separated hosts, each optionally carrying a
+    ``/fingerprint`` and a ``:port`` (``localhost:8563``, ``127.0.0.1/ABC…:8563``,
+    ``[::1]:8563``). Anything unparseable counts as non-loopback.
+    """
+
+    hosts = [part.strip() for part in dsn.split(",") if part.strip()]
+    if not hosts:
+        return False
+    for host in hosts:
+        if host.startswith("["):
+            host = host[1 : host.find("]")] if "]" in host else host
+        else:
+            host = host.split("/", 1)[0]
+            if host.count(":") == 1:
+                host = host.split(":", 1)[0]
+        if host.lower() == "localhost":
+            continue
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def default_tls_verify(dsn: str) -> bool:
+    """``tls_verify`` to use when the caller did not choose one.
+
+    Off for loopback-only DSNs, on otherwise. Loopback traffic never leaves the host, so
+    certificate verification buys no protection there, while local Exasol installs
+    (Exasol Personal, Nano, Community Edition) ship self-signed certificates that make
+    ``tls_verify=true`` fail outright. Remote clusters keep verification by default.
+    """
+
+    return not dsn_is_loopback_only(dsn)
 
 # PS26-BUG-008: schema-name patterns that belong to Exasol's own platform/catalog
 # infrastructure (its Semantic Views feature, in the environment this was found in)
@@ -86,7 +127,7 @@ class ExasolDashboardService:
         dsn: str,
         user: str,
         description: str | None = None,
-        tls_verify: bool = True,
+        tls_verify: bool | None = None,
         secret_value: str | None = None,
         secret_env_var: str | None = None,
         statement_timeout_seconds: int | None = None,
@@ -122,7 +163,7 @@ class ExasolDashboardService:
             user=user,
             dsn=dsn,
             description=description or f"Local Exasol profile {name}.",
-            tls_verify=tls_verify,
+            tls_verify=default_tls_verify(dsn) if tls_verify is None else tls_verify,
             secret_ref=secret_ref,
             query_defaults=query_defaults,
         )

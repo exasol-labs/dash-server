@@ -29,6 +29,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return coerce_bool(os.environ.get(name), default=default)
 
 
+def _env_optional_bool(name: str) -> bool | None:
+    """Like ``_env_bool`` but ``None`` when unset, for defaults decided elsewhere."""
+
+    value = os.environ.get(name)
+    return None if value is None or not value.strip() else coerce_bool(value)
+
+
 class Config:
     """Default configuration for local development."""
 
@@ -200,7 +207,8 @@ class Config:
     EXASOL_BOOTSTRAP_DSN: str | None = os.environ.get("DASH_SERVER_EXASOL_DSN")
     EXASOL_BOOTSTRAP_USER: str | None = os.environ.get("DASH_SERVER_EXASOL_USER")
     EXASOL_BOOTSTRAP_DESCRIPTION: str | None = os.environ.get("DASH_SERVER_EXASOL_DESCRIPTION")
-    EXASOL_BOOTSTRAP_TLS_VERIFY: bool = _env_bool("DASH_SERVER_EXASOL_TLS_VERIFY", True)
+    # None = decide from the DSN (off for loopback-only, on otherwise); see default_tls_verify.
+    EXASOL_BOOTSTRAP_TLS_VERIFY: bool | None = _env_optional_bool("DASH_SERVER_EXASOL_TLS_VERIFY")
     EXASOL_BOOTSTRAP_SECRET_ENV_VAR: str | None = os.environ.get(
         "DASH_SERVER_EXASOL_SECRET_ENV_VAR",
         "EXA_PASSWORD",

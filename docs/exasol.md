@@ -50,10 +50,25 @@ export DASH_SERVER_EXASOL_DESCRIPTION='Primary analytics database'
 export DASH_SERVER_EXASOL_SECRET_ENV_VAR='EXA_PASSWORD'
 export DASH_SERVER_EXASOL_CREDENTIAL_MODE='password'
 export DASH_SERVER_EXASOL_BACKEND='onprem'
-export DASH_SERVER_EXASOL_TLS_VERIFY='true'
+export DASH_SERVER_EXASOL_TLS_VERIFY='false'   # unset: off for loopback DSNs, on otherwise
 export DASH_SERVER_EXASOL_STATEMENT_TIMEOUT_SECONDS='30'
 export DASH_SERVER_EXASOL_ROW_LIMIT='50000'
+export DASH_SERVER_EXASOL_SECRETS_ROOT='/path/to/exasol-secrets'   # default: <instance>/exasol-secrets
 ```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DASH_SERVER_EXASOL_PROFILE_NAME` | unset (no bootstrap) | Profile to create at startup. Setting it enables the bootstrap. |
+| `DASH_SERVER_EXASOL_DSN` | required | pyexasol DSN, e.g. `localhost:8563`. |
+| `DASH_SERVER_EXASOL_USER` | required | Database user. |
+| `DASH_SERVER_EXASOL_SECRET_ENV_VAR` | `EXA_PASSWORD` | Name of the env var holding the secret. The secret itself is never written to disk. |
+| `DASH_SERVER_EXASOL_CREDENTIAL_MODE` | `password` | Credential type for the secret. |
+| `DASH_SERVER_EXASOL_BACKEND` | `onprem` | Exasol backend kind. |
+| `DASH_SERVER_EXASOL_TLS_VERIFY` | derived from DSN | Certificate verification; see [About `tls_verify`](#about-tls_verify). |
+| `DASH_SERVER_EXASOL_DESCRIPTION` | `Local Exasol profile <name>.` | Human-readable description. |
+| `DASH_SERVER_EXASOL_STATEMENT_TIMEOUT_SECONDS` | `30` | Per-statement timeout. |
+| `DASH_SERVER_EXASOL_ROW_LIMIT` | `50000` | Maximum rows returned per query. |
+| `DASH_SERVER_EXASOL_SECRETS_ROOT` | `<instance>/exasol-secrets` | Where secrets passed as `secret_value` are stored. |
 
 When these are set, `dash-server` will create the profile automatically on startup if it does not already exist.
 
@@ -166,8 +181,16 @@ Optional fields:
 
 `tls_verify` controls **certificate verification only**. TLS is always negotiated for `local_direct` profiles.
 
-- `tls_verify: true` (default) — verify the server cert chain. Use this for production or any cluster with a real CA-issued certificate.
-- `tls_verify: false` — encrypt but skip cert validation. Use this for local development against a self-signed certificate, e.g. Exasol Community Edition, Exasol Nano, or a corporate dev box that issues its own cert.
+- `tls_verify: true` — verify the server cert chain. Use this for production or any cluster with a real CA-issued certificate.
+- `tls_verify: false` — encrypt but skip cert validation. Use this for a self-signed certificate, e.g. Exasol Personal, Exasol Community Edition, Exasol Nano, or a corporate dev box that issues its own cert.
+
+When `tls_verify` is not given (the `DASH_SERVER_EXASOL_TLS_VERIFY` bootstrap variable is unset,
+or `exasol_profile_create_local` is called without it), the default depends on the DSN:
+
+- every host is loopback (`localhost`, `127.0.0.1`, `::1`) → `false`. Loopback traffic never leaves the machine, so verification protects nothing, and local installs ship self-signed certificates.
+- any other host → `true`. A remote instance with a self-signed certificate needs an explicit `false`.
+
+An explicit value always wins. Changing the default does not rewrite existing profiles.
 
 Connecting to a self-signed Exasol with `tls_verify: true` fails with `[SSL: CERTIFICATE_VERIFY_FAILED]`. Setting it to `false` does not disable TLS — the websocket is still encrypted.
 
