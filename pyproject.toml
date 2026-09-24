@@ -58,8 +58,12 @@ where = ["src"]
 # Ship the Exasol scaffold templates (generated-app sources, SQL bodies, and
 # guidance payloads) as package data so `importlib.resources` can read them from
 # an installed wheel. The runtime helper (`scaffold_helper.py`) is a real module
-# and needs no declaration here.
+# and needs no declaration here. The Flask page templates (dashboard catalog,
+# consumption views) ship the same way.
 [tool.setuptools.package-data]
+"dash_server" = [
+  "templates/*.html",
+]
 "dash_server.exasol" = [
   "scaffold_templates/*.tmpl",
   "scaffold_templates/*.sql",

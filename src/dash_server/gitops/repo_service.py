@@ -547,6 +547,16 @@ class GitRepoService:
 
         return self.head_commit() is not None
 
+    def is_bootstrapped(self) -> bool:
+        """Return whether ``ensure_phase0_repository`` has seeded this repository.
+
+        Distinct from ``has_commits``: other startup steps (e.g. the Exasol profile
+        bootstrap) may commit before the demo seed runs, so "has any commit" does not
+        mean "has been initialized".
+        """
+
+        return self.has_commits() and self.tag_exists(self._bootstrap_tag)
+
     def branch_exists(self, branch_name: str) -> bool:
         """Return whether a local branch exists."""
 

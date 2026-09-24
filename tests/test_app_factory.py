@@ -1636,6 +1636,38 @@ def test_root_dashboard_catalog_lists_live_and_preview_routes(tmp_path):
     assert b"Open preview" in homepage.data
 
 
+def test_unknown_dashboard_route_returns_explanatory_404(client):
+    response = client.get("/apps/nope")
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["category"] == "dashboard_not_found"
+
+
+def test_registered_but_unmounted_dashboard_returns_503_with_reason(app):
+    # Bootstrap logs and skips apps whose revision fails to mount; the route must then
+    # say so instead of falling through to a bare 404.
+    app.extensions["dispatcher"].unmount("/apps/demo")
+    client = app.test_client()
+
+    for path in ("/apps/demo", "/apps/demo/_dash-layout"):
+        response = client.get(path)
+        assert response.status_code == 503
+        error = response.get_json()["error"]
+        assert error["category"] == "dashboard_not_running"
+        assert error["app"] == "demo"
+        assert "app_get_status" in error["message"]
+
+
+def test_hosted_unmounted_dashboard_denies_anonymous_like_a_mounted_one(tmp_path):
+    app = create_app(_hosted_mode_test_config(tmp_path))
+    app.extensions["dispatcher"].unmount("/apps/demo")
+
+    response = app.test_client().get("/apps/demo")
+
+    assert response.status_code == 401
+    assert response.get_json()["error"]["category"] == "authorization_denied"
+
+
 def test_create_app_bootstraps_exasol_profile_from_server_config(tmp_path):
     app = create_app(
         {
@@ -1663,6 +1695,14 @@ def test_create_app_bootstraps_exasol_profile_from_server_config(tmp_path):
     assert profile_payload["dsn"] == "demodb.exasol.com:8563"
     assert profile_payload["user"] == "sys"
     assert profile_payload["secret_ref"] == {"provider": "env", "key": "EXA_PASSWORD"}
+
+    # The profile bootstrap commits to the GitOps repo before the demo seed runs;
+    # that commit must not make the fresh repo look already-initialized.
+    assert app.extensions["registry"].get_app("demo") is not None
+    repo_status = app.extensions["git_repo_service"].status()["repo"]
+    assert "demo" in repo_status["desired_live_apps"]
+    assert "dash-server/demo/r000001" in repo_status["release_tags"]
+    assert app.test_client().get("/apps/demo").status_code == 200
 
 
 @pytest.mark.slow
@@ -1884,7 +1924,8 @@ def test_create_app_survives_broken_persisted_artifact_during_bootstrap(tmp_path
     sales_response = second_app.test_client().get("/apps/sales")
 
     assert demo_response.status_code == 200
-    assert sales_response.status_code == 404
+    assert sales_response.status_code == 503
+    assert sales_response.get_json()["error"]["last_error_category"] == "route_misconfiguration"
 
     diagnostics_service = second_app.extensions["diagnostics_service"]
     latest_error = diagnostics_service.latest_error("sales")

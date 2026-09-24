@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The built-in `demo` app is now seeded on first start even when the Exasol bootstrap
+  profile env vars (`DASH_SERVER_EXASOL_PROFILE_NAME` etc.) are set. Previously the profile
+  commit made the fresh GitOps repo look already-initialized, so `/apps/demo` — the README's
+  "First check" — returned 404. Affected instances self-heal on the next restart.
+- `dash-server` no longer crashes on first start in environments without `pip`, such as the
+  README's `uv venv` install path. Requirements the server environment already satisfies
+  (including the demo's `dash`) are no longer reinstalled; otherwise the installer falls back
+  to `uv pip install --python …` when `pip` is absent, or reports an actionable error.
+- The wheel now ships the Flask page templates; a non-editable install no longer returns 500
+  (`TemplateNotFound: dashboard_catalog.html`) on `/`.
+- `/apps/<name>` for a registered app that is not mounted (e.g. its revision failed to load
+  at startup) now returns 503 `dashboard_not_running` with the last error and a pointer to
+  `app_get_status`, instead of a bare 404. Unknown dashboards return a JSON 404
+  `dashboard_not_found`, as do deliberately disabled apps; hosted-mode denials are
+  unchanged.
+
 ## [0.1.0] - 2026-07-31
 
 Initial public release.

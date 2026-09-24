@@ -551,7 +551,7 @@ def _build_services(
         dependency_environment_service=dependency_environment_service,
         session_channel_enabled=session_channel_service.enabled,
     )
-    if not git_repo_service.has_commits():
+    if not git_repo_service.is_bootstrapped():
         runtime_service.ensure_demo_app()
         git_repo_service.ensure_phase0_repository(
             runtime_service.workspace_service.read_all_files("demo")

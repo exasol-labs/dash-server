@@ -70,6 +70,72 @@ def test_dependency_installer_force_clean_bypasses_cached_state(tmp_path: Path, 
     assert len(calls) == 2
 
 
+def test_dependency_installer_skips_install_when_server_env_already_satisfies(tmp_path: Path, monkeypatch):
+    installer = DependencyInstaller(
+        str(tmp_path / "dependency_state"),
+        enabled=True,
+        python_executable=sys.executable,
+        timeout_seconds=30,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        installer,
+        "_run_install_command",
+        lambda command: calls.append(command) or {"status": "succeeded", "stdout_tail": "", "stderr_tail": ""},
+    )
+    monkeypatch.setattr(installer, "_has_pip", lambda: True)
+
+    # dash is a server dependency, so the built-in demo's requirement needs no installer.
+    satisfied = installer.ensure_requirements("demo", ["dash>=4.0,<5.0"])
+    assert satisfied["status"] == "already_satisfied"
+    assert calls == []
+
+    # Anything missing, version-mismatched, or forced still goes through the installer.
+    installer.ensure_requirements("demo", ["dash<1.0"])
+    installer.ensure_requirements("demo", ["definitely-not-installed-pkg-xyz"])
+    installer.ensure_requirements("demo", ["dash>=4.0,<5.0"], force_clean=True)
+    assert len(calls) == 3
+
+
+def test_dependency_installer_falls_back_to_uv_when_pip_is_missing(tmp_path: Path, monkeypatch):
+    installer = DependencyInstaller(
+        str(tmp_path / "dependency_state"),
+        enabled=True,
+        python_executable="/tmp/fake-python",
+        timeout_seconds=30,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        installer,
+        "_run_install_command",
+        lambda command: calls.append(command) or {"status": "succeeded", "stdout_tail": "", "stderr_tail": ""},
+    )
+    monkeypatch.setattr(installer, "_has_pip", lambda: False)
+    monkeypatch.setattr("dash_server.dependencies.service.shutil.which", lambda name: "/opt/bin/uv")
+
+    result = installer.ensure_requirements("sales", ["plotly"])
+
+    assert result["status"] == "succeeded"
+    assert calls == [["/opt/bin/uv", "pip", "install", "--python", "/tmp/fake-python", "plotly"]]
+
+
+def test_dependency_installer_reports_actionable_error_without_pip_or_uv(tmp_path: Path, monkeypatch):
+    installer = DependencyInstaller(
+        str(tmp_path / "dependency_state"),
+        enabled=True,
+        python_executable="/tmp/fake-python",
+        timeout_seconds=30,
+    )
+    monkeypatch.setattr(installer, "_has_pip", lambda: False)
+    monkeypatch.setattr("dash_server.dependencies.service.shutil.which", lambda name: None)
+
+    result = installer.ensure_requirements("sales", ["plotly"])
+
+    assert result["status"] == "failed"
+    assert "no pip module" in result["notes"]
+    assert "uv pip install pip" in result["notes"]
+
+
 def test_workspace_validation_marks_missing_declared_dependency_when_install_disabled(
     tmp_path: Path,
 ):

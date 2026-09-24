@@ -278,6 +278,9 @@ def test_app_build_force_clean_bypasses_cached_dependency_state(app, client, mon
         }
 
     monkeypatch.setattr(installer, "_run_install_command", fake_run)
+    # The scaffold only requires dash, which the server env already satisfies; force the
+    # install path so the cache / force_clean bookkeeping is what gets exercised.
+    monkeypatch.setattr(installer, "_requirements_already_satisfied", lambda requirements: False)
 
     _call_mcp(
         client,
@@ -337,6 +340,9 @@ def test_app_deploy_draft_force_clean_reinstalls_dependencies_once_per_deploy(
         }
 
     monkeypatch.setattr(installer, "_run_install_command", fake_run)
+    # The scaffold only requires dash, which the server env already satisfies; force the
+    # install path so the cache / force_clean bookkeeping is what gets exercised.
+    monkeypatch.setattr(installer, "_requirements_already_satisfied", lambda requirements: False)
 
     _call_mcp(
         client,
@@ -1419,7 +1425,7 @@ def test_mcp_surfaces_startup_runtime_mount_failure(client):
         request_id=70,
     )
     assert promote_standby.status_code == 200
-    assert client.get("/apps/standby").status_code == 404
+    assert client.get("/apps/standby").status_code == 503
 
     start_standby = _call_mcp(
         client,
@@ -1431,7 +1437,7 @@ def test_mcp_surfaces_startup_runtime_mount_failure(client):
     start_result = start_standby.get_json()["result"]
     assert start_result["isError"] is True
     assert start_result["structuredContent"]["error"]["category"] == "runtime_mount_error"
-    assert client.get("/apps/standby").status_code == 404
+    assert client.get("/apps/standby").status_code == 503
 
     health_result = _call_mcp(
         client,
@@ -1442,7 +1448,7 @@ def test_mcp_surfaces_startup_runtime_mount_failure(client):
     assert health_result["status"] == "unhealthy"
     http_probe = next(probe for probe in health_result["probes"] if probe["name"] == "http_ready")
     assert http_probe["status"] == "failed"
-    assert http_probe["details"]["status_code"] == 404
+    assert http_probe["details"]["status_code"] == 503
 
     standby_errors = _resource_json(
         client,

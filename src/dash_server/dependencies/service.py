@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+from importlib import metadata
 import json
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
+
+from packaging.requirements import InvalidRequirement, Requirement
 
 from dash_server.timestamps import now_iso
 
@@ -65,7 +70,24 @@ class DependencyInstaller:
                 "notes": "Declared requirements are already installed for this server environment.",
             }
 
-        command = [self.python_executable, "-m", "pip", "install", *requirements]
+        if not force_clean and self._requirements_already_satisfied(requirements):
+            return {
+                "status": "already_satisfied",
+                "requirements": requirements,
+                "notes": "Declared requirements are already present in the server environment; nothing to install.",
+            }
+
+        command = self._install_command(requirements)
+        if command is None:
+            return {
+                "status": "failed",
+                "requirements": requirements,
+                "notes": (
+                    f"Cannot install dependencies: {self.python_executable} has no pip module and "
+                    "no `uv` executable is on PATH. Install pip into the server environment "
+                    "(e.g. `uv pip install pip`) or put `uv` on PATH, then restart dash-server."
+                ),
+            }
         result = self._run_install_command(command)
         if result["status"] != "succeeded":
             return {
@@ -99,6 +121,61 @@ class DependencyInstaller:
             ),
             "force_clean": force_clean,
         }
+
+    def _requirements_already_satisfied(self, requirements: list[str]) -> bool:
+        """Return whether every requirement is met by the running server interpreter.
+
+        Only answerable in-process when the install target *is* this interpreter; for any
+        other target we cannot inspect its packages, so report ``False`` and install.
+        Requirements with extras or direct URLs are treated as unsatisfied because their
+        installed state cannot be verified from distribution metadata alone.
+        """
+
+        if Path(self.python_executable).absolute() != Path(sys.executable).absolute():
+            return False
+        for entry in requirements:
+            try:
+                requirement = Requirement(entry)
+            except InvalidRequirement:
+                return False
+            if requirement.marker is not None and not requirement.marker.evaluate():
+                continue
+            if requirement.extras or requirement.url:
+                return False
+            try:
+                installed_version = metadata.version(requirement.name)
+            except metadata.PackageNotFoundError:
+                return False
+            if not requirement.specifier.contains(installed_version, prereleases=True):
+                return False
+        return True
+
+    def _install_command(self, requirements: list[str]) -> list[str] | None:
+        """Pick an installer for the target interpreter: its own pip, else ``uv pip``.
+
+        Environments created by ``uv venv`` (the README's default install path) ship
+        without pip, so ``python -m pip`` alone is not a safe assumption.
+        """
+
+        if self._has_pip():
+            return [self.python_executable, "-m", "pip", "install", *requirements]
+        uv_executable = shutil.which("uv")
+        if uv_executable is not None:
+            return [uv_executable, "pip", "install", "--python", self.python_executable, *requirements]
+        return None
+
+    def _has_pip(self) -> bool:
+        try:
+            completed = subprocess.run(
+                [self.python_executable, "-m", "pip", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
 
     def _run_install_command(self, command: list[str]) -> dict[str, Any]:
         try:

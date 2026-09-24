@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 
-from flask import Blueprint, current_app, jsonify, redirect, render_template
+from flask import Blueprint, Response, current_app, jsonify, redirect, render_template
 
 from dash_server.auth import Principal, current_auth_context
 
@@ -146,6 +146,55 @@ def create_public_blueprint() -> Blueprint:
         if invitation.scope == "preview" and app.preview_revision_number is not None:
             return redirect(runtime_service.preview_path(app.name, app.preview_revision_number))
         return redirect(app.route)
+
+    @blueprint.get("/apps/<name>")
+    @blueprint.get("/apps/<name>/<path:_rest>")
+    def unmounted_dashboard(name: str, _rest: str = ""):
+        # Only reached when the dispatcher found no mounted app for this path: either no
+        # such app exists, or it is registered but failed to mount (bootstrap logs and
+        # skips those). Say which, instead of a bare 404 that reads as a broken install.
+        registry = current_app.extensions["registry"]
+        app = registry.get_app_by_route(f"/apps/{name}")
+        # A disabled app is unpublished on purpose; keep it indistinguishable from a missing one.
+        if app is not None and app.enabled:
+            authorization_service = current_app.extensions["authorization_service"]
+            decision = authorization_service.authorize_app(
+                current_auth_context(), app, "dashboard.view_live"
+            )
+            if not decision.allowed:
+                # Same denial a mounted app returns, so mount state is not observable.
+                status, headers, body = authorization_service.denial_wsgi_response(decision)
+                return Response(body, status=status, headers=headers)
+            latest_error = current_app.extensions["diagnostics_service"].latest_error(app.name) or {}
+            return (
+                jsonify(
+                    {
+                        "error": {
+                            "category": "dashboard_not_running",
+                            "message": (
+                                f"Dashboard '{app.name}' exists but is not currently running. "
+                                f"Inspect it with the MCP tool app_get_status (name='{app.name}')."
+                            ),
+                            "app": app.name,
+                            "status": app.status,
+                            "last_error_category": latest_error.get("category"),
+                            "last_error_summary": latest_error.get("summary"),
+                        }
+                    }
+                ),
+                503,
+            )
+        return (
+            jsonify(
+                {
+                    "error": {
+                        "category": "dashboard_not_found",
+                        "message": f"No dashboard is served at /apps/{name}. See / for the dashboards available to you.",
+                    }
+                }
+            ),
+            404,
+        )
 
     return blueprint
 
