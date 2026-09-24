@@ -216,6 +216,9 @@ class Config:
     EXASOL_BOOTSTRAP_STATEMENT_TIMEOUT_SECONDS: int = int(
         os.environ.get("DASH_SERVER_EXASOL_STATEMENT_TIMEOUT_SECONDS", "30")
     )
+    # Rewrite an existing bootstrap profile when it differs from the env settings. Off by
+    # default so a profile an agent changed over MCP isn't reverted on every restart.
+    EXASOL_BOOTSTRAP_OVERWRITE: bool = _env_bool("DASH_SERVER_EXASOL_OVERWRITE", False)
     EXASOL_BOOTSTRAP_ROW_LIMIT: int = int(
         os.environ.get("DASH_SERVER_EXASOL_ROW_LIMIT", "50000")
     )

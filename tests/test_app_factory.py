@@ -1732,6 +1732,124 @@ def test_exasol_bootstrap_tls_verify_defaults_off_for_localhost_and_honors_expli
     assert json.loads(profile_path.read_text())["tls_verify"] is expected
 
 
+def _exasol_bootstrap_config(tmp_path, **overrides):
+    return base_test_config(
+        tmp_path,
+        EXASOL_BOOTSTRAP_PROFILE_NAME="analytics-prod",
+        EXASOL_BOOTSTRAP_DSN="localhost:8563",
+        EXASOL_BOOTSTRAP_USER="sys",
+        EXASOL_BOOTSTRAP_SECRET_ENV_VAR="EXA_PASSWORD",
+        **overrides,
+    )
+
+
+def _stored_exasol_profile(app) -> dict:
+    repo_root = Path(app.extensions["git_repo_service"].repo_root)
+    return json.loads((repo_root / "profiles" / "exasol" / "analytics-prod.json").read_text())
+
+
+def test_exasol_bootstrap_warns_with_diff_when_existing_profile_differs(tmp_path, caplog):
+    """BUG-06: restarting with changed DASH_SERVER_EXASOL_* vars must not silently keep the
+    old profile. Default stays create-only, but the operator is told what is ignored."""
+
+    create_app(_exasol_bootstrap_config(tmp_path, EXASOL_BOOTSTRAP_TLS_VERIFY=True))
+    caplog.clear()
+
+    with caplog.at_level("WARNING"):
+        app = create_app(_exasol_bootstrap_config(tmp_path, EXASOL_BOOTSTRAP_TLS_VERIFY=False))
+
+    assert _stored_exasol_profile(app)["tls_verify"] is True
+    warnings = [record.getMessage() for record in caplog.records if "exasol bootstrap" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "IGNORED" in warnings[0]
+    assert "tls_verify: stored=True, env=False" in warnings[0]
+    assert "DASH_SERVER_EXASOL_OVERWRITE=true" in warnings[0]
+
+
+def test_exasol_bootstrap_overwrite_applies_changed_settings(tmp_path, caplog):
+    create_app(_exasol_bootstrap_config(tmp_path, EXASOL_BOOTSTRAP_TLS_VERIFY=True))
+
+    app = create_app(
+        _exasol_bootstrap_config(
+            tmp_path,
+            EXASOL_BOOTSTRAP_TLS_VERIFY=False,
+            EXASOL_BOOTSTRAP_ROW_LIMIT=1000,
+            EXASOL_BOOTSTRAP_OVERWRITE=True,
+        )
+    )
+
+    stored = _stored_exasol_profile(app)
+    assert stored["tls_verify"] is False
+    assert stored["query_defaults"]["row_limit"] == 1000
+
+    # Once applied, a further restart with the same settings is a quiet no-op.
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        create_app(
+            _exasol_bootstrap_config(
+                tmp_path,
+                EXASOL_BOOTSTRAP_TLS_VERIFY=False,
+                EXASOL_BOOTSTRAP_ROW_LIMIT=1000,
+                EXASOL_BOOTSTRAP_OVERWRITE=True,
+            )
+        )
+    assert not [record for record in caplog.records if "exasol bootstrap" in record.getMessage()]
+
+
+def test_exasol_bootstrap_is_silent_and_commit_free_when_profile_matches(tmp_path, caplog):
+    def profile_commits(app) -> list[str]:
+        repo_root = app.extensions["git_repo_service"].repo_root
+        log = subprocess.run(
+            ["git", "-C", str(repo_root), "log", "--format=%s", "--", "profiles/exasol/analytics-prod.json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return log.splitlines()
+
+    first = create_app(_exasol_bootstrap_config(tmp_path))
+    assert len(profile_commits(first)) == 1
+    caplog.clear()
+
+    with caplog.at_level("WARNING"):
+        second = create_app(_exasol_bootstrap_config(tmp_path))
+
+    assert len(profile_commits(second)) == 1
+    assert not [record for record in caplog.records if "exasol bootstrap" in record.getMessage()]
+
+
+def test_restart_does_not_recommit_unchanged_release_manifests(tmp_path, monkeypatch):
+    """Startup backfill republishes every release; it used to stamp a fresh createdAt each
+    time, so every restart added an identical "record release" commit to the GitOps repo."""
+
+    config = base_test_config(tmp_path)
+    create_app(config)
+    # The first start seeds the demo; the second start's backfill publishes its release
+    # manifest to main for the first time (a legitimate commit). Measure from there.
+    first = create_app(config)
+    repo_root = Path(first.extensions["git_repo_service"].repo_root)
+    manifest_path = repo_root / "releases" / "demo" / "r000001.yaml"
+    manifest_before = manifest_path.read_text()
+
+    def release_commits() -> int:
+        log = subprocess.run(
+            ["git", "-C", str(repo_root), "log", "--format=%s"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return sum("record release" in line for line in log.splitlines())
+
+    commits_before = release_commits()
+    # Simulate the restart happening later: any freshly rendered timestamp would now differ.
+    monkeypatch.setattr("dash_server.gitops.repo_service.to_iso", lambda _value: "2099-01-01T00:00:00Z")
+    create_app(config)
+    create_app(config)
+
+    assert release_commits() == commits_before
+    assert manifest_path.read_text() == manifest_before
+
+
 @pytest.mark.slow
 def test_create_app_bootstraps_existing_workspace_artifacts(tmp_path):
     config = {

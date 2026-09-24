@@ -69,8 +69,17 @@ export DASH_SERVER_EXASOL_SECRETS_ROOT='/path/to/exasol-secrets'   # default: <i
 | `DASH_SERVER_EXASOL_STATEMENT_TIMEOUT_SECONDS` | `30` | Per-statement timeout. |
 | `DASH_SERVER_EXASOL_ROW_LIMIT` | `50000` | Maximum rows returned per query. |
 | `DASH_SERVER_EXASOL_SECRETS_ROOT` | `<instance>/exasol-secrets` | Where secrets passed as `secret_value` are stored. |
+| `DASH_SERVER_EXASOL_OVERWRITE` | `false` | Rewrite an existing profile when it differs from these settings (see below). |
 
 When these are set, `dash-server` will create the profile automatically on startup if it does not already exist.
+
+If the profile **already exists**, it is left unchanged by default, so a restart can't revert
+changes an agent made with `exasol_profile_create_local`. When the stored profile differs from
+the `DASH_SERVER_EXASOL_*` settings, startup logs a warning listing each differing field. To
+apply the settings, either:
+
+- set `DASH_SERVER_EXASOL_OVERWRITE=true` and restart, or
+- call `exasol_profile_create_local` with the new values and `overwrite=true`.
 
 That avoids two manual steps:
 

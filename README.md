@@ -213,6 +213,10 @@ When it is unset, verification is **off for a loopback DSN** (`localhost`, `127.
 self-signed certificate (for example Exasol Personal deployed to a cloud VM), or `true` to
 force verification on localhost.
 
+The bootstrap only **creates** the profile. If it already exists, changed variables are
+ignored and startup logs a warning listing the differences. Set
+`DASH_SERVER_EXASOL_OVERWRITE=true` and restart to apply them.
+
 All bootstrap variables, including backend, statement timeout, and row limit, are listed in
 [docs/exasol.md](docs/exasol.md#fastest-setup-path).
 

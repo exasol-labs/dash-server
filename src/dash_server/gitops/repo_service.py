@@ -230,6 +230,7 @@ class GitRepoService:
             worktree_root,
             {
                 release_manifest_path: self._render_release_manifest(
+                    created_at=self._existing_release_created_at(worktree_root, release_manifest_path),
                     app_name=app_name,
                     revision_number=revision_number,
                     commit_sha=commit_sha,
@@ -444,6 +445,7 @@ class GitRepoService:
         return self._commit_managed_update(
             managed_files={
                 release_manifest_path: self._render_release_manifest(
+                    created_at=self._existing_release_created_at(self.repo_root, release_manifest_path),
                     app_name=app_name,
                     revision_number=revision_number,
                     commit_sha=commit_sha,
@@ -877,8 +879,10 @@ class GitRepoService:
         source_hash: str,
         dependency_lock_hash: str,
         artifact_path: str,
+        created_at: str | None = None,
     ) -> str:
-        created_at = to_iso(datetime.now(timezone.utc).replace(microsecond=0))
+        if created_at is None:
+            created_at = to_iso(datetime.now(timezone.utc).replace(microsecond=0))
         return (
             "apiVersion: dash-server/v1\n"
             "kind: DashRelease\n"
@@ -1007,6 +1011,20 @@ class GitRepoService:
 
     def _render_yaml_mapping(self, payload: Mapping[str, Any], indent: int = 0) -> str:
         return render_yaml_mapping(payload, indent)
+
+    def _existing_release_created_at(self, base_path: Path, relative_path: str) -> str | None:
+        """Return the ``createdAt`` of an already-written release manifest, if any.
+
+        Re-rendering a release (startup backfill republishes every revision) must keep the
+        original timestamp; a fresh one made each restart commit an otherwise identical
+        manifest to the GitOps history.
+        """
+
+        path = base_path / relative_path
+        if not path.exists():
+            return None
+        created_at = self._parse_yaml_mapping(path.read_text()).get("spec", {}).get("createdAt")
+        return str(created_at) if created_at else None
 
     def _parse_yaml_mapping(self, text: str) -> dict[str, Any]:
         return parse_yaml_mapping(text)

@@ -315,48 +315,73 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
     if not profile_name:
         return
 
-    existing_names = {profile.name for profile in exasol_dashboard_service.profile_store.list_profiles()}
-    if profile_name in existing_names:
-        # BUG-012 fix: persona-1 reported that restarting with new DSN/description env
-        # vars silently kept the old profile. Surface the no-op so operators don't
-        # think the new bootstrap values applied.
-        app.logger.info(
-            "exasol bootstrap: profile %s already exists; not modifying. "
-            "Use exasol_profile_create_local with overwrite=true to rewrite.",
+    dsn = app.config.get("EXASOL_BOOTSTRAP_DSN")
+    user = app.config.get("EXASOL_BOOTSTRAP_USER")
+    secret_env_var = app.config.get("EXASOL_BOOTSTRAP_SECRET_ENV_VAR")
+    exists = exasol_dashboard_service.profile_store.profile_exists(str(profile_name))
+
+    if exists and not (dsn and user and secret_env_var):
+        # Nothing complete to compare against; leave the stored profile alone as before.
+        app.logger.warning(
+            "exasol bootstrap: profile %s already exists; not modifying it.",
             profile_name,
         )
         return
-
-    dsn = app.config.get("EXASOL_BOOTSTRAP_DSN")
-    user = app.config.get("EXASOL_BOOTSTRAP_USER")
     if not dsn or not user:
         raise _startup_error(
             "EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_DSN or "
             "DASH_SERVER_EXASOL_USER is missing."
         )
-
-    secret_env_var = app.config.get("EXASOL_BOOTSTRAP_SECRET_ENV_VAR")
     if not secret_env_var:
         raise _startup_error(
             "EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_SECRET_ENV_VAR is missing."
         )
 
-    exasol_dashboard_service.create_local_profile(
-        name=str(profile_name),
-        backend=str(app.config["EXASOL_BOOTSTRAP_BACKEND"]),
-        credential_mode=str(app.config["EXASOL_BOOTSTRAP_CREDENTIAL_MODE"]),
-        dsn=str(dsn),
-        user=str(user),
-        description=app.config.get("EXASOL_BOOTSTRAP_DESCRIPTION"),
-        tls_verify=(
+    settings: dict[str, Any] = {
+        "name": str(profile_name),
+        "backend": str(app.config["EXASOL_BOOTSTRAP_BACKEND"]),
+        "credential_mode": str(app.config["EXASOL_BOOTSTRAP_CREDENTIAL_MODE"]),
+        "dsn": str(dsn),
+        "user": str(user),
+        "description": app.config.get("EXASOL_BOOTSTRAP_DESCRIPTION"),
+        "tls_verify": (
             None
             if app.config.get("EXASOL_BOOTSTRAP_TLS_VERIFY") is None
             else coerce_bool(app.config["EXASOL_BOOTSTRAP_TLS_VERIFY"])
         ),
-        secret_env_var=str(secret_env_var),
-        statement_timeout_seconds=int(app.config["EXASOL_BOOTSTRAP_STATEMENT_TIMEOUT_SECONDS"]),
-        row_limit=int(app.config["EXASOL_BOOTSTRAP_ROW_LIMIT"]),
-    )
+        "secret_env_var": str(secret_env_var),
+        "statement_timeout_seconds": int(app.config["EXASOL_BOOTSTRAP_STATEMENT_TIMEOUT_SECONDS"]),
+        "row_limit": int(app.config["EXASOL_BOOTSTRAP_ROW_LIMIT"]),
+    }
+
+    if exists:
+        # BUG-012 / BUG-06: the bootstrap is create-only by default so stale env vars can't
+        # clobber a profile an agent rewrote over MCP on every restart. But the operator must
+        # be told when their settings are being ignored, and be able to opt into applying them.
+        differences = exasol_dashboard_service.local_profile_differences(**settings)
+        if not differences:
+            return
+        diff_text = "; ".join(
+            f"{field}: stored={values['stored']!r}, env={values['requested']!r}"
+            for field, values in differences.items()
+        )
+        if not coerce_bool(app.config.get("EXASOL_BOOTSTRAP_OVERWRITE")):
+            app.logger.warning(
+                "exasol bootstrap: profile %s already exists and differs from the DASH_SERVER_EXASOL_* "
+                "settings, which are being IGNORED (%s). To apply them, set DASH_SERVER_EXASOL_OVERWRITE=true "
+                "and restart, or call exasol_profile_create_local with overwrite=true.",
+                profile_name,
+                diff_text,
+            )
+            return
+        app.logger.warning(
+            "exasol bootstrap: DASH_SERVER_EXASOL_OVERWRITE=true; rewriting profile %s from the "
+            "DASH_SERVER_EXASOL_* settings (%s).",
+            profile_name,
+            diff_text,
+        )
+
+    exasol_dashboard_service.create_local_profile(**settings)
 
 
 @dataclass(frozen=True)

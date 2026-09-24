@@ -10,7 +10,7 @@ from dash_server.exceptions import DashServerError
 from dash_server.gitops import GitRepoService
 
 from .connection_manager import ExasolConnectionManager
-from .models import ExasolProfile
+from .models import ExasolProfile, ExasolSecretRef
 from .profiles import ExasolProfileStore
 from .scaffold import (
     EXASOL_DASHBOARD_PATTERNS,
@@ -151,21 +151,17 @@ class ExasolDashboardService:
             assert secret_env_var is not None
             secret_ref = self.secret_store.env_secret_ref(secret_env_var)
 
-        query_defaults = {
-            "statement_timeout_seconds": statement_timeout_seconds or 30,
-            "row_limit": row_limit or 50000,
-        }
-        profile = ExasolProfile(
+        profile = self._build_local_profile(
             name=name,
             backend=backend,
-            deployment_mode="local_direct",
             credential_mode=credential_mode,
-            user=user,
             dsn=dsn,
-            description=description or f"Local Exasol profile {name}.",
-            tls_verify=default_tls_verify(dsn) if tls_verify is None else tls_verify,
+            user=user,
+            description=description,
+            tls_verify=tls_verify,
             secret_ref=secret_ref,
-            query_defaults=query_defaults,
+            statement_timeout_seconds=statement_timeout_seconds,
+            row_limit=row_limit,
         )
         stored = self.profile_store.save_profile(profile)
         return {
@@ -175,6 +171,92 @@ class ExasolDashboardService:
                 "key": stored.secret_ref.key,
             },
         }
+
+    def local_profile_differences(
+        self,
+        *,
+        name: str,
+        backend: str,
+        credential_mode: str,
+        dsn: str,
+        user: str,
+        description: str | None = None,
+        tls_verify: bool | None = None,
+        secret_env_var: str,
+        statement_timeout_seconds: int | None = None,
+        row_limit: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Compare the stored profile with what ``create_local_profile`` would write.
+
+        Returns ``{field: {"stored": ..., "requested": ...}}`` for each field that differs,
+        applying the same defaults as creation (e.g. the DSN-derived ``tls_verify``).
+        Empty when they match. Nothing is written.
+        """
+
+        stored = self.profile_store.get_profile(name)
+        requested = self._build_local_profile(
+            name=name,
+            backend=backend,
+            credential_mode=credential_mode,
+            dsn=dsn,
+            user=user,
+            description=description,
+            tls_verify=tls_verify,
+            secret_ref=self.secret_store.env_secret_ref(secret_env_var),
+            statement_timeout_seconds=statement_timeout_seconds,
+            row_limit=row_limit,
+        )
+
+        def comparable(profile: ExasolProfile) -> dict[str, Any]:
+            query_defaults = profile.query_defaults or {}
+            return {
+                "backend": profile.backend,
+                "credential_mode": profile.credential_mode,
+                "dsn": profile.dsn,
+                "user": profile.user,
+                "description": profile.description,
+                "tls_verify": profile.tls_verify,
+                "secret_ref": f"{profile.secret_ref.provider}:{profile.secret_ref.key}",
+                "statement_timeout_seconds": query_defaults.get("statement_timeout_seconds"),
+                "row_limit": query_defaults.get("row_limit"),
+            }
+
+        stored_fields, requested_fields = comparable(stored), comparable(requested)
+        return {
+            field: {"stored": stored_fields[field], "requested": requested_fields[field]}
+            for field in stored_fields
+            if stored_fields[field] != requested_fields[field]
+        }
+
+    def _build_local_profile(
+        self,
+        *,
+        name: str,
+        backend: str,
+        credential_mode: str,
+        dsn: str,
+        user: str,
+        description: str | None,
+        tls_verify: bool | None,
+        secret_ref: ExasolSecretRef,
+        statement_timeout_seconds: int | None,
+        row_limit: int | None,
+    ) -> ExasolProfile:
+        return ExasolProfile(
+            name=name,
+            backend=backend,
+            deployment_mode="local_direct",
+            credential_mode=credential_mode,
+            user=user,
+            dsn=dsn,
+            description=description or f"Local Exasol profile {name}.",
+            tls_verify=default_tls_verify(dsn) if tls_verify is None else tls_verify,
+            secret_ref=secret_ref,
+            query_defaults={
+                "statement_timeout_seconds": statement_timeout_seconds or 30,
+                "row_limit": row_limit or 50000,
+            },
+        )
 
     def validate_profile(self, name: str) -> dict[str, Any]:
         profile = self.profile_store.get_profile(name)

@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap block (`localhost:8563`) now connects to Exasol Personal's self-signed certificate
   out of the box. TLS stays on either way, and existing profiles are not rewritten.
   `DASH_SERVER_EXASOL_TLS_VERIFY` and the other bootstrap variables are now documented.
+- The Exasol startup bootstrap now reports when an existing profile differs from the
+  `DASH_SERVER_EXASOL_*` settings: a startup warning lists each differing field and explains how
+  to apply them. Previously the settings were silently ignored, because the "not modifying" notice
+  was logged at INFO, which is not shown by default. The new `DASH_SERVER_EXASOL_OVERWRITE=true`
+  rewrites the profile from the settings on startup. The default stays create-only.
 
 ### Fixed
 - The built-in `demo` app is now seeded on first start even when the Exasol bootstrap
@@ -31,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `app_get_status`, instead of a bare 404. Unknown dashboards return a JSON 404
   `dashboard_not_found`, as do deliberately disabled apps; hosted-mode denials are
   unchanged.
+- Restarting the server no longer adds an identical `app/<name>: record release … on main`
+  commit to the GitOps repo for every existing release. Startup backfill re-rendered each
+  release manifest with a new `createdAt`; the original timestamp is now kept.
 
 ## [0.1.0] - 2026-07-31
 
