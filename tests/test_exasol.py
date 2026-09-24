@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -2023,7 +2024,8 @@ def test_exasol_helper_auto_seeded_for_exasol_analytics_template(app, client) ->
         ("LOCALHOST:8563", True),
         ("127.0.0.1:8563", True),
         ("127.0.0.2", True),
-        ("[::1]:8563", True),
+        ("[::1]:8563", False),  # pyexasol cannot parse IPv6 literals at all
+        ("127.0.0.1/0123ABCD:8563", True),
         ("localhost,127.0.0.1:8563", True),
         ("localhost/0123456789ABCDEF:8563", True),
         ("demodb.exasol.com:8563", False),
@@ -2035,7 +2037,7 @@ def test_exasol_helper_auto_seeded_for_exasol_analytics_template(app, client) ->
     ],
 )
 def test_dsn_is_loopback_only(dsn: str, loopback: bool) -> None:
-    from dash_server.exasol.service import default_tls_verify, dsn_is_loopback_only
+    from dash_server.exasol.dsn import default_tls_verify, dsn_is_loopback_only
 
     assert dsn_is_loopback_only(dsn) is loopback
     assert default_tls_verify(dsn) is (not loopback)
@@ -2066,3 +2068,98 @@ def test_profile_create_defaults_tls_verify_off_for_loopback_dsn_and_honors_expl
 
     assert create("local-default")["tls_verify"] is False
     assert create("local-forced", tls_verify=True)["tls_verify"] is True
+
+
+_PIN = "135A1D2DCE102DE866F58267521F4232153545A075DC85F8F7596F57E588A181"
+
+
+@pytest.mark.parametrize(
+    ("dsn", "error_fragment"),
+    [
+        ("localhost:8563", None),
+        ("exa1..3.example.com:8563", None),
+        (f"db.example.com/{_PIN}:8563", None),
+        ("db.example.com/nocertcheck:8563", None),
+        ("a.example.com,b.example.com:8563", None),
+        (f"db.example.com:8563/{_PIN}", "must come before the port"),
+        ("[::1]:8563", "IPv6 literals are not supported"),
+        ("", "empty"),
+    ],
+)
+def test_dsn_parse_error_matches_pyexasol_grammar(dsn: str, error_fragment: str | None) -> None:
+    from dash_server.exasol.dsn import dsn_parse_error
+
+    error = dsn_parse_error(dsn)
+    if error_fragment is None:
+        assert error is None
+    else:
+        assert error is not None and error_fragment in error
+
+
+def test_dsn_fingerprint_ignores_nocertcheck() -> None:
+    from dash_server.exasol.dsn import dsn_fingerprint
+
+    assert dsn_fingerprint(f"db.example.com/{_PIN.lower()}:8563") == _PIN
+    assert dsn_fingerprint("db.example.com/nocertcheck:8563") is None
+    assert dsn_fingerprint("db.example.com:8563") is None
+
+
+@pytest.mark.parametrize("tls_verify", [True, False])
+def test_pinned_fingerprint_dsn_leaves_cert_handling_to_pyexasol(tmp_path, monkeypatch, tls_verify: bool) -> None:
+    """A pinned DSN must not send websocket_sslopt: pyexasol only checks the pin when it is
+    unset, and CERT_REQUIRED would reject a pinned self-signed certificate first."""
+
+    monkeypatch.setenv("EXA_PASSWORD", "test")
+    fake = _ConnectKwargsCapture()
+    cm = ExasolConnectionManager(ExasolSecretStore(str(tmp_path)), connector_loader=lambda: fake)
+    profile = dataclasses.replace(_profile(tls_verify=tls_verify), dsn=f"db.example.com/{_PIN}:8563")
+
+    assert cm.validate_profile(profile)["is_valid"] is True
+    kwargs = fake.connect_calls[0]
+    assert kwargs["encryption"] is True
+    assert "websocket_sslopt" not in kwargs
+
+
+def test_fingerprint_mismatch_error_gets_friendly_hint() -> None:
+    classified = _classify_connection_error(
+        f"Provided fingerprint [{_PIN}] did not match server fingerprint [ABCDEF0123]"
+    )
+    assert classified is not None
+    assert classified["kind"] == "tls_fingerprint_mismatch"
+    assert "host/FINGERPRINT:port" in classified["hint"]
+
+
+def test_self_signed_hint_suggests_pinning_for_remote_instances() -> None:
+    classified = _classify_connection_error("certificate verify failed: self-signed certificate")
+    assert classified is not None
+    assert "host/FINGERPRINT:port" in classified["hint"]
+
+
+def test_profile_create_rejects_dsn_pyexasol_cannot_parse(client) -> None:
+    response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "exasol_profile_create_local",
+            "arguments": {
+                "name": "bad-dsn",
+                "backend": "onprem",
+                "credential_mode": "password",
+                "dsn": f"db.example.com:8563/{_PIN}",
+                "user": "sys",
+                "secret_env_var": "EXA_PASSWORD",
+            },
+        },
+    )
+    result = response.get_json()["result"]
+    assert result["isError"] is True
+    assert "must come before the port" in json.dumps(result)
+
+
+def test_unparseable_dsn_error_from_older_profiles_gets_friendly_hint() -> None:
+    classified = _classify_connection_error(
+        "Could not parse connection string part [db.example.com:8563/ABCD]"
+    )
+    assert classified is not None
+    assert classified["kind"] == "dsn_invalid"
+    assert "host[/FINGERPRINT][:port]" in classified["hint"]

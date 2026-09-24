@@ -207,11 +207,13 @@ export DASH_SERVER_EXASOL_TLS_VERIFY='false'   # see below
 
 **TLS certificate verification.** The connection is always TLS-encrypted;
 `DASH_SERVER_EXASOL_TLS_VERIFY` only controls whether the server certificate is verified.
-When it is unset, verification is **off for a loopback DSN** (`localhost`, `127.0.0.1`,
-`::1`) — local Exasol installs such as Exasol Personal ship a self-signed certificate — and
-**on for any other host**. Set it to `false` explicitly for a remote instance with a
-self-signed certificate (for example Exasol Personal deployed to a cloud VM), or `true` to
-force verification on localhost.
+When it is unset, verification is **off for a loopback DSN** (`localhost`, `127.0.0.1`)
+— local Exasol installs such as Exasol Personal ship a self-signed certificate — and
+**on for any other host**. For a remote instance with a self-signed certificate (for example
+Exasol Personal on a cloud VM), pin the certificate instead of disabling verification: put its
+SHA-256 fingerprint in the DSN as `host/FINGERPRINT:port` — see
+[docs/exasol.md](docs/exasol.md#pinning-a-self-signed-certificate). Set `true` to force CA
+verification on localhost.
 
 The bootstrap only **creates** the profile. If it already exists, changed variables are
 ignored and startup logs a warning listing the differences. Set

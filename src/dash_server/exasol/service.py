@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import re
 from typing import Any
 
@@ -10,6 +9,7 @@ from dash_server.exceptions import DashServerError
 from dash_server.gitops import GitRepoService
 
 from .connection_manager import ExasolConnectionManager
+from .dsn import default_tls_verify, dsn_parse_error
 from .models import ExasolProfile, ExasolSecretRef
 from .profiles import ExasolProfileStore
 from .scaffold import (
@@ -24,46 +24,6 @@ from .scaffold import (
 from .secrets import ExasolSecretStore
 
 _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
-
-
-def dsn_is_loopback_only(dsn: str) -> bool:
-    """Return whether every host in a pyexasol DSN is a loopback address.
-
-    Accepts pyexasol's DSN shapes: comma-separated hosts, each optionally carrying a
-    ``/fingerprint`` and a ``:port`` (``localhost:8563``, ``127.0.0.1/ABC…:8563``,
-    ``[::1]:8563``). Anything unparseable counts as non-loopback.
-    """
-
-    hosts = [part.strip() for part in dsn.split(",") if part.strip()]
-    if not hosts:
-        return False
-    for host in hosts:
-        if host.startswith("["):
-            host = host[1 : host.find("]")] if "]" in host else host
-        else:
-            host = host.split("/", 1)[0]
-            if host.count(":") == 1:
-                host = host.split(":", 1)[0]
-        if host.lower() == "localhost":
-            continue
-        try:
-            if not ipaddress.ip_address(host).is_loopback:
-                return False
-        except ValueError:
-            return False
-    return True
-
-
-def default_tls_verify(dsn: str) -> bool:
-    """``tls_verify`` to use when the caller did not choose one.
-
-    Off for loopback-only DSNs, on otherwise. Loopback traffic never leaves the host, so
-    certificate verification buys no protection there, while local Exasol installs
-    (Exasol Personal, Nano, Community Edition) ship self-signed certificates that make
-    ``tls_verify=true`` fail outright. Remote clusters keep verification by default.
-    """
-
-    return not dsn_is_loopback_only(dsn)
 
 # PS26-BUG-008: schema-name patterns that belong to Exasol's own platform/catalog
 # infrastructure (its Semantic Views feature, in the environment this was found in)
@@ -137,6 +97,9 @@ class ExasolDashboardService:
         self._validate_backend_mode(backend, credential_mode)
         if not dsn:
             raise self._field_error("dsn", "must be a non-empty string.")
+        dsn_error = dsn_parse_error(dsn)
+        if dsn_error is not None:
+            raise self._field_error("dsn", dsn_error)
         if not user:
             raise self._field_error("user", "must be a non-empty string.")
         if bool(secret_value) == bool(secret_env_var):

@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Certificate pinning for Exasol profiles. A DSN of the form `host/FINGERPRINT:port` (the
+  SHA-256 of the server certificate) now authenticates a self-signed server by its exact
+  certificate, whatever `tls_verify` is set to. This gives remote Exasol Personal and other
+  self-signed instances a secure alternative to `tls_verify=false`. Previously the explicit
+  `CERT_REQUIRED` rejected a pinned self-signed certificate before pyexasol could check the
+  pin. A fingerprint mismatch is classified as `tls_fingerprint_mismatch` with a hint.
+- `exasol_profile_create_local` and the startup bootstrap now reject DSNs that pyexasol 2.4.1
+  cannot parse, with an explanation, instead of failing at connect time. Examples are a
+  fingerprint after the port (`host:port/FP`) and IPv6 literals.
+- Hosted-app validation warns about plotly APIs removed in plotly 7: `*mapbox` traces and
+  `px.*_mapbox`, `layout.mapbox`, the removed `figure_factory` functions, and
+  `write_image(engine=...)`. Each warning names the replacement.
+
 ### Changed
+- Dependencies updated: pyexasol 2.4.1 (stricter DSN parsing), cryptography 50.0.1 (the
+  upper bound is raised from `<50` to `<52`; includes the fix for CVE-2026-69247), plotly 7.1.0
+  via Dash, which moves hosted apps to plotly.js 4, packaging 26.3, urllib3 2.8.0 (three
+  security fixes), setuptools 84, ruff 0.16.8, and mypy 2.3.1. The unused `wheel` build
+  requirement is dropped. `uv.lock` had drifted from `pyproject.toml` and is regenerated.
+- The 8-digit hex color lint warning now notes that plotly 7 accepts `#RRGGBBAA`. It still
+  warns, for apps that may run on an older plotly.
 - Exasol profiles created without an explicit `tls_verify` (the `DASH_SERVER_EXASOL_TLS_VERIFY`
   bootstrap variable unset, or `exasol_profile_create_local` called without it) now default to
   `tls_verify=false` when every DSN host is loopback, and `true` otherwise. The README's

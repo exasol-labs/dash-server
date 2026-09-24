@@ -196,10 +196,33 @@ Optional fields:
 When `tls_verify` is not given (the `DASH_SERVER_EXASOL_TLS_VERIFY` bootstrap variable is unset,
 or `exasol_profile_create_local` is called without it), the default depends on the DSN:
 
-- every host is loopback (`localhost`, `127.0.0.1`, `::1`) → `false`. Loopback traffic never leaves the machine, so verification protects nothing, and local installs ship self-signed certificates.
+- every host is loopback (`localhost` or `127.x.x.x`) → `false`. Loopback traffic never leaves the machine, so verification protects nothing, and local installs ship self-signed certificates.
 - any other host → `true`. A remote instance with a self-signed certificate needs an explicit `false`.
 
 An explicit value always wins. Changing the default does not rewrite existing profiles.
+
+### Pinning a self-signed certificate
+
+For a remote instance with a self-signed certificate, pinning is safer than `tls_verify: false`:
+the connection is accepted only if the server presents exactly that certificate. Put the
+certificate's SHA-256 fingerprint in the DSN, **before** the port:
+
+```bash
+# fingerprint of the certificate the server presents
+echo | openssl s_client -connect db.example.com:8563 2>/dev/null \
+  | openssl x509 -outform DER | shasum -a 256 | cut -d' ' -f1 | tr a-f A-F
+```
+
+```bash
+export DASH_SERVER_EXASOL_DSN='db.example.com/<FINGERPRINT>:8563'
+```
+
+With a pinned DSN, pyexasol checks the pin instead of the CA chain, and `tls_verify` has no
+effect. If the certificate is rotated, validation fails with `tls_fingerprint_mismatch`.
+The error reports the server's new fingerprint, which you should check before updating the DSN.
+Put the fingerprint before the port: pyexasol 2.4.1 and later reject `host:port/FINGERPRINT`,
+and `exasol_profile_create_local` rejects it too, with an explanation. IPv6 literals are not
+supported in DSNs.
 
 Connecting to a self-signed Exasol with `tls_verify: true` fails with `[SSL: CERTIFICATE_VERIFY_FAILED]`. Setting it to `false` does not disable TLS — the websocket is still encrypted.
 

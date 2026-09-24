@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from packaging.markers import UndefinedComparison, UndefinedEnvironmentName
 from packaging.requirements import InvalidRequirement, Requirement
 
 from dash_server.timestamps import now_iso
@@ -138,8 +139,12 @@ class DependencyInstaller:
                 requirement = Requirement(entry)
             except InvalidRequirement:
                 return False
-            if requirement.marker is not None and not requirement.marker.evaluate():
-                continue
+            try:
+                if requirement.marker is not None and not requirement.marker.evaluate():
+                    continue
+            except (UndefinedComparison, UndefinedEnvironmentName):
+                # Unevaluable marker: let the real installer decide (and report) instead.
+                return False
             if requirement.extras or requirement.url:
                 return False
             try:

@@ -369,7 +369,9 @@ def test_app_validate_surfaces_plotly_specific_lint_warnings(client):
     validation = result["structuredContent"]["validation"]
     assert validation["is_valid"] is False
     assert validation["imports"]["status"] == "failed"
-    assert "fillcolor" in validation["imports"]["error"]
+    # plotly >= 7 accepts the fixture's #RRGGBBAA fillcolor, so the import smoke check
+    # now trips on the duplicated margin kwarg instead; the lint still flags both.
+    assert "margin" in validation["imports"]["error"]
     assert validation["lint"]["status"] == "passed_with_warnings"
     warning_messages = [warning["message"] for warning in validation["lint"]["warnings"]]
     assert any("fillcolor uses 8-digit hex" in message for message in warning_messages)

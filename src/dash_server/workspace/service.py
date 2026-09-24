@@ -48,6 +48,35 @@ from dash_server.workspace.validation_pipeline import (
 )
 
 
+
+# Calls removed in plotly 7 (https://github.com/plotly/plotly.py/blob/main/CHANGELOG.md),
+# keyed by the called attribute/function name, with the suggested replacement. Hosted apps
+# run against the server's plotly, so these fail at import or first render.
+_PLOTLY7_MAPBOX_TRACES = ("Scattermapbox", "Choroplethmapbox", "Densitymapbox")
+_PLOTLY7_MAPBOX_EXPRESS = ("scatter_mapbox", "line_mapbox", "choropleth_mapbox", "density_mapbox")
+_PLOTLY7_REMOVED_FIGURE_FACTORY = (
+    "create_2d_density",
+    "create_annotated_heatmap",
+    "create_bullet",
+    "create_candlestick",
+    "create_choropleth",
+    "create_distplot",
+    "create_facet_grid",
+    "create_gantt",
+    "create_ohlc",
+    "create_scatterplotmatrix",
+    "create_violin",
+)
+_PLOTLY7_REMOVED_CALLS: dict[str, str] = {
+    **{name: f"use go.{name.removesuffix('mapbox')}map (MapLibre) instead." for name in _PLOTLY7_MAPBOX_TRACES},
+    **{name: f"use px.{name.removesuffix('mapbox')}map (MapLibre) instead." for name in _PLOTLY7_MAPBOX_EXPRESS},
+    "create_hexbin_mapbox": "use ff.create_hexbin_map instead.",
+    **{
+        name: "use the plotly.express or graph_objects equivalent instead."
+        for name in _PLOTLY7_REMOVED_FIGURE_FACTORY
+    },
+}
+
 class WorkspaceService:
     """Manage editable draft workspaces for hosted apps."""
 
@@ -1019,6 +1048,35 @@ def create_dash_app(server, url_base_pathname, metadata):
             if keyword.arg is None:
                 expanded_keys.update(self._literal_dict_keys(keyword.value, dict_bindings))
 
+        replacement = _PLOTLY7_REMOVED_CALLS.get(function_name)
+        if replacement is not None:
+            warnings.append(
+                {
+                    "path": relative_path,
+                    "line": getattr(node, "lineno", None),
+                    "message": f"Plotly {function_name} was removed in plotly 7; {replacement}",
+                }
+            )
+        if function_name in {"write_image", "to_image"} and "engine" in explicit_keywords:
+            warnings.append(
+                {
+                    "path": relative_path,
+                    "line": getattr(node, "lineno", None),
+                    "message": (
+                        f"Plotly {function_name}(engine=...) was removed in plotly 7 (Orca is gone); "
+                        "drop the engine argument and use Kaleido >= 1.0."
+                    ),
+                }
+            )
+        if function_name.endswith("update_layout") and "mapbox" in explicit_keywords | expanded_keys:
+            warnings.append(
+                {
+                    "path": relative_path,
+                    "line": getattr(node, "lineno", None),
+                    "message": "Plotly layout.mapbox was removed in plotly 7; use layout.map (MapLibre) instead.",
+                }
+            )
+
         if function_name.endswith("update_layout"):
             for duplicate in sorted(explicit_keywords & expanded_keys):
                 warnings.append(
@@ -1045,7 +1103,8 @@ def create_dash_app(server, url_base_pathname, metadata):
                         "path": relative_path,
                         "line": getattr(keyword.value, "lineno", getattr(node, "lineno", None)),
                         "message": (
-                            f"Plotly {keyword.arg} uses 8-digit hex {color_value!r}; prefer rgba(...) because many Plotly properties reject #RRGGBBAA."
+                            f"Plotly {keyword.arg} uses 8-digit hex {color_value!r}; only plotly >= 7 accepts "
+                            "#RRGGBBAA. Prefer rgba(...) if this app may run on an older plotly."
                         ),
                     }
                 )

@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from dash_server.exceptions import DashServerError
 from dash_server.exasol._pyexasol_types import ExaConnectionLike
+from dash_server.exasol.dsn import dsn_fingerprint
 from dash_server.exasol.models import ExasolProfile
 from dash_server.exasol.secrets import ExasolSecretStore
 
@@ -46,7 +47,29 @@ def _classify_connection_error(error_text: str) -> dict[str, str] | None:
             "hint": (
                 "TLS certificate verification failed. If the Exasol instance "
                 "uses a self-signed certificate (Exasol Personal, Nano, Exasol Community Edition, "
-                "or a corporate dev cluster) set tls_verify=false on the profile."
+                "or a corporate dev cluster) set tls_verify=false on the profile. For a remote "
+                "instance, prefer pinning its certificate instead: put the certificate's SHA-256 "
+                "fingerprint in the DSN as host/FINGERPRINT:port."
+            ),
+        }
+    if "could not parse connection string part" in lower:
+        return {
+            "kind": "dsn_invalid",
+            "hint": (
+                "pyexasol could not parse the profile DSN. pyexasol >= 2.4.1 requires "
+                "host[/FINGERPRINT][:port], so a fingerprint after the port (host:port/FP) or "
+                "an IPv6 literal is rejected. Recreate the profile with "
+                "exasol_profile_create_local (overwrite=true) and a corrected DSN."
+            ),
+        }
+    if "did not match server fingerprint" in lower:
+        return {
+            "kind": "tls_fingerprint_mismatch",
+            "hint": (
+                "The server's TLS certificate does not match the fingerprint pinned in the "
+                "profile DSN (host/FINGERPRINT:port). Either the certificate was rotated or "
+                "the connection is not reaching the expected server. Verify the server, then "
+                "update the DSN with the fingerprint reported in this error."
             ),
         }
     return None
@@ -289,10 +312,15 @@ class ExasolConnectionManager:
             "dsn": profile.dsn,
             "user": profile.user,
             "encryption": True,
-            "websocket_sslopt": {
-                "cert_reqs": ssl.CERT_REQUIRED if profile.tls_verify else ssl.CERT_NONE,
-            },
         }
+        if dsn_fingerprint(profile.dsn) is None:
+            kwargs["websocket_sslopt"] = {
+                "cert_reqs": ssl.CERT_REQUIRED if profile.tls_verify else ssl.CERT_NONE,
+            }
+        # else: a pinned fingerprint (host/FINGERPRINT:port) authenticates the server by its
+        # exact certificate. pyexasol only honors the pin when websocket_sslopt is left unset:
+        # it then skips CA validation and compares the certificate's SHA-256 after the
+        # handshake. Passing CERT_REQUIRED would fail a pinned self-signed cert before that.
         if query_timeout_seconds is not None:
             kwargs["query_timeout"] = query_timeout_seconds
         if profile.credential_mode in {"password", "saas_pat"}:

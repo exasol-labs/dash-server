@@ -96,6 +96,10 @@ def test_dependency_installer_skips_install_when_server_env_already_satisfies(tm
     installer.ensure_requirements("demo", ["dash>=4.0,<5.0"], force_clean=True)
     assert len(calls) == 3
 
+    # A marker packaging cannot evaluate falls through to the installer instead of raising.
+    installer.ensure_requirements("demo", ['dash; python_version ~= "3"'])
+    assert len(calls) == 4
+
 
 def test_dependency_installer_falls_back_to_uv_when_pip_is_missing(tmp_path: Path, monkeypatch):
     installer = DependencyInstaller(

@@ -62,7 +62,12 @@ class SchemasMixin:
                 },
                 "dsn": {
                     "type": "string",
-                    "description": "Exasol DSN or database endpoint used by pyexasol.",
+                    "description": (
+                        "pyexasol DSN: host[/FINGERPRINT][:port], comma-separated for multiple hosts "
+                        "(e.g. localhost:8563). For a remote self-signed server, pin its certificate "
+                        "with the SHA-256 fingerprint before the port (db.example.com/ABC123…:8563); "
+                        "the pin then replaces CA verification."
+                    ),
                 },
                 "user": {
                     "type": "string",
@@ -76,7 +81,7 @@ class SchemasMixin:
                     "type": "boolean",
                     "description": (
                         "Enable TLS certificate validation (TLS itself is always on). When omitted: "
-                        "false if every DSN host is loopback (localhost/127.0.0.1/::1, where local "
+                        "false if every DSN host is loopback (localhost/127.x.x.x, where local "
                         "Exasol installs use self-signed certificates), true otherwise."
                     ),
                 },
