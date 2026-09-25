@@ -2163,3 +2163,129 @@ def test_unparseable_dsn_error_from_older_profiles_gets_friendly_hint() -> None:
     assert classified is not None
     assert classified["kind"] == "dsn_invalid"
     assert "host[/FINGERPRINT][:port]" in classified["hint"]
+
+
+class _MartFakeExasolConnection:
+    """BUG-29 fixture: a dbt-gold-style mart (surrogate `*_KEY` first, measures after, no
+    declared constraints) plus a TPC-H-style table whose key is only known from a
+    declared PRIMARY KEY (`L_LINENUMBER` has no key-shaped name)."""
+
+    def execute(self, sql_text: str, params: dict[str, Any] | None = None):
+        if "FROM EXA_ALL_CONSTRAINT_COLUMNS" in sql_text:
+            return _HeuristicFakeExasolStatement(
+                ["CONSTRAINT_SCHEMA", "CONSTRAINT_TABLE", "COLUMN_NAME"],
+                [("TPCH", "LINEITEM", "L_ORDERKEY"), ("TPCH", "LINEITEM", "L_LINENUMBER")],
+            )
+        return _HeuristicFakeExasolStatement(
+            ["COLUMN_SCHEMA", "COLUMN_TABLE", "COLUMN_NAME", "COLUMN_TYPE", "COLUMN_ORDINAL_POSITION"],
+            [
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "SUPPLIER_KEY", "DECIMAL(18,0)", 1),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "SUPPLIER_NAME", "VARCHAR(30) UTF8", 2),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "NATION_NAME", "VARCHAR(25) UTF8", 3),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "ESG_REGION", "VARCHAR(10) UTF8", 4),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "ESG_SCORE", "DOUBLE", 5),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "LEG_COUNT", "DECIMAL(18,0)", 6),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "CO2_KG", "DOUBLE", 7),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "TOTAL_KM", "DOUBLE", 8),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "LINE_COUNT", "DECIMAL(18,0)", 9),
+                ("DBT_GOLD", "GLD_SUPPLIER_PROFILE", "NET_REVENUE", "DECIMAL(36,4)", 10),
+                ("TPCH", "LINEITEM", "L_ORDERKEY", "DECIMAL(12,0)", 1),
+                ("TPCH", "LINEITEM", "L_LINENUMBER", "DECIMAL(10,0)", 2),
+                ("TPCH", "LINEITEM", "L_QUANTITY", "DECIMAL(12,2)", 3),
+                ("TPCH", "LINEITEM", "L_SHIPDATE", "DATE", 4),
+            ],
+        )
+
+    def close(self) -> None:
+        return None
+
+
+class _MartFakePyExasolModule:
+    def connect(self, **kwargs: Any) -> _MartFakeExasolConnection:
+        return _MartFakeExasolConnection()
+
+
+def _scaffold_mart(app, client, *, name: str, schema_name: str, table_name: str) -> dict[str, Any]:
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = _MartFakePyExasolModule
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "exasol_profile_create_local",
+            "arguments": {
+                "name": "analytics-prod",
+                "backend": "onprem",
+                "credential_mode": "password",
+                "dsn": "demodb.exasol.com:8563",
+                "user": "sys",
+                "secret_value": "super-secret",
+                "overwrite": True,
+            },
+        },
+    )
+    response = _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_scaffold_from_schema",
+            "arguments": {
+                "name": name,
+                "profile_name": "analytics-prod",
+                "schema_name": schema_name,
+                "table_name": table_name,
+            },
+        },
+    )
+    result = response.get_json()["result"]
+    assert result["isError"] is False
+    return result["structuredContent"]["schema_blueprint"]
+
+
+@pytest.mark.slow
+def test_bug29_scaffold_never_headlines_a_surrogate_key_and_prefers_money_measures(app, client) -> None:
+    """BUG-29: SUPPLIER_KEY (1..200) was the first numeric column, so the headline KPI was
+    SUM(SUPPLIER_KEY) = 20,100 while NET_REVENUE and CO2_KG sat unused."""
+
+    blueprint = _scaffold_mart(
+        app, client, name="supply-chain-exec", schema_name="DBT_GOLD", table_name="GLD_SUPPLIER_PROFILE"
+    )
+
+    assert "SUPPLIER_KEY" not in blueprint["measure_columns"]
+    assert blueprint["primary_measure"] == "NET_REVENUE"
+    # Non-additive scores rank last, so they never become the SUMmed headline.
+    assert blueprint["measure_columns"][-1] == "ESG_SCORE"
+
+    summary_sql = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_read_file", "arguments": {"name": "supply-chain-exec", "path": "queries/business/summary.sql"}},
+    ).get_json()["result"]["structuredContent"]["content"]
+    assert 'SUM("NET_REVENUE")' in summary_sql
+    assert "SUPPLIER_KEY" not in summary_sql
+
+
+@pytest.mark.slow
+def test_bug29_declared_primary_key_is_excluded_even_without_a_key_shaped_name(app, client) -> None:
+    blueprint = _scaffold_mart(app, client, name="lineitem-kpis", schema_name="TPCH", table_name="LINEITEM")
+
+    assert blueprint["measure_columns"] == ["L_QUANTITY"]
+    assert blueprint["primary_measure"] == "L_QUANTITY"
+
+
+@pytest.mark.parametrize(
+    ("column_name", "is_key"),
+    [
+        ("SUPPLIER_KEY", True),
+        ("C_CUSTKEY", True),
+        ("ORDER_ID", True),
+        ("ID", True),
+        ("CUSTOMER_SK", True),
+        ("PAID_AMOUNT", False),
+        ("VALID", False),
+        ("NET_REVENUE", False),
+    ],
+)
+def test_bug29_key_column_names(column_name: str, is_key: bool) -> None:
+    from dash_server.exasol.service import _is_key_column_name
+
+    assert _is_key_column_name(column_name) is is_key

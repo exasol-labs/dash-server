@@ -40,6 +40,53 @@ _PLATFORM_INTERNAL_SCHEMA_NAMES = {"SYS_SEMANTIC"}
 # a chart titled "LAT over READING_TS" for a sensor-readings table.
 _GEO_COORDINATE_COLUMN_NAMES = {"LAT", "LATITUDE", "LON", "LNG", "LONGITUDE"}
 
+# BUG-29: identifier-shaped column names. `*_ID`/`ID` was the only rule, so dbt-style
+# surrogate keys (`SUPPLIER_KEY`) and TPC-H-style keys (`C_CUSTKEY`) were scored as
+# measures and `SUM(<primary key>)` became the headline KPI. `ID` needs a word boundary
+# (`PAID`, `VALID`); `KEY` does not (`CUSTKEY`, `PARTKEY`).
+_KEY_COLUMN_RE = re.compile(r"(?:^|_)(?:ID|SK|PK|FK)$|KEY$")
+
+# BUG-29: name tokens used to rank measure candidates for the headline KPI, which the
+# scaffold aggregates with SUM. Money ranks first (the usual executive headline), then
+# other additive quantities; ratios, scores and other non-additive values - meaningless
+# when summed - rank last. Ties keep the table's column order.
+_MONEY_MEASURE_TOKENS = frozenset(
+    {
+        "REVENUE", "SALES", "AMOUNT", "AMT", "COST", "COSTS", "PROFIT", "MARGIN", "SPEND",
+        "INCOME", "EXPENSE", "EXPENSES", "TURNOVER", "BOOKINGS",
+    }
+)
+_ADDITIVE_MEASURE_TOKENS = frozenset(
+    {
+        "NET", "GROSS", "TOTAL", "VALUE", "QUANTITY", "QTY", "UNITS", "VOLUME", "WEIGHT",
+        "KG", "KM", "MILES", "CO2", "EMISSION", "EMISSIONS", "ENERGY", "KWH", "HOURS",
+    }
+)
+_NON_ADDITIVE_MEASURE_TOKENS = frozenset(
+    {
+        "SCORE", "RATE", "RATIO", "PCT", "PERCENT", "SHARE", "AVG", "MEAN", "MEDIAN", "RANK",
+        "INDEX", "PER", "AGE", "YEAR", "MONTH", "LEVEL", "BAND", "GRADE", "PRICE",
+        "LATENCY", "TEMPERATURE", "TEMP",
+    }
+)
+
+
+def _is_key_column_name(column_name: str) -> bool:
+    return bool(_KEY_COLUMN_RE.search(column_name.upper()))
+
+
+def _measure_rank(column_name: str) -> int:
+    """Higher is a better headline-KPI candidate (see the token tables above)."""
+
+    tokens = set(re.split(r"[^A-Z0-9]+", column_name.upper()))
+    if tokens & _NON_ADDITIVE_MEASURE_TOKENS:
+        return 0
+    if tokens & _MONEY_MEASURE_TOKENS:
+        return 3
+    if tokens & _ADDITIVE_MEASURE_TOKENS:
+        return 2
+    return 1
+
 
 def _is_platform_internal_schema(schema_name: str) -> bool:
     upper = schema_name.upper()
@@ -460,9 +507,13 @@ class ExasolDashboardService:
                 details={"profile": profile_name, "schema_name": schema_name},
             )
 
+        declared_keys = self._declared_key_columns(profile_name, schema_name=schema_name)
         candidates = []
         for (resolved_schema, resolved_table), column_rows in grouped.items():
-            classified = self._classify_table_columns(column_rows)
+            classified = self._classify_table_columns(
+                column_rows,
+                declared_key_columns=declared_keys.get((resolved_schema, resolved_table), set()),
+            )
             score = (
                 8 * int(bool(classified["measure_columns"]))
                 + 5 * int(bool(classified["time_column"]))
@@ -530,7 +581,48 @@ class ExasolDashboardService:
             ],
         }
 
-    def _classify_table_columns(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    def _declared_key_columns(
+        self,
+        profile_name: str,
+        *,
+        schema_name: str | None,
+    ) -> dict[tuple[str, str], set[str]]:
+        """Return declared PRIMARY/FOREIGN KEY columns per (schema, table), upper-cased.
+
+        Best effort: many marts (dbt included) declare no constraints, and a user may lack
+        access to the catalog view, so any failure just means "no declared keys".
+        """
+
+        params = {"schema_name": schema_name} if schema_name else {}
+        sql_text = (
+            "SELECT CONSTRAINT_SCHEMA, CONSTRAINT_TABLE, COLUMN_NAME\n"
+            "FROM EXA_ALL_CONSTRAINT_COLUMNS\n"
+            "WHERE CONSTRAINT_TYPE IN ('PRIMARY KEY', 'FOREIGN KEY')\n"
+        )
+        if schema_name:
+            sql_text += "  AND CONSTRAINT_SCHEMA = {schema_name!s}\n"
+        try:
+            result = self.execute_profile_query(profile_name, sql_text, params=params)
+        except DashServerError:
+            return {}
+        if result.get("status") != "ok":
+            return {}
+        declared: dict[tuple[str, str], set[str]] = {}
+        for row in self._records_from_result(result):
+            schema = row.get("CONSTRAINT_SCHEMA")
+            table = row.get("CONSTRAINT_TABLE")
+            column = row.get("COLUMN_NAME")
+            if schema and table and column:
+                declared.setdefault((str(schema), str(table)), set()).add(str(column).upper())
+        return declared
+
+    def _classify_table_columns(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        declared_key_columns: set[str] | None = None,
+    ) -> dict[str, Any]:
+        declared_key_columns = declared_key_columns or set()
         time_columns: list[str] = []
         measure_columns: list[str] = []
         dimension_columns: list[str] = []
@@ -541,12 +633,13 @@ class ExasolDashboardService:
             if not column_name:
                 continue
             normalized_name = column_name.upper()
+            is_key = _is_key_column_name(column_name) or normalized_name in declared_key_columns
             if self._is_temporal_type(column_type):
                 time_columns.append(column_name)
             elif (
                 self._is_numeric_type(column_type)
-                and not normalized_name.endswith("_ID")
-                and normalized_name != "ID"
+                # BUG-29: keys (by name or declared constraint) are identifiers, not KPIs.
+                and not is_key
                 # PS26-BUG-009: LAT/LON-shaped columns are numeric but describe a
                 # location, not a KPI - excluded from measure candidacy so
                 # `primary_measure` never picks "LAT" as a trend value.
@@ -555,8 +648,12 @@ class ExasolDashboardService:
                 measure_columns.append(column_name)
             elif self._is_dimension_type(column_type):
                 dimension_columns.append(column_name)
-            if normalized_name.endswith("_ID") or normalized_name == "ID":
+            if is_key:
                 key_columns.append(column_name)
+        # BUG-29: best headline candidate first (stable, so ties keep column order); the
+        # SQL emitters take `measure_columns[0]` as the SUMmed KPI and the first three
+        # for the detail table.
+        measure_columns.sort(key=_measure_rank, reverse=True)
 
         dimension_column = next(
             (

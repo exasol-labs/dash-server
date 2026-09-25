@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrites the profile from the settings on startup. The default stays create-only.
 
 ### Fixed
+- `app_scaffold_from_schema` no longer makes a surrogate key the headline KPI. Before, only
+  `*_ID`/`ID` columns were treated as keys, so on a dbt mart `SUPPLIER_KEY` was the first
+  numeric column and the summary card showed `SUM(SUPPLIER_KEY)`. Key columns are now
+  recognised by name (`*_KEY`, TPC-H-style `*KEY`, `*_ID`, `*_SK`, `*_PK`, `*_FK`) and by
+  declared `PRIMARY KEY`/`FOREIGN KEY` constraints, and are excluded from measures. The
+  remaining measures are ranked for the SUMmed headline: money first (revenue, sales, amount,
+  cost, …), then other additive quantities, with scores, ratios, rates and other
+  non-additive values last. `*_KEY` columns now also count as join keys for relationship
+  hints.
+- The scaffold's derived `REVENUE = SUM(quantity * price)` now pairs a quantity only with a
+  per-unit price (`PRICE`, `NET_UNIT_PRICE`, `LIST_PRICE`, `UNIT_COST`). Before, it paired
+  any column containing `PRICE`, `AMOUNT`, `RATE`, `FEE`, `REVENUE` or `COST`. That
+  double-counted the quantity for totals, e.g. TPC-H's `L_QUANTITY * L_EXTENDEDPRICE`, and
+  multiplied quantities by rates such as `TAX_RATE`.
 - The built-in `demo` app is now seeded on first start even when the Exasol bootstrap
   profile env vars (`DASH_SERVER_EXASOL_PROFILE_NAME` etc.) are set. Previously the profile
   commit made the fresh GitOps repo look already-initialized, so `/apps/demo` — the README's

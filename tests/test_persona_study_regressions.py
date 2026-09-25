@@ -375,6 +375,32 @@ def test_bug_007_scaffold_follows_relationship_hints() -> None:
     assert "AS \"REVENUE\"" in summary, summary
 
 
+@pytest.mark.parametrize(
+    ("measure_columns", "expected_pair"),
+    [
+        # Per-unit prices pair with a quantity (the BUG-007 behavior).
+        (["QUANTITY", "NET_UNIT_PRICE", "NET_AMOUNT"], ("QUANTITY", "NET_UNIT_PRICE")),
+        (["QTY", "LIST_PRICE"], ("QTY", "LIST_PRICE")),
+        (["QTY", "UNIT_COST"], ("QTY", "UNIT_COST")),
+        # Totals already include the quantity; multiplying double-counts it.
+        (["L_QUANTITY", "L_EXTENDEDPRICE", "L_DISCOUNT", "L_TAX"], None),
+        (["QTY", "NET_AMOUNT"], None),
+        (["QTY", "NET_REVENUE"], None),
+        (["QTY", "LINE_COST"], None),
+        # Rates are not prices.
+        (["UNITS", "TAX_RATE"], None),
+    ],
+)
+def test_derived_revenue_pairs_only_quantity_with_a_unit_price(measure_columns, expected_pair) -> None:
+    """The derived REVENUE = SUM(qty * price) used to pair a quantity with any column
+    containing PRICE/AMOUNT/RATE/FEE/REVENUE/COST, e.g. TPC-H's L_QUANTITY * L_EXTENDEDPRICE,
+    where extended price is already quantity * unit price."""
+
+    from dash_server.exasol.scaffold import _find_derived_revenue_pair
+
+    assert _find_derived_revenue_pair(measure_columns) == expected_pair
+
+
 def test_bug_009_kpi_trend_scaffold_quotes_reserved_value_alias() -> None:
     """The static kpi-trend scaffold quotes the reserved-word VALUE alias so a
     realistic rewrite (e.g. replacing the FROM DUAL stub with real SQL) doesn't

@@ -14,6 +14,7 @@ content lives as package data alongside it:
 from __future__ import annotations
 
 import json
+import re
 from importlib import resources
 from typing import Any
 
@@ -465,15 +466,28 @@ def _find_time_via_relationship(blueprint: dict[str, Any]) -> dict[str, Any] | N
     return None
 
 
-# Recognized column-name shapes for the (quantity × price) derived-revenue heuristic.
-# Match against the upper-cased column name with substring tests so we catch
+# Recognized column-name shapes for the (quantity × unit price) derived-revenue heuristic.
+# Quantities match by substring on the upper-cased name so we catch
 # `QUANTITY`, `NET_QUANTITY`, `LINE_QTY`, etc.
 _QUANTITY_TOKENS = ("QUANTITY", "QTY", "UNITS")
-_PRICE_TOKENS = ("PRICE", "AMOUNT", "RATE", "FEE", "REVENUE", "COST")
+
+
+def _is_unit_price_column(column: str) -> bool:
+    """Whether ``column`` names a *per-unit* price, i.e. something to multiply by a quantity.
+
+    Matches whole name tokens: a ``PRICE`` token (``PRICE``, ``NET_UNIT_PRICE``,
+    ``LIST_PRICE``) or ``UNIT`` together with ``COST`` (``UNIT_COST``). Totals must not
+    match - ``QTY x L_EXTENDEDPRICE``, ``QTY x NET_AMOUNT`` or ``QTY x NET_REVENUE`` counts
+    the quantity twice - and neither may rates (``TAX_RATE``) or fees. The old substring
+    match on ``PRICE``/``AMOUNT``/``RATE``/``FEE``/``REVENUE``/``COST`` paired all of those.
+    """
+
+    tokens = set(re.split(r"[^A-Z0-9]+", column.upper()))
+    return "PRICE" in tokens or {"UNIT", "COST"} <= tokens
 
 
 def _find_derived_revenue_pair(measure_columns: list[str]) -> tuple[str, str] | None:
-    """Look for a (quantity-like, price-like) pair among the table's measure columns.
+    """Look for a (quantity-like, unit-price) pair among the table's measure columns.
 
     Returns ``(quantity_column, price_column)`` when one is found, otherwise None.
     Avoids the same column appearing on both sides (a single `NET_AMOUNT` column
@@ -489,7 +503,7 @@ def _find_derived_revenue_pair(measure_columns: list[str]) -> tuple[str, str] | 
         if qty_col is None and any(token in upper for token in _QUANTITY_TOKENS):
             qty_col = column
             continue
-        if price_col is None and any(token in upper for token in _PRICE_TOKENS):
+        if price_col is None and _is_unit_price_column(column):
             price_col = column
     if qty_col and price_col and qty_col != price_col:
         return qty_col, price_col
