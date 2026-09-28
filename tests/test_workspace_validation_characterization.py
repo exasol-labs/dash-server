@@ -402,7 +402,14 @@ def test_exasol_credential_and_lint_full_payload(tmp_path: Path):
             },
         ],
     }
-    assert payload["imports"]["status"] == "passed"
+    # The import smoke check executes create_dash_app(); it is skipped once credential
+    # safety has failed, so validation never runs code that embeds credentials.
+    assert payload["imports"] == {
+        "status": "skipped",
+        "category": "credential_safety_failed",
+        "error": "Skipped import smoke check because credential safety validation failed.",
+        "traceback": None,
+    }
     assert payload["is_valid"] is False
 
 
@@ -561,3 +568,31 @@ def test_ps27_bug003_is_artifact_source_part_excludes_any_hidden_path_component(
     assert is_artifact_source_part(Path("nested/.cache/data.bin")) is False
     assert is_artifact_source_part(Path(".git/HEAD")) is False
     assert is_artifact_source_part(Path("__pycache__/app.cpython-310.pyc")) is False
+
+
+def test_validation_never_executes_an_app_flagged_for_embedded_credentials(tmp_path: Path):
+    """The import smoke check runs create_dash_app(). For an app that calls
+    pyexasol.connect(...) with embedded credentials, that used to open a real database
+    connection from inside the control plane during validation."""
+
+    marker = tmp_path / "create_dash_app_ran"
+    app_source = (
+        "import pyexasol\n"
+        "from pathlib import Path\n"
+        "from dash import Dash, html\n"
+        "def create_dash_app(server, url_base_pathname, metadata):\n"
+        f"    Path({str(marker)!r}).write_text('ran')\n"
+        "    pyexasol.connect(dsn='127.0.0.1:8563', user='sys', password='exasol')\n"
+        "    app = Dash(__name__, server=server, routes_pathname_prefix='/', "
+        "requests_pathname_prefix=url_base_pathname.rstrip('/') + '/')\n"
+        "    app.layout = html.Div(['unsafe'])\n"
+        "    return app\n"
+    )
+    workspace = _build_workspace(tmp_path, manifest=EXASOL_MANIFEST, app_source=app_source)
+
+    payload = workspace.validate_workspace("test", mount_path="/apps/test")
+
+    assert payload["credential_safety"]["status"] == "failed"
+    assert payload["imports"]["category"] == "credential_safety_failed"
+    assert payload["is_valid"] is False
+    assert not marker.exists(), "validation executed create_dash_app() of a credential-embedding app"

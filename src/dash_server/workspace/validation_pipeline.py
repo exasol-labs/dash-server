@@ -189,6 +189,17 @@ class ImportSmokeCheck(Check):
                     "error": "Skipped import smoke check because local cross-module symbol validation failed.",
                     "traceback": None,
                 }
+            elif ctx.payload("credential_safety")["status"] == "failed":
+                # The smoke check executes create_dash_app(). For an app already flagged for
+                # embedding credentials that would run its direct pyexasol.connect(...) inside
+                # the control plane, opening a real database connection with those credentials
+                # during validation. Validation fails either way; don't run it.
+                payload = {
+                    "status": "skipped",
+                    "category": "credential_safety_failed",
+                    "error": "Skipped import smoke check because credential safety validation failed.",
+                    "traceback": None,
+                }
             elif ctx.payload("dependency_install")["status"] == "failed":
                 payload = {
                     "status": "skipped",
@@ -282,9 +293,10 @@ PIPELINE_STAGES: tuple[Check, ...] = (
     RequirementsCheck(),
     CrossModuleSymbolCheck(),
     DependencyInstallCheck(),
+    # Static (reads files only); runs before ImportSmokeCheck, which consults it.
+    CredentialSafetyCheck(),
     ImportSmokeCheck(),
     CallbacksCheck(),
-    CredentialSafetyCheck(),
     ExasolCheck(),
     ConsumptionCheck(),
 )

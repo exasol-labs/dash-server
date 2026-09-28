@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import hashlib
+import json
 import secrets
 from typing import Any
 
@@ -253,7 +254,10 @@ class HandlersMixin:
             raise self._field_error("app_create_from_files", "files", "must be an array of {path, content} objects.")
 
         notes: list[str] = []
-        template = arguments.get("template")
+        files, manifest_payload = self._merge_manifest_arguments(arguments, files, notes)
+        # The template may come from the tool argument or only from the supplied dash-app.json;
+        # both need the helper module.
+        template = arguments.get("template") or (manifest_payload or {}).get("template")
         if template == "exasol-analytics":
             has_helper = any(
                 isinstance(entry, dict) and entry.get("path") == "dash_server_exasol.py"
@@ -308,6 +312,71 @@ class HandlersMixin:
             structured_content=created,
         )
 
+
+    # dash-app.json fields that app_create_from_files also accepts as tool arguments.
+    _MANIFEST_ARGUMENT_FIELDS = ("name", "title", "route", "description", "template", "data_sources", "consumption")
+
+    def _merge_manifest_arguments(
+        self,
+        arguments: dict[str, Any],
+        files: list[Any],
+        notes: list[str],
+    ) -> tuple[list[Any], dict[str, Any] | None]:
+        """Reconcile a supplied dash-app.json with manifest fields passed as tool arguments.
+
+        BUG-30: the supplied file used to overwrite the manifest built from the arguments, so
+        e.g. a ``data_sources`` argument was silently dropped. Now an argument fills a field the
+        file leaves out, and a field set differently in both is rejected. Returns the files
+        (with dash-app.json rewritten when fields were filled) and the parsed manifest, or
+        ``None`` when no parseable dash-app.json was supplied (later validation reports that).
+        """
+
+        index = next(
+            (
+                position
+                for position, entry in enumerate(files)
+                if isinstance(entry, dict) and entry.get("path") == "dash-app.json"
+            ),
+            None,
+        )
+        if index is None:
+            return files, None
+        try:
+            manifest_payload = json.loads(files[index].get("content") or "")
+        except (TypeError, json.JSONDecodeError):
+            return files, None
+        if not isinstance(manifest_payload, dict):
+            return files, None
+
+        supplied = {field: arguments[field] for field in self._MANIFEST_ARGUMENT_FIELDS if field in arguments}
+        conflicts = sorted(
+            field
+            for field, value in supplied.items()
+            if field in manifest_payload and manifest_payload[field] != value
+        )
+        if conflicts:
+            raise DashServerError(
+                category="bundle_validation_error",
+                summary=(
+                    "dash-app.json and the app_create_from_files arguments set different values for "
+                    f"{', '.join(conflicts)}. Set each field in one place, or make them match."
+                ),
+                details={
+                    "tool": "app_create_from_files",
+                    "conflicts": {
+                        field: {"dash-app.json": manifest_payload[field], "argument": supplied[field]}
+                        for field in conflicts
+                    },
+                },
+            )
+        filled = sorted(field for field in supplied if field not in manifest_payload)
+        if not filled:
+            return files, manifest_payload
+        merged = {**manifest_payload, **{field: supplied[field] for field in filled}}
+        notes.append(f"Merged tool arguments into the supplied dash-app.json: {', '.join(filled)}.")
+        files = list(files)
+        files[index] = {**files[index], "content": json.dumps(merged, indent=2) + "\n"}
+        return files, merged
 
     def _tool_app_create_exasol_dashboard(self, arguments: dict[str, Any]) -> dict[str, Any]:
         start_immediately = arguments.get("start_immediately", True)

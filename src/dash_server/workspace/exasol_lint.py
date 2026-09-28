@@ -8,6 +8,7 @@ execution, reserved-word SQL aliases, unbounded queries, and dead SQL files.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from typing import Any
 
@@ -46,16 +47,107 @@ def is_exasol_workspace(manifest: AppManifest) -> bool:
     )
 
 
+_EXASOL_HELPER_MODULES = {"dash_server_exasol", "dash_server.exasol.runtime", "dash_server.exasol.scaffold_helper"}
+
+# Keys agents plausibly write for the binding that the manifest schema does not recognise
+# (they are silently ignored). Named in the hint when the binding is missing.
+_UNRECOGNISED_BINDING_KEYS = ("exasol", "profile", "profile_name", "data_source", "datasource", "datasources")
+
+_BINDING_EXAMPLE = '"data_sources": {"primary": {"kind": "exasol", "profile": "<profile name>"}}'
+
+
+def has_exasol_binding(manifest: AppManifest) -> bool:
+    """Whether the manifest binds a primary Exasol profile the runtime helper can resolve."""
+
+    data_sources = manifest.data_sources if isinstance(manifest.data_sources, dict) else {}
+    primary = data_sources.get("primary")
+    return (
+        isinstance(primary, dict)
+        and primary.get("kind") == "exasol"
+        and isinstance(primary.get("profile"), str)
+        and bool(primary["profile"].strip())
+    )
+
+
+def _files_using_exasol_helper(python_files: dict[str, str]) -> list[str]:
+    """App files that import the Exasol runtime helper (the helper module itself excluded)."""
+
+    using: list[str] = []
+    for relative_path, content in python_files.items():
+        if relative_path == "dash_server_exasol.py":
+            continue
+        try:
+            tree = ast.parse(content, filename=relative_path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules = [node.module]
+            if any(module in _EXASOL_HELPER_MODULES for module in modules):
+                using.append(relative_path)
+                break
+    return using
+
+
+def _binding_issue(
+    manifest: AppManifest,
+    files: dict[str, str],
+    helper_users: list[str],
+) -> dict[str, Any] | None:
+    """BUG-30: an app that queries Exasol through the helper but binds no profile passes
+    every probe (``sql_smoke`` has nothing to test without a profile) and then 500s on its
+    first callback. Fail validation instead, so it is never built or published."""
+
+    if has_exasol_binding(manifest):
+        return None
+    hint = f"Add {_BINDING_EXAMPLE} to dash-app.json (or pass data_sources to the tool)."
+    try:
+        raw_manifest = json.loads(files.get("dash-app.json") or "{}")
+    except json.JSONDecodeError:
+        raw_manifest = {}
+    stray = [key for key in _UNRECOGNISED_BINDING_KEYS if isinstance(raw_manifest, dict) and key in raw_manifest]
+    if stray:
+        hint = (
+            f"dash-app.json sets {', '.join(repr(key) for key in stray)}, which is not a recognised "
+            f"manifest key and is ignored. Use {_BINDING_EXAMPLE} instead."
+        )
+    if helper_users:
+        return {
+            "level": "error",
+            "path": "dash-app.json",
+            "message": (
+                f"{', '.join(helper_users)} {'queries' if len(helper_users) == 1 else 'query'} Exasol "
+                "through the runtime helper, but the manifest "
+                "declares no Exasol data source, so the first callback would fail with HTTP 500. " + hint
+            ),
+        }
+    return {
+        "level": "warning",
+        "path": "dash-app.json",
+        "message": (
+            "template is exasol-analytics but the manifest declares no Exasol data source; any "
+            "query through the runtime helper will fail. " + hint
+        ),
+    }
+
+
 def exasol_validation_report(
     files: dict[str, str],
     manifest: AppManifest,
     *,
     python_files: dict[str, str],
 ) -> dict[str, Any]:
-    if not is_exasol_workspace(manifest):
+    helper_users = _files_using_exasol_helper(python_files)
+    if not is_exasol_workspace(manifest) and not helper_users:
         return {"status": "not_applicable", "issues": []}
 
     issues: list[dict[str, Any]] = []
+    binding_issue = _binding_issue(manifest, files, helper_users)
+    if binding_issue is not None:
+        issues.append(binding_issue)
 
     for relative_path, content in python_files.items():
         if "import pyexasol" in content or "from pyexasol" in content:

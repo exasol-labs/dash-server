@@ -469,6 +469,147 @@ def test_bug_010_app_create_from_files_forwards_data_sources(tmp_path: Path) -> 
     }, manifest
 
 
+_HELPER_APP_PY = (
+    "import dash_server_exasol as dsx\n"
+    "from dash import Dash, Input, Output, dcc, html\n"
+    "def create_dash_app(server, url_base_pathname, metadata):\n"
+    "    app = Dash(__name__, server=server, routes_pathname_prefix='/', "
+    "requests_pathname_prefix=url_base_pathname)\n"
+    "    app.layout = html.Div([dcc.Interval(id='t', max_intervals=1), html.Pre(id='k')])\n"
+    "    @app.callback(Output('k', 'children'), Input('t', 'n_intervals'))\n"
+    "    def show(_):\n"
+    "        return str(dsx.load_rows(server, metadata, __file__, 'queries/kpi.sql'))\n"
+    "    return app\n"
+)
+_BINDING = {"primary": {"kind": "exasol", "profile": "analytics-prod"}}
+
+
+def _exasol_report(manifest_payload: dict[str, Any], python_files: dict[str, str]) -> dict[str, Any]:
+    import json
+
+    from dash_server.dash_apps.factory import validate_manifest_payload
+    from dash_server.workspace.exasol_lint import exasol_validation_report
+
+    manifest = validate_manifest_payload({"name": "x", "title": "X", **manifest_payload})
+    files = {"dash-app.json": json.dumps({"name": "x", "title": "X", **manifest_payload}), **python_files}
+    return exasol_validation_report(files, manifest, python_files=python_files)
+
+
+def test_bug_30_helper_usage_without_binding_fails_validation() -> None:
+    """BUG-30: no binding made sql_smoke not_applicable, so the app was published and then
+    500'd on its first callback. Validation must fail before build/publish instead."""
+
+    report = _exasol_report({"template": "exasol-analytics"}, {"app.py": _HELPER_APP_PY})
+    assert report["status"] == "failed"
+    assert "app.py queries Exasol through the runtime helper" in report["issues"][0]["message"]
+
+    # Helper usage needs a binding whatever the template says.
+    report = _exasol_report({"template": "metric-cards"}, {"app.py": _HELPER_APP_PY})
+    assert report["status"] == "failed"
+
+    bound = _exasol_report({"template": "exasol-analytics", "data_sources": _BINDING}, {"app.py": _HELPER_APP_PY})
+    assert not any(issue["path"] == "dash-app.json" for issue in bound["issues"])
+
+
+def test_bug_30_template_without_helper_usage_only_warns() -> None:
+    report = _exasol_report({"template": "exasol-analytics"}, {"app.py": "from dash import Dash\n"})
+    assert report["status"] == "passed_with_warnings"
+    assert report["issues"][0]["level"] == "warning"
+
+
+def test_bug_30_unrecognised_binding_key_is_named_in_the_hint() -> None:
+    report = _exasol_report(
+        {"template": "exasol-analytics", "exasol": {"profile": "analytics-prod"}}, {"app.py": _HELPER_APP_PY}
+    )
+    assert report["status"] == "failed"
+    assert "dash-app.json sets 'exasol', which is not a recognised manifest key" in report["issues"][0]["message"]
+
+
+def _create_from_files(server: Any, **arguments: Any) -> dict[str, Any]:
+    response, _ = server.handle_jsonrpc(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "app_create_from_files", "arguments": {"start_immediately": False, **arguments}},
+        }
+    )
+    return response["result"]
+
+
+def _sql_smoke_reason(result: dict[str, Any]) -> str | None:
+    probes = (result["structuredContent"].get("preflight") or {}).get("probes", [])
+    probe = next((probe for probe in probes if probe.get("name") == "sql_smoke"), {})
+    return (probe.get("details") or {}).get("reason")
+
+
+def _manifest_file(**fields: Any) -> dict[str, str]:
+    import json
+
+    return {"path": "dash-app.json", "content": json.dumps({"name": "b30", "title": "B30", **fields})}
+
+
+@pytest.mark.slow
+def test_bug_30_data_sources_argument_is_merged_into_a_supplied_manifest(tmp_path: Path) -> None:
+    """BUG-30: a supplied dash-app.json used to overwrite the manifest built from the tool
+    arguments, silently dropping a data_sources argument."""
+
+    import json
+
+    app = create_app({"INSTANCE_PATH": str(tmp_path / "instance"), "TESTING": True})
+    result = _create_from_files(
+        app.extensions["mcp_server"],
+        name="b30",
+        template="exasol-analytics",
+        data_sources=_BINDING,
+        files=[
+            {"path": "app.py", "content": _HELPER_APP_PY},
+            {"path": "queries/kpi.sql", "content": "SELECT 1 AS \"N\" FROM DUAL\n"},
+            _manifest_file(template="exasol-analytics"),
+        ],
+    )
+    assert any("Merged tool arguments" in note for note in result["structuredContent"]["notes"])
+    # The binding now reaches preflight: sql_smoke runs (and fails only because this test
+    # instance has no analytics-prod profile) instead of reporting not_applicable.
+    assert _sql_smoke_reason(result) == "profile_not_found"
+    manifest_path = Path(app.config["INSTANCE_PATH"]) / "gitops-repo" / "apps" / "b30" / "dash-app.json"
+    assert json.loads(manifest_path.read_text())["data_sources"] == _BINDING
+
+
+@pytest.mark.slow
+def test_bug_30_conflicting_manifest_and_argument_are_rejected(tmp_path: Path) -> None:
+    app = create_app({"INSTANCE_PATH": str(tmp_path / "instance"), "TESTING": True})
+    result = _create_from_files(
+        app.extensions["mcp_server"],
+        name="b30",
+        data_sources=_BINDING,
+        files=[
+            {"path": "app.py", "content": _HELPER_APP_PY},
+            _manifest_file(data_sources={"primary": {"kind": "exasol", "profile": "other"}}),
+        ],
+    )
+    assert result["isError"] is True
+    error = result["structuredContent"]["error"]
+    assert error["category"] == "bundle_validation_error"
+    assert "data_sources" in error["summary"]
+
+
+@pytest.mark.slow
+def test_bug_30_manifest_only_template_still_injects_the_helper(tmp_path: Path) -> None:
+    app = create_app({"INSTANCE_PATH": str(tmp_path / "instance"), "TESTING": True})
+    result = _create_from_files(
+        app.extensions["mcp_server"],
+        name="b30",
+        files=[
+            {"path": "app.py", "content": _HELPER_APP_PY},
+            {"path": "queries/kpi.sql", "content": "SELECT 1 AS \"N\" FROM DUAL\n"},
+            _manifest_file(template="exasol-analytics", data_sources=_BINDING),
+        ],
+    )
+    assert any("Auto-injected dash_server_exasol.py" in note for note in result["structuredContent"]["notes"])
+    assert _sql_smoke_reason(result) == "profile_not_found"
+
+
 # -- Phase 3 — envelope polish + docs ---------------------------------------
 
 

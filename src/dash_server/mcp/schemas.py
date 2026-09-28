@@ -309,8 +309,10 @@ class SchemasMixin:
                     "description": (
                         "Optional data-source bindings. For an Exasol-bound app use "
                         "`{\"primary\": {\"kind\": \"exasol\", \"profile\": \"<profile-name>\"}}`. "
-                        "Without this, the runtime helper can't resolve a profile and the first "
-                        "callback will 500."
+                        "Required when the app queries Exasol through dash_server_exasol: without a "
+                        "binding, validation fails and the app is not created. Set it here or in a "
+                        "supplied dash-app.json; an argument fills a field dash-app.json leaves out, "
+                        "and different values in both are rejected."
                     ),
                     "properties": {
                         "primary": {

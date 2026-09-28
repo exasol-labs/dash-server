@@ -42,6 +42,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrites the profile from the settings on startup. The default stays create-only.
 
 ### Fixed
+- Validation no longer runs the code of an app that fails the credential-safety check. The
+  import smoke check executes `create_dash_app()`, so an app calling `pyexasol.connect(...)` with
+  embedded credentials opened a real database connection from inside the control plane during
+  validation. The import check is now skipped (`credential_safety_failed`) once credential safety
+  has failed; validation fails either way. This also removes the one `PyexasolWarning` the test
+  suite emitted.
+- An app that queries Exasol through `dash_server_exasol` but binds no Exasol data source now
+  fails validation and is not created. Before, it was built, preflighted and published: with no
+  profile, `sql_smoke` reported `not_applicable`, and the first callback returned HTTP 500 with
+  `Hosted app metadata does not declare Exasol data_sources`. The error names the files and the
+  `data_sources` form to add. Where `dash-app.json` uses an unrecognised binding key such as
+  `"exasol": {...}`, the error names that key. An `exasol-analytics` app that never calls the
+  helper only gets a warning.
+- `app_create_from_files` no longer silently drops manifest arguments when a `dash-app.json`
+  is supplied, which used to overwrite them. An argument now fills a field the file leaves out
+  (reported in `notes`), and a field set differently in both is rejected with
+  `bundle_validation_error`. The helper module is now also injected when
+  `template: exasol-analytics` is set only in the supplied manifest.
 - `app_scaffold_from_schema` no longer makes a surrogate key the headline KPI. Before, only
   `*_ID`/`ID` columns were treated as keys, so on a dbt mart `SUPPLIER_KEY` was the first
   numeric column and the summary card showed `SUM(SUPPLIER_KEY)`. Key columns are now
