@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-28
+
 ### Added
 - Certificate pinning for Exasol profiles. A DSN of the form `host/FINGERPRINT:port` (the
   SHA-256 of the server certificate) now authenticates a self-signed server by its exact
@@ -46,8 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   import smoke check executes `create_dash_app()`, so an app calling `pyexasol.connect(...)` with
   embedded credentials opened a real database connection from inside the control plane during
   validation. The import check is now skipped (`credential_safety_failed`) once credential safety
-  has failed; validation fails either way. This also removes the one `PyexasolWarning` the test
-  suite emitted.
+  has failed; validation fails either way.
 - An app that queries Exasol through `dash_server_exasol` but binds no Exasol data source now
   fails validation and is not created. Before, it was built, preflighted and published: with no
   profile, `sql_smoke` reported `not_applicable`, and the first callback returned HTTP 500 with
@@ -134,5 +135,6 @@ database questions into live, query-backed dashboards through MCP. This release 
 - Agent-facing skills for building Exasol-backed Dash dashboards and using PyExasol
   directly, under [skills/](skills/).
 
-[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/exasol-labs/dash-server/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/exasol-labs/dash-server/releases/tag/v0.1.0
