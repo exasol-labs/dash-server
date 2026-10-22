@@ -4,7 +4,8 @@
     "Using %s or %(name)s; pyexasol does not recognize it.",
     "Writing AS VALUE (or AS COUNT, AS SUM, AS TYPE, AS KEY) without quoting. These are reserved in Exasol.",
     "Treating '' the same as NULL; in Exasol they are equivalent for equality, which can produce zero rows from a 'show-all' filter.",
-    "Hardcoding a literal list of 'all known values' as the empty-selection fallback for an IN (...) filter, instead of querying SELECT DISTINCT live - the literal list silently stops covering reality as soon as the column gains a new value."
+    "Hardcoding a literal list of 'all known values' as the empty-selection fallback for an IN (...) filter, instead of querying SELECT DISTINCT live - the literal list silently stops covering reality as soon as the column gains a new value.",
+    "Summing an amount stored once per parent row (freight per order, a header discount) over a join to child rows (order lines): it is counted once per child. Aggregate it at its own grain, or pre-aggregate the children, before joining. A governed semantic model encodes this for you (dash://exasol/help/semantic-layer)."
   ],
   "placeholders": [
     {

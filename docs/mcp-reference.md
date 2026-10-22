@@ -70,7 +70,7 @@ _53 tools registered. Each `tools/call` request must pass the tool name and the 
 ## Main Resources
 
 <!-- BEGIN: auto-resources -->
-_18 server-wide resources plus the per-app pattern below ({{app}} matches any registered app name)._
+_19 server-wide resources plus the per-app pattern below ({{app}} matches any registered app name)._
 
 ### Server-wide
 
@@ -78,6 +78,7 @@ _18 server-wide resources plus the per-app pattern below ({{app}} matches any re
 - **`dash://exasol/help/agent-workflow`** — Recommended separation of responsibilities between dash-server and an external Exasol MCP server.
 - **`dash://exasol/help/connection-modes`** — Phase 0 local Exasol connection modes, required fields, and the recommended dashboard workflow.
 - **`dash://exasol/help/dashboard-patterns`** — Built-in Exasol dashboard scaffold patterns and when to use them.
+- **`dash://exasol/help/semantic-layer`** — Check for a governed Exasol Semantic Views model before writing metric SQL, and how to build dashboards on it: profile session setup, query style, governed labels, checks.
 - **`dash://exasol/help/sql-placeholders`** — pyexasol placeholder grammar ({name!s}, {name!d}, etc.) for parameterized dashboard SQL. Replaces SQL-driver :name syntax which Exasol rejects.
 - **`dash://exasol/profiles`** — Git-tracked Exasol profile metadata without secrets.
 - **`dash://meta/app-authoring-guide`** — Recommended create_dash_app factory structure, prefix rules, and common mistakes.

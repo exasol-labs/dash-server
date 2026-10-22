@@ -18,6 +18,7 @@ This file is prose and can drift. The MCP resources are generated from the runni
 | `dash://exasol/help/sql-placeholders` | the full placeholder table and failure modes |
 | `dash://exasol/help/dashboard-patterns` | which scaffold pattern emits real SQL vs demo stubs |
 | `dash://exasol/help/agent-workflow` | how to combine dash-server with a separate Exasol MCP server |
+| `dash://exasol/help/semantic-layer` | building on a governed Exasol Semantic Views model, when the database has one |
 | `dash://meta/session-channel-guide` | inspecting a live dashboard in the user's browser (local mode) |
 | `dash://meta/workflows` | the canonical create → validate → build → preview → promote sequence |
 
@@ -61,16 +62,37 @@ Do not use Dash callbacks to simulate a database engine.
 8. Return only the columns and rows the component actually needs.
 9. Prefer one good query per visual state over shipping a giant raw dataset to Python and slicing it there.
 
-## Start from a scaffold, not a blank file
+## Check for a semantic layer before writing metric SQL
 
-Hand-writing the four files is the slow path and gets the factory contract subtly wrong. Prefer, in this order:
+If the database has a governed semantic model (Exasol Semantic Views), build on it. Its metrics are the certified definitions, and it combines multi-grain and multi-source data correctly. Hand-written metric SQL over the raw tables can disagree with the certified number and still pass every check.
 
-1. **`app_scaffold_from_schema`** — introspects the catalog, picks analytically useful columns and date columns, and emits **catalog-backed SQL** bound to a real schema. This is the right default when the user has a schema in mind.
-2. **`app_create_exasol_dashboard`** with `pattern="analytics-hub"` — the default multi-tab scaffold (system health, query history, and a business placeholder ready for your SQL).
-3. **`app_create_exasol_dashboard`** with `pattern="overview"` or `"kpi-trend"` — **demo-only.** Their generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers. Use them to look at layout shape, never as a starting point for real data. Replace every query before showing the result to a user.
-4. `app_create_from_files` — only when the dashboard genuinely does not fit a pattern.
+```sql
+SELECT MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION
+FROM SEMANTIC_AGENT.MODELS_FOR_AGENT
+WHERE MODEL_STATUS = 'PUBLISHED';
+```
 
-Check `dash://exasol/help/dashboard-patterns` for the current pattern list and which ones emit real SQL; the `sql_kind` field on each pattern says `real` or `demo_placeholder`.
+If a model covers the question:
+
+- Give the profile `session_init_sql = ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"]` and confirm `session_init.status == "applied"` with `exasol_profile_validate`.
+- Query the published views from `queries/*.sql`: `SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region`. Metrics are already aggregated; don't wrap them in `SUM()`.
+- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes today's definition and nothing detects the drift.
+- Take labels and formats from `SEMANTIC_AGENT.FIELDS_FOR_AGENT` instead of hard-coding them.
+
+`dash://exasol/help/semantic-layer` has the full recipe, including grants for a non-SYS profile user and how SQL smoke and the `semantic_models` healthcheck probe treat semantic queries.
+
+Without a semantic layer, aggregate each measure at its own grain before joining: freight stored once per order, summed over a join to order lines, is counted once per line.
+
+## Choosing a creation path
+
+`dash://exasol/help/dashboard-patterns` (`choosing_a_creation_path`) is authoritative. In short:
+
+1. **`app_create_from_files`** with `template="exasol-analytics"` — the default once you know what you are building. It takes your `app.py` and `queries/*.sql` and injects `dash_server_exasol.py`, so skipping a scaffold costs nothing. This is also the path for dashboards on a semantic model.
+2. **`app_scaffold_from_schema`** — while you are still exploring an unfamiliar schema. It picks analytically useful columns and date columns and emits **catalog-backed SQL**; keep what it taught you and delete the rest.
+3. **`app_create_exasol_dashboard`** with `pattern="analytics-hub"` — a prebuilt multi-tab dashboard (system health, query history, and a business placeholder ready for your SQL).
+4. **`app_create_exasol_dashboard`** with `pattern="overview"` or `"kpi-trend"` — **demo-only.** Their generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers. Use them to look at layout shape, never as a starting point for real data.
+
+The `sql_kind` field on each pattern in `dash://exasol/help/dashboard-patterns` says `real` or `demo_placeholder`.
 
 ## The data-layer return contract
 

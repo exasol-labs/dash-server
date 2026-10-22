@@ -237,7 +237,10 @@ It works like a BI tool's "initial SQL".
 
 The main use is [Exasol Semantic Views](https://github.com/exasol-labs/exasol-semantic-views):
 Semantic SQL against a published model only works once the session has its preprocessor
-activated.
+activated. The `dash://exasol/help/semantic-layer` resource has the full recipe for dashboards on
+a semantic model: finding published models, query style, grants for a non-SYS profile user,
+governed labels from `FIELDS_FOR_AGENT`, and why compiled SQL must never be saved into
+`queries/*.sql`.
 
 ```json
 "session_init_sql": [

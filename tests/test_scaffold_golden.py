@@ -118,6 +118,7 @@ def _generate_outputs() -> dict[str, str]:
         "help/sql_placeholders.json": scaffold.exasol_sql_placeholders_help(),
         "help/dashboard_patterns.json": scaffold.exasol_dashboard_patterns_help(),
         "help/agent_workflow.json": scaffold.exasol_agent_workflow_help(),
+        "help/semantic_layer.json": scaffold.exasol_semantic_layer_help(),
     }
     for path, payload in help_payloads.items():
         outputs[path] = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"

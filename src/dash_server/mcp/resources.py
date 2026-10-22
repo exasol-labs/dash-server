@@ -228,6 +228,15 @@ class ResourcesMixin(MCPServerHost):
                 ),
             ),
             (
+                "dash://exasol/help/semantic-layer",
+                lambda _m: self._exasol_service().semantic_layer_help(),
+                _ServerResource(
+                    "exasol-semantic-layer",
+                    "Dashboards on the Exasol semantic layer",
+                    "Check for a governed Exasol Semantic Views model before writing metric SQL, and how to build dashboards on it: profile session setup, query style, governed labels, checks.",
+                ),
+            ),
+            (
                 "dash://exasol/profiles",
                 lambda _m: self._exasol_service().list_profiles(),
                 _ServerResource(
@@ -695,6 +704,19 @@ class ResourcesMixin(MCPServerHost):
                         "app_create_exasol_dashboard",
                         "app_validate",
                         "app_deploy_draft",
+                    ],
+                },
+                {
+                    "name": "create_exasol_dashboard_on_semantic_model",
+                    "steps": [
+                        "Read dash://exasol/help/semantic-layer",
+                        "Find published models in SEMANTIC_AGENT.MODELS_FOR_AGENT and their fields in FIELDS_FOR_AGENT",
+                        "exasol_profile_create_local with session_init_sql enabling the model's preprocessor",
+                        "exasol_profile_validate (session_init.status == applied)",
+                        "app_create_from_files with Semantic SQL in queries/*.sql",
+                        "app_validate",
+                        "app_deploy_draft",
+                        "app_run_healthcheck",
                     ],
                 },
                 {

@@ -21,8 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   models an app's queries read. It fails when a model is `INVALID`, `PRECONDITION`, or
   `NOT_PUBLISHED`, and lists models with validation warnings. The `sql_smoke` probe details
   include the same models.
+- `dash://exasol/help/semantic-layer`: agent guidance for dashboards on an Exasol Semantic
+  Views model. It covers checking for a published model before writing metric SQL, profile
+  session setup and grants, query style, never saving compiled SQL into `queries/*.sql`,
+  governed labels from `FIELDS_FOR_AGENT`, what the checks catch, and prototyping. A
+  `create_exasol_dashboard_on_semantic_model` workflow joins `dash://meta/workflows`;
+  `dash://exasol/help/agent-workflow` now starts with "check for a governed semantic model
+  first", and `dash://exasol/help/sql-placeholders` warns about summing an order-level amount
+  over order lines.
 
 ### Changed
+- The Exasol skill (`skills/exasol_dash_skill.md`) has a semantic-layer section, and its creation
+  path advice now matches `dash://exasol/help/dashboard-patterns`: `app_create_from_files` is the
+  default once the dashboard is designed. It used to rank it last.
 - The SQL smoke check (build preflight and `app_run_healthcheck`) understands Exasol Semantic
   Views. A query file that reads a published semantic model on a profile whose sessions don't
   activate the model's preprocessor now fails with the `session_init_sql` line to add. Before,

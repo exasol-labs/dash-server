@@ -169,6 +169,10 @@ def exasol_sql_placeholders_help() -> dict[str, Any]:
     return _help_payload("help_sql_placeholders.json")
 
 
+def exasol_semantic_layer_help() -> dict[str, Any]:
+    return _help_payload("help_semantic_layer.json")
+
+
 def exasol_dashboard_patterns_help() -> dict[str, Any]:
     return _help_payload("help_dashboard_patterns.json")
 

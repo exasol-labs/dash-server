@@ -1,0 +1,64 @@
+{
+  "check_first": [
+    "Before writing any metric SQL, look for published semantic models: SELECT MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION, AGENT_READINESS FROM SEMANTIC_AGENT.MODELS_FOR_AGENT WHERE MODEL_STATUS = 'PUBLISHED'. If the view doesn't exist, the database has no semantic layer; write SQL as usual.",
+    "If a published model covers the question, query its published views (SEMANTIC_<MODEL>.<OBJECT>) instead of the tables behind them. SEMANTIC_<MODEL>.SEMANTIC_DISCOVERY and SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT describe what the model offers.",
+    "Find fields in SEMANTIC_AGENT.FIELDS_FOR_AGENT and valid metric/dimension pairs in SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT. A pair that isn't listed is not valid (usually a grain fan-out).",
+    "If the model lacks a metric the user asked for, say so. Don't silently hand-write it next to certified ones; if you must derive a number, label it as not certified in the dashboard."
+  ],
+  "checks": [
+    "SQL smoke (app_build preflight, app_run_healthcheck) runs Semantic SQL exactly as the dashboard will, so an unknown field, an invalid combination or a dropped metric fails the check instead of waiting for a viewer.",
+    "A query file that reads a published model on a profile without the preprocessor fails SQL smoke with the session_init_sql line to add.",
+    "app_run_healthcheck's semantic_models probe reports each model the app reads. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, and lists models with warnings."
+  ],
+  "never": [
+    "Never paste the GENERATED_SQL of SEMANTIC_ADMIN.COMPILE_SQL or COMPILE_REQUEST_JSON into queries/*.sql. It freezes today's definition: a certified metric fix never reaches the dashboard, a fused model's coverage and authority stop moving with the data, and no check can tell. Query the published view live.",
+    "Never put session setup (ALTER SESSION, EXECUTE SCRIPT ...ENABLE_SEMANTIC_SQL()) in queries/*.sql. It belongs in the profile's session_init_sql; a query file's session change is discarded so it can't leak into other apps."
+  ],
+  "presentation": {
+    "notes": [
+      "Match result columns on SQL_COLUMN_NAME.",
+      "A percentage value is a fraction: 0.25 means 25%.",
+      "A currency value names its currency in UNIT_HINT."
+    ],
+    "query": "SELECT SQL_COLUMN_NAME, DISPLAY_NAME, DESCRIPTION, FORMAT_HINT, UNIT_HINT, IS_CERTIFIED FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT WHERE MODEL_NAME = '<model>' AND OBJECT_NAME = '<object>'",
+    "summary": "Take labels, descriptions, formats and certification from the model instead of hard-coding them, so a renamed or corrected metric keeps its certified label."
+  },
+  "profile_setup": {
+    "grants": "A profile user other than SYS needs the model granted (EXECUTE SCRIPT SEMANTIC_ADMIN.GRANT_MODEL_ROLE('<model>', '<role of the user>')) plus SELECT on the model's physical source tables. Broad privileges such as SELECT ANY TABLE are not enough: with them, the preprocessor can be set but semantic queries are refused.",
+    "session_init_sql": [
+      "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+    ],
+    "steps": [
+      "exasol_profile_create_local with session_init_sql (overwrite: true to add it to an existing profile).",
+      "exasol_profile_validate and confirm session_init.status == \"applied\"."
+    ],
+    "summary": "Semantic SQL needs the model's SQL preprocessor active in every session. Declare it once on the profile; dash-server runs it on every connection it opens (dashboards, SQL smoke, exports)."
+  },
+  "prototyping": [
+    "The fastest reliable check of a semantic query is the dashboard's own: put it in queries/*.sql, deploy a preview, and run app_run_healthcheck.",
+    "The external Exasol MCP server can run Semantic SQL after set_exasol_preprocessor(SEMANTIC_ADMIN, SEMANTIC_PREPROCESSOR), if its user has the model grant. In exasol-mcp-server 2.2.0, any failed query resets its session: check list_exasol_preprocessors and set the preprocessor again after an error. Don't pass row_limit for a semantic query; put LIMIT in the SQL."
+  ],
+  "provenance": [
+    "Show the model's validation state next to its numbers: MODELS_FOR_AGENT.VALIDATION_STATUS (WARNING is not VALID; the warnings are in SEMANTIC_CATALOG.CURRENT_VALIDATION_ISSUES).",
+    "For fused fields (FIELDS_FOR_AGENT.SOURCE_COUNT > 1 or FUSION_STRATEGY other than NONE), tell the viewer the number combines several sources."
+  ],
+  "reference": "Exasol Semantic Views documents the semantic side of this in docs/hosted-apps.md (repository exasol-labs/exasol-semantic-views): session setup, lanes, governed presentation, provenance, grants, and breaking-change history.",
+  "related_resources": [
+    "dash://exasol/help/connection-modes",
+    "dash://exasol/help/agent-workflow",
+    "dash://exasol/help/sql-placeholders"
+  ],
+  "resource": "dash://exasol/help/semantic-layer",
+  "summary": "Build Exasol dashboards on the governed semantic layer (Exasol Semantic Views) when the database has one, so each number is the certified definition and multi-grain or multi-source data is combined correctly.",
+  "why": "Metric SQL written by hand over raw tables can disagree with the certified definition (a different status filter, a different cost formula) or double-count when an order-level amount is summed over order lines. Validation, SQL smoke and the healthcheck all pass in that case, because the SQL is valid: only the number is wrong.",
+  "without_a_semantic_layer": [
+    "Aggregate a measure at its own grain before joining it to finer rows. An amount stored once per order (freight, shipping, order discount) summed over a join to order lines counts it once per line. Pre-aggregate the lines, or aggregate the order-level amount separately and join the results.",
+    "Spot-check a new metric against an independent total before shipping it."
+  ],
+  "writing_queries": [
+    "Select dimensions and metrics directly and group by the dimensions: SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region. A metric is already aggregated; don't wrap it in SUM() or AVG().",
+    "One statement per queries/*.sql file, as for any dashboard SQL. Put LIMIT in the SQL when you need a bounded result.",
+    "Result columns are named as SQL names them: upper-case unless aliased (TOTAL_REVENUE). Read rows by those names.",
+    "Values are typed: DECIMAL metrics arrive as int or decimal.Decimal; numbers with more than 15 significant digits stay strings."
+  ]
+}

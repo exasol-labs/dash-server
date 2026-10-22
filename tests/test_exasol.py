@@ -2309,3 +2309,22 @@ def test_bug29_key_column_names(column_name: str, is_key: bool) -> None:
     from dash_server.exasol.service import _is_key_column_name
 
     assert _is_key_column_name(column_name) is is_key
+
+
+def test_semantic_layer_guidance_is_discoverable(client) -> None:
+    listed = _call_mcp(client, "resources/list", {}, request_id=1).get_json()["result"]["resources"]
+    assert "dash://exasol/help/semantic-layer" in {resource["uri"] for resource in listed}
+
+    guide = _resource_json(client, "dash://exasol/help/semantic-layer", request_id=2)
+    assert "MODELS_FOR_AGENT" in guide["check_first"][0]
+    assert guide["profile_setup"]["session_init_sql"] == [
+        "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+    ]
+    assert any("GENERATED_SQL" in rule for rule in guide["never"])
+
+    agent_help = _resource_json(client, "dash://exasol/help/agent-workflow", request_id=3)
+    assert "dash://exasol/help/semantic-layer" in agent_help["recommended_workflow"][0]
+
+    workflows = _resource_json(client, "dash://meta/workflows", request_id=4)
+    names = {workflow["name"] for workflow in workflows["workflows"]}
+    assert "create_exasol_dashboard_on_semantic_model" in names

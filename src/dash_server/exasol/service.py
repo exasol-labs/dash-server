@@ -20,6 +20,7 @@ from .scaffold import (
     exasol_agent_workflow_help,
     exasol_connection_modes_help,
     exasol_dashboard_patterns_help,
+    exasol_semantic_layer_help,
     exasol_sql_placeholders_help,
 )
 from .secrets import ExasolSecretStore
@@ -126,6 +127,9 @@ class ExasolDashboardService:
 
     def sql_placeholders_help(self) -> dict[str, Any]:
         return exasol_sql_placeholders_help()
+
+    def semantic_layer_help(self) -> dict[str, Any]:
+        return exasol_semantic_layer_help()
 
     def create_local_profile(
         self,
