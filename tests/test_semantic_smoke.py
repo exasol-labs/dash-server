@@ -21,8 +21,10 @@ class _Connection:
         models: list[tuple[Any, ...]] | None,
         preprocessor: str | None = None,
         model_columns: list[str] | None = None,
+        governed: list[tuple[str, str, str]] | None = None,
     ) -> None:
         self.models = models
+        self.governed = governed or []
         self.preprocessor = preprocessor
         self.model_columns = model_columns or [
             "MODEL_NAME",
@@ -39,6 +41,9 @@ class _Connection:
         self.catalog_lookups = 0
 
     def execute(self, sql: str, params: Any = None) -> Any:
+        if "FUSION_FOR_AGENT" in sql:
+            columns = ["SOURCE_OBJECT", "MODEL_NAME", "PUBLISHED_SCHEMA"]
+            return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.governed)
         if "MODELS_FOR_AGENT" in sql:
             self.catalog_lookups += 1
             if self.models is None:
@@ -163,3 +168,29 @@ def test_semantic_models_probe_fails_on_an_unusable_model() -> None:
     )
     assert probe["status"] == "failed"
     assert "'fusion' (SEMANTIC_FUSION) is INVALID" in probe["details"]["latest_error"]
+
+
+def test_raw_reads_of_a_governed_table_pass_with_a_warning() -> None:
+    connection = _Connection(
+        models=[SALES_MODEL],
+        preprocessor=PREPROCESSOR,
+        governed=[("MART.ORDER_LINES", "sales", "SEMANTIC_SALES"), ("MART.ORDERS", "sales", "SEMANTIC_SALES")],
+    )
+    files = [
+        ("queries/margin.sql", 'SELECT SUM(ol.quantity) FROM "MART"."ORDER_LINES" ol GROUP BY 1'),
+        ("queries/orders_x.sql", "SELECT COUNT(*) FROM MART.ORDERS_X"),  # a lookalike name isn't governed
+        SEMANTIC_QUERY,
+    ]
+
+    report = _smoke(connection, files)
+
+    assert report.overall_status == "passed"
+    margin, lookalike, semantic = report.files
+    assert margin.warnings == (
+        "This query reads MART.ORDER_LINES, which backs the published semantic model 'sales' (SEMANTIC_SALES). "
+        "Metrics written by hand over it can disagree with the certified definitions; query SEMANTIC_SALES "
+        "instead. See dash://exasol/help/semantic-layer.",
+    )
+    assert "query SEMANTIC_SALES instead" in margin.warnings[0]
+    assert lookalike.warnings == ()
+    assert semantic.warnings == ()

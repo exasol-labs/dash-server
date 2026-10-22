@@ -38,8 +38,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .semantic_models import (
     SemanticModelRef,
+    governed_sources,
     normalize_identifier,
     published_semantic_models,
+    referenced_governed_sources,
     referenced_models,
     session_preprocessor,
 )
@@ -62,6 +64,8 @@ class SqlSmokeFile:
     skip_reason: str | None = None
     # Names of the published semantic models the query reads.
     semantic_models: tuple[str, ...] = ()
+    # Advice that doesn't fail the check, e.g. raw reads of a semantic model's source tables.
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -207,6 +211,7 @@ def _smoke_one(
 
     semantic_models = referenced_models(stripped, semantic.models) if semantic is not None else []
     model_names = tuple(ref.model for ref in semantic_models)
+    warnings = _governed_source_warnings(stripped, semantic) if semantic is not None else ()
     inactive = [
         ref
         for ref in semantic_models
@@ -239,6 +244,7 @@ def _smoke_one(
             outcome="failed",
             error_text=str(exc),
             semantic_models=model_names,
+            warnings=warnings,
         )
 
     close = getattr(statement, "close", None)
@@ -247,7 +253,33 @@ def _smoke_one(
             close()
         except Exception:
             pass
-    return SqlSmokeFile(relative_path=relative_path, outcome="passed", semantic_models=model_names)
+    return SqlSmokeFile(
+        relative_path=relative_path, outcome="passed", semantic_models=model_names, warnings=warnings
+    )
+
+
+def _governed_source_warnings(sql_text: str, semantic: _SemanticContext) -> tuple[str, ...]:
+    """One warning when the query reads tables that published semantic models govern."""
+
+    sources = referenced_governed_sources(sql_text, semantic.governed_sources)
+    if not sources:
+        return ()
+    models: list[tuple[str, str]] = []
+    for source in sources:
+        models.extend(model for model in semantic.governed_sources[source] if model not in models)
+    tables = _join_names(sources)
+    named = _join_names([f"{model!r} ({schema})" for model, schema in models])
+    plural = len(models) > 1
+    return (
+        f"This query reads {tables}, which back{'' if len(sources) > 1 else 's'} the published semantic "
+        f"model{'s' if plural else ''} {named}. Metrics written by hand over "
+        f"{'them' if len(sources) > 1 else 'it'} can disagree with the certified definitions; query "
+        f"{models[0][1]} instead. See dash://exasol/help/semantic-layer.",
+    )
+
+
+def _join_names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 class _SemanticContext:
@@ -261,6 +293,7 @@ class _SemanticContext:
         self._connection = connection
         self._models: list[SemanticModelRef] | None = None
         self._session_preprocessor: str | None = None
+        self._governed_sources: dict[str, list[tuple[str, str]]] = {}
 
     @property
     def models(self) -> list[SemanticModelRef]:
@@ -268,7 +301,13 @@ class _SemanticContext:
             self._models = published_semantic_models(self._connection)
             if self._models:
                 self._session_preprocessor = session_preprocessor(self._connection)
+                self._governed_sources = governed_sources(self._connection)
         return self._models
+
+    @property
+    def governed_sources(self) -> dict[str, list[tuple[str, str]]]:
+        self.models  # noqa: B018 - looks up the session state on first use
+        return self._governed_sources
 
     @property
     def known_models(self) -> list[SemanticModelRef]:

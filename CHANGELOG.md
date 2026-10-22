@@ -38,8 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   certified metrics labelled with their display names, the trend uses a time dimension, and the
   detail uses a category dimension, all from valid metric/dimension combinations. Without
   `schema_name`, the scaffold prefers a usable published model over raw tables.
+- SQL smoke (build preflight and `app_run_healthcheck`) warns when a query file reads a table that
+  backs a published semantic model, naming the published schema to query instead. The warnings
+  are in the `sql_smoke` probe's `details.warnings`; they don't fail the check.
+- `app_validate` warns when a query file looks like saved `COMPILE_SQL` / `COMPILE_REQUEST_JSON`
+  output, which freezes today's metric definitions.
 
 ### Changed
+- `app_validate`'s "does not declare LIMIT or obvious aggregation" warning no longer fires for
+  Semantic SQL against a `SEMANTIC_*` schema (its metrics aggregate implicitly), and "Prefer one
+  statement per Exasol SQL file" ignores semicolons inside comments and string literals.
 - `app_scaffold_from_schema` no longer treats every `SEMANTIC_*` schema as platform-internal. Only
   Semantic Views' own schemas (`SEMANTIC_ADMIN`, `SEMANTIC_AGENT`, `SEMANTIC_CATALOG`,
   `SEMANTIC_SOURCE`, `SYS_SEMANTIC`) are skipped. Published model schemas are scaffolded through the

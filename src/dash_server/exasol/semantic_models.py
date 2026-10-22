@@ -65,6 +65,51 @@ def published_semantic_models(connection: object) -> list[SemanticModelRef]:
     return models_from_rows(rows)
 
 
+GOVERNED_SOURCES_COLUMNS = ["SOURCE_OBJECT", "MODEL_NAME", "PUBLISHED_SCHEMA"]
+GOVERNED_SOURCES_QUERY = (
+    "SELECT DISTINCT f.SOURCE_OBJECT, m.MODEL_NAME, m.PUBLISHED_SCHEMA "
+    "FROM SEMANTIC_AGENT.FUSION_FOR_AGENT f "
+    "JOIN SEMANTIC_AGENT.MODELS_FOR_AGENT m ON m.MODEL_ID = f.MODEL_ID "
+    "WHERE m.MODEL_STATUS = 'PUBLISHED' AND f.SOURCE_OBJECT IS NOT NULL "
+    "ORDER BY 1, 2"
+)
+
+
+def governed_sources(connection: object) -> dict[str, list[tuple[str, str]]]:
+    """Physical relations behind published models: ``"SCHEMA.TABLE"`` -> [(model, published schema)].
+
+    Covers every representation, partition and identity mapping a model reads. Best effort,
+    like ``published_semantic_models``.
+    """
+
+    try:
+        statement = connection.execute(GOVERNED_SOURCES_QUERY)  # type: ignore[attr-defined]
+        if list(statement.column_names()) != GOVERNED_SOURCES_COLUMNS:
+            return {}
+        rows = statement.fetchall()
+    except Exception:
+        return {}
+    sources: dict[str, list[tuple[str, str]]] = {}
+    for source, model, schema in rows:
+        if source and model and schema:
+            sources.setdefault(normalize_identifier(str(source)), []).append((str(model), str(schema)))
+    return sources
+
+
+def referenced_governed_sources(sql_text: str, sources: dict[str, list[tuple[str, str]]]) -> list[str]:
+    """The governed relations (``"SCHEMA.TABLE"``) that ``sql_text`` reads, in the order given."""
+
+    found = []
+    for source in sources:
+        schema, _, table = source.partition(".")
+        pattern = (
+            r'(?<![A-Za-z0-9_$"])"?' + re.escape(schema) + r'"?\s*\.\s*"?' + re.escape(table) + r'"?(?![A-Za-z0-9_$])'
+        )
+        if table and re.search(pattern, sql_text, flags=re.IGNORECASE):
+            found.append(source)
+    return found
+
+
 def models_from_rows(rows: Any) -> list[SemanticModelRef]:
     """Build model refs from rows of ``MODELS_QUERY``, skipping incomplete ones."""
 
@@ -124,12 +169,16 @@ def referenced_models(sql_text: str, models: list[SemanticModelRef]) -> list[Sem
 
 
 __all__ = [
+    "GOVERNED_SOURCES_COLUMNS",
+    "GOVERNED_SOURCES_QUERY",
     "MODELS_COLUMNS",
     "MODELS_QUERY",
     "SemanticModelRef",
+    "governed_sources",
     "models_from_rows",
     "normalize_identifier",
     "published_semantic_models",
+    "referenced_governed_sources",
     "referenced_models",
     "session_preprocessor",
 ]

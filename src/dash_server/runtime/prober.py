@@ -241,6 +241,14 @@ class HealthProber:
             smoke_params=collect_sql_smoke_params(Path(revision.artifact_path)),
         )
         semantic_models = [asdict(ref) for ref in report.semantic_models]
+        warnings = [
+            {"path": f.relative_path, "message": message} for f in report.files for message in f.warnings
+        ]
+        extra: dict[str, Any] = {}
+        if semantic_models:
+            extra["semantic_models"] = semantic_models
+        if warnings:
+            extra["warnings"] = warnings
         if report.overall_status == "passed":
             return {
                 "name": "sql_smoke",
@@ -253,7 +261,7 @@ class HealthProber:
                         for f in report.files
                         if f.outcome == "skipped"
                     ],
-                    **({"semantic_models": semantic_models} if semantic_models else {}),
+                    **extra,
                 },
             }
         if report.overall_status == "skipped":
@@ -283,7 +291,7 @@ class HealthProber:
                     for f in report.files
                     if f.outcome == "failed"
                 ],
-                **({"semantic_models": semantic_models} if semantic_models else {}),
+                **extra,
             },
         }
 

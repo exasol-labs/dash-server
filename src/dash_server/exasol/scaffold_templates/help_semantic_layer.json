@@ -47,7 +47,9 @@
   "checks": [
     "SQL smoke (app_build preflight, app_run_healthcheck) runs Semantic SQL exactly as the dashboard will, so an unknown field, an invalid combination or a dropped metric fails the check instead of waiting for a viewer.",
     "A query file that reads a published model on a profile without the preprocessor fails SQL smoke with the session_init_sql line to add.",
-    "app_run_healthcheck's semantic_models probe reports each model the app reads. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, and lists models with warnings."
+    "app_run_healthcheck's semantic_models probe reports each model the app reads. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, and lists models with warnings.",
+    "SQL smoke warns (sql_smoke details.warnings) when a query file reads a table that backs a published model, naming the published schema to use instead.",
+    "app_validate warns when a query file looks like saved COMPILE_SQL / COMPILE_REQUEST_JSON output."
   ],
   "prototyping": [
     "The fastest reliable check of a semantic query is the dashboard's own: put it in queries/*.sql, deploy a preview, and run app_run_healthcheck.",

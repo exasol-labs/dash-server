@@ -38,6 +38,29 @@ _RESERVED_ALIAS_RE = re.compile(
 )
 
 
+# Marks of SQL compiled by Exasol Semantic Views (COMPILE_SQL / COMPILE_REQUEST_JSON). Fused
+# models emit "__esv_*" CTEs and f4_/f5_ representation aliases; every compile re-aliases its
+# canonical lower-case field names to upper case in the outer projection.
+_COMPILED_SEMANTIC_SQL_RE = re.compile(r'"__esv_|"F5_SEMANTIC_KEY"|\bf[45]_(?:rep|map|src)_\d+\b')
+_COMPILED_PROJECTION_RE = re.compile(r'"([a-z][a-z0-9_]*)"\s+AS\s+"([A-Z][A-Z0-9_]*)"')
+# A query against an Exasol Semantic Views published schema (SEMANTIC_<MODEL>, the default
+# naming): metrics aggregate implicitly, so the LIMIT/aggregation heuristic doesn't apply.
+_SEMANTIC_SCHEMA_REF_RE = re.compile(r'\bFROM\s+"?SEMANTIC_[A-Z0-9_]+"?\s*\.', re.IGNORECASE)
+_SQL_COMMENT_OR_LITERAL_RE = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"", re.DOTALL)
+
+
+def _without_comments_and_literals(sql: str) -> str:
+    """``sql`` with comments and quoted strings/identifiers blanked, for structural checks."""
+
+    return _SQL_COMMENT_OR_LITERAL_RE.sub(" ", sql)
+
+
+def _looks_like_compiled_semantic_sql(sql: str) -> bool:
+    if _COMPILED_SEMANTIC_SQL_RE.search(sql):
+        return True
+    return any(alias == name.upper() for name, alias in _COMPILED_PROJECTION_RE.findall(sql))
+
+
 def is_exasol_workspace(manifest: AppManifest) -> bool:
     data_sources = manifest.data_sources if isinstance(manifest.data_sources, dict) else {}
     primary = data_sources.get("primary")
@@ -206,7 +229,7 @@ def exasol_validation_report(
                     "message": "Avoid SELECT * in Exasol query files. Select only the columns the dashboard needs.",
                 }
             )
-        stripped = content.strip()
+        stripped = _without_comments_and_literals(content).strip()
         if ";" in stripped[:-1]:
             issues.append(
                 {
@@ -224,8 +247,23 @@ def exasol_validation_report(
             and " JOIN " not in from_clause
             and " UNION " not in from_clause
         )
+        if _looks_like_compiled_semantic_sql(content):
+            issues.append(
+                {
+                    "level": "warning",
+                    "path": relative_path,
+                    "message": (
+                        "This looks like SQL compiled by Exasol Semantic Views (COMPILE_SQL or "
+                        "COMPILE_REQUEST_JSON output). Saved compiled SQL freezes today's metric definitions "
+                        "(and, for a fused model, its coverage and authority): later fixes never reach this "
+                        "dashboard, and nothing detects the drift. Query the published semantic view live "
+                        "instead; see dash://exasol/help/semantic-layer."
+                    ),
+                }
+            )
         if (
             " FROM " in from_clause
+            and not _SEMANTIC_SCHEMA_REF_RE.search(content)
             and " LIMIT " not in from_clause
             and " GROUP BY " not in from_clause
             and not any(token in normalized for token in ("COUNT(", "SUM(", "AVG(", "MIN(", "MAX("))
