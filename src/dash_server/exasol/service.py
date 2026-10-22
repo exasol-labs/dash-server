@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from dash_server.exceptions import DashServerError
+from dash_server.exasol.fetch_mappers import dashboard_fetch_mapper
 from dash_server.gitops import GitRepoService
 
 from .connection_manager import ExasolConnectionManager
@@ -355,6 +356,7 @@ class ExasolDashboardService:
                 connection = self.connection_manager.connect(profile)
                 statement = connection.execute(sql_text, params or {})
                 visible_rows, truncated = self._fetch_bounded_rows(statement, row_limit)
+                visible_rows = self._typed_rows(statement, visible_rows)
                 columns = self._extract_columns(statement)
                 # Close only the statement; the connection stays cached. Closing
                 # promptly here also matters more than it used to (PS26-BUG-004):
@@ -767,6 +769,27 @@ class ExasolDashboardService:
         else:
             rows = self._fetch_rows(statement)
         return rows[:row_limit], len(rows) > row_limit
+
+    def _typed_rows(self, statement: Any, rows: list[list[Any]]) -> list[list[Any]]:
+        """Convert DECIMAL/DATE/TIMESTAMP values to Python numbers and dates.
+
+        The cached dashboard connection has no pyexasol `fetch_mapper` (a mapper is a
+        per-connection option), so the conversion runs here, driven by the statement's
+        column metadata. Rows pass through unchanged when that metadata isn't available
+        (lightweight test doubles).
+        """
+
+        columns = getattr(statement, "columns", None)
+        try:
+            column_types = list(columns().values()) if callable(columns) else None
+        except Exception:
+            column_types = None
+        if not column_types or not all(isinstance(data_type, dict) for data_type in column_types):
+            return rows
+        return [
+            [dashboard_fetch_mapper(value, data_type) for value, data_type in zip(row, column_types, strict=False)]
+            for row in rows
+        ]
 
     def _fetch_rows(self, statement: Any) -> list[list[Any]]:
         # `statement` is `Any` rather than `ExaStatementLike` because tests and the

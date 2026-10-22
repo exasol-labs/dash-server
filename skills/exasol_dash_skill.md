@@ -103,6 +103,10 @@ if has_error(rows):
 
 Why the contract is shaped this way: a raising helper would turn one bad query into a Dash callback exception and a blank component, with the reason buried in server logs. The envelope keeps the callback path stable and puts the message where the user and the agent can both see it.
 
+### Row values are typed
+
+Successful rows hold Python values, not strings. `DECIMAL` columns arrive as `int` or `decimal.Decimal`, `DATE` as `datetime.date`, and `TIMESTAMP` as `datetime.datetime`. `INTERVAL` values and numbers with more than 15 significant digits stay `str`, because the browser couldn't show those exactly. Pass values straight to plotly or Dash, and format them with `strftime()` or format specs (`f"{value:,.2f}"`). Never slice them as strings (`row["DAY"][:7]` raises `TypeError`). Convert with `float()` before mixing a `Decimal` into float arithmetic.
+
 Related platform behavior worth knowing:
 
 - Data-layer failures are recorded and surface as the `data_layer` probe in `app_run_healthcheck` and on `dash://apps/{name}/errors`.

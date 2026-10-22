@@ -17,7 +17,8 @@
     "Use the external Exasol MCP server for discovery and SQL design, not for dashboard runtime execution.",
     "Use dash-server profiles for hosted dashboards so credentials stay server-side.",
     "Do not copy DSN, user, password, PAT, token, or raw secret values from Exasol MCP output into app files.",
-    "Do not make a hosted dashboard depend on live MCP tool calls. Put final runtime SQL in queries/*.sql and execute it through dash_server_exasol.py or server-side helpers."
+    "Do not make a hosted dashboard depend on live MCP tool calls. Put final runtime SQL in queries/*.sql and execute it through dash_server_exasol.py or server-side helpers.",
+    "Query helpers return typed values: DECIMAL columns come back as int or decimal.Decimal, DATE as datetime.date, and TIMESTAMP as datetime.datetime. Numbers with more than 15 significant digits and INTERVAL values stay strings, because a browser can't show them exactly. Format dates with strftime() and numbers with format specs; don't slice or concatenate them as strings. Convert with float() before mixing a Decimal into float arithmetic."
   ],
   "recommended_workflow": [
     "Use the external Exasol MCP server to inspect schema, test candidate SQL, and understand the dataset.",

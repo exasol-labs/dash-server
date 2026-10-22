@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Breaking for hosted apps:** dashboard queries (`query_rows`, `query_one`, `query_scalar`
+  and the generated `load_*` wrappers) now return `DECIMAL` values as `int` or
+  `decimal.Decimal`, `DATE` as `datetime.date`, and `TIMESTAMP` as `datetime.datetime`.
+  Before, pyexasol delivered most of these as strings, so charts and arithmetic needed manual
+  conversion. App code that treats these values as strings, such as `row["DAY"][:7]` or
+  `date.fromisoformat(row["DAY"])`, must be updated. Numbers with more than 15 significant
+  digits stay strings so the browser doesn't round them, including 16–18 digit
+  `DECIMAL(p,0)` values that used to arrive as `int`. The generated scaffolds already work
+  with typed values, and the agent guidance (`dash://exasol/help/agent-workflow`, the Exasol
+  dashboard skill) documents the new types.
 - Dependencies updated: pyexasol 3.0.0 (the upper bound is raised from `<3.0` to `<4.0`),
   cryptography 50.0.2, Werkzeug 3.1.9, pydantic 2.14.1, setuptools 84.2.1, ruff 0.17.1, and
   mypy 2.4.0, plus transitive updates. pyexasol 3's breaking changes are in its DBAPI module
@@ -22,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, pyexasol delivered those values as strings, so they landed in the workbook as text
   that couldn't be summed or sorted, despite what the docs said. The XLSX export connection
   now uses a typed `fetch_mapper` built on pyexasol 3's `pyexasol.data_types`. CSV exports
-  and dashboards are unchanged. Numbers with more than 15 significant digits are now written
+  are unchanged. Numbers with more than 15 significant digits are now written
   as text, so Excel no longer rounds them (this includes `DECIMAL(16..18,0)` values that were
   written as numbers before). Dates before 1900 and `INTERVAL` values are also written as text.
 - Reading Exasol scaffold templates no longer passes two segments to `joinpath`. On Python

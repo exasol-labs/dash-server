@@ -599,6 +599,24 @@ def render_agents(_):
     return [html.Tr([html.Td(r["AGENT_ID"]), html.Td(r["LATENCY_MS"])]) for r in rows]
 ```
 
+Row values are Python-typed:
+
+| Exasol column | Python value |
+|---|---|
+| `DECIMAL(p,0)` | `int` |
+| `DECIMAL(p,s)` | `decimal.Decimal` |
+| `DATE` | `datetime.date` |
+| `TIMESTAMP`, `TIMESTAMP WITH LOCAL TIME ZONE` | `datetime.datetime` (naive, in the session time zone) |
+| `DOUBLE` | `float` |
+| `BOOLEAN` | `bool` |
+| `VARCHAR`, `CHAR`, `INTERVAL`, `GEOMETRY`, `HASHTYPE` | `str` |
+
+Numbers with more than 15 significant digits stay `str`, because a browser stores numbers as
+doubles and would round them on screen. Values in a non-ISO session date format also stay `str`.
+Dash and plotly serialize `Decimal` and dates natively, so rows can go straight into figures and
+tables. Format them with `strftime()` / format specs rather than string slicing, and convert a
+`Decimal` with `float()` before mixing it into float arithmetic.
+
 The same envelope is what the `_record_data_layer_error` recorder fires on, so
 treating it explicitly is what lights up `dash://apps/{name}/errors`, the
 `data_layer` healthcheck probe, and `app_collect_diagnostics`. Skipping the

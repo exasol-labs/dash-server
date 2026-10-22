@@ -1,9 +1,9 @@
 """pyexasol ``fetch_mapper`` callables for result sets that need Python-typed values.
 
 Without a mapper, pyexasol returns DECIMAL(p,s), DECIMAL(p,0) beyond 18 digits, DATE,
-and TIMESTAMP values as the strings Exasol sends over the websocket. That is what the
-interactive dashboard path and CSV exports rely on. Typed consumers (XLSX export)
-opt in to ``typed_fetch_mapper`` per connection instead.
+and TIMESTAMP values as the strings Exasol sends over the websocket. CSV exports keep
+that text on purpose. XLSX exports use ``typed_fetch_mapper``; hosted dashboards use
+``dashboard_fetch_mapper``, which also keeps numbers a browser can't hold exactly as text.
 """
 
 from __future__ import annotations
@@ -45,4 +45,27 @@ def typed_fetch_mapper(value: Any, data_type: Mapping[str, Any]) -> Any:
         return value
 
 
-__all__ = ["typed_fetch_mapper"]
+# A browser (and Excel) stores numbers as IEEE doubles: 15 significant digits are exact.
+_EXACT_SIGNIFICANT_DIGITS = 15
+
+
+def dashboard_fetch_mapper(value: Any, data_type: Mapping[str, Any]) -> Any:
+    """``typed_fetch_mapper`` for values bound for a hosted dashboard.
+
+    Dash serializes callback output to JSON, and the browser parses every JSON number
+    as a double. An integer or decimal with more than 15 significant digits (IDs from
+    ``DECIMAL(36,0)``, say) would be silently rounded on screen, so it stays the exact
+    text Exasol sent instead.
+    """
+
+    converted = typed_fetch_mapper(value, data_type)
+    if isinstance(converted, bool):
+        return converted
+    if isinstance(converted, int) and abs(converted) >= 10**_EXACT_SIGNIFICANT_DIGITS:
+        return str(value)
+    if isinstance(converted, decimal.Decimal) and len(converted.normalize().as_tuple().digits) > _EXACT_SIGNIFICANT_DIGITS:
+        return str(value)
+    return converted
+
+
+__all__ = ["dashboard_fetch_mapper", "typed_fetch_mapper"]

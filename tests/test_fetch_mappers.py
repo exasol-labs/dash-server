@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 from openpyxl import load_workbook
 
 from dash_server.consumption.formats import get_dataset_format
 from dash_server.consumption.xlsx_format import write_xlsx
-from dash_server.exasol.fetch_mappers import typed_fetch_mapper
+from dash_server.exasol.fetch_mappers import dashboard_fetch_mapper, typed_fetch_mapper
+from dash_server.exasol.service import ExasolDashboardService
 
 # Column metadata and raw values exactly as pyexasol 3.0 reports them for a live Exasol
 # (no fetch_mapper): `statement.columns()` and the unmapped row.
@@ -134,3 +137,62 @@ def test_xlsx_writes_values_excel_cannot_hold_exactly_as_text(tmp_path: Path) ->
         ("1899-12-31", "s"),
     ]
 
+
+class _RealMetadataStatement:
+    """pyexasol.ExaStatement stand-in reporting the real metadata and unmapped values above."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def column_names(self) -> list[str]:
+        return list(REAL_COLUMNS)
+
+    def columns(self) -> dict[str, dict[str, Any]]:
+        return REAL_COLUMNS
+
+    def fetchmany(self, size: int) -> list[tuple[Any, ...]]:
+        return [tuple(REAL_ROW)][:size]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_dashboard_mapper_keeps_numbers_a_browser_would_round_as_text() -> None:
+    big = REAL_COLUMNS["BIG_ID"]
+    assert dashboard_fetch_mapper("12345678901234567890", big) == "12345678901234567890"
+    assert dashboard_fetch_mapper("999999999999999", big) == 999999999999999
+    # DECIMAL(18,0) arrives as a JSON number; 16+ digits still can't survive a double.
+    assert dashboard_fetch_mapper(1234567890123456, REAL_COLUMNS["QTY"]) == "1234567890123456"
+    amount = {"type": "DECIMAL", "precision": 36, "scale": 4}
+    assert dashboard_fetch_mapper("1234567890123.4567", amount) == "1234567890123.4567"
+    assert dashboard_fetch_mapper("1234.5000", amount) == Decimal("1234.5000")
+    assert dashboard_fetch_mapper(True, REAL_COLUMNS["FLAG"]) is True
+
+
+def test_dashboard_queries_return_typed_values() -> None:
+    statement = _RealMetadataStatement()
+    connection = SimpleNamespace(execute=lambda _sql, _params: statement)
+    svc = ExasolDashboardService.__new__(ExasolDashboardService)
+    svc.profile_store = SimpleNamespace(get_profile=lambda _name: SimpleNamespace(name="kit", query_defaults=None))
+    svc.connection_manager = SimpleNamespace(connect=lambda _profile: connection)
+
+    result = svc.execute_profile_query("kit", "SELECT ...")
+
+    assert result["status"] == "ok"
+    assert result["columns"] == list(REAL_COLUMNS)
+    assert result["rows"] == [
+        [
+            Decimal("1234.56"),
+            42,
+            "12345678901234567890",
+            date(2026, 7, 1),
+            datetime(2026, 7, 1, 12, 34, 56, 789000),
+            datetime(2026, 7, 1, 12, 34, 56),
+            "+02 03:04:05.500",
+            "+01-06",
+            0.125,
+            True,
+            "x",
+        ]
+    ]
+    assert statement.closed is True
