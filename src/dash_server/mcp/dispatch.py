@@ -9,6 +9,7 @@ from typing import Any
 import jsonschema
 from flask import current_app, has_request_context, request
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.auth import current_auth_context
 from dash_server.dash_apps.factory import (
     app_create_from_files_schema_help,
@@ -26,7 +27,7 @@ from dash_server.mcp.tool_specs import TOOL_SPECS_BY_NAME
 LOGGER = logging.getLogger(__name__)
 
 
-class DispatchMixin:
+class DispatchMixin(MCPServerHost):
     """JSON-RPC method routing, tool invocation, and response envelopes."""
 
     def sse_ready_event(self) -> str:

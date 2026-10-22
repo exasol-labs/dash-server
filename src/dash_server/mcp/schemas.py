@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.dash_apps.factory import (
     app_create_example_bundle,
     app_create_from_files_example,
 )
 
 
-class SchemasMixin:
+class SchemasMixin(MCPServerHost):
     """The ``_*_schema()`` builders referenced by ``ToolSpec.input_schema``."""
 
     def _name_schema(self) -> dict[str, Any]:

@@ -233,8 +233,10 @@ class ConsumptionJobRunner:
                 summary=f"Format {job.requested_format!r} has no registered dataset writer.",
                 details={"format": job.requested_format},
             )
+        revision = attempt.revision
+        assert revision is not None  # pinned by _resolve()
         stream = self._service.executor.stream(
-            attempt.revision,
+            revision,
             job.output,
             attempt.parameters,
             cancelled=lambda: self._store.is_cancel_requested(job_id),

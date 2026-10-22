@@ -35,7 +35,7 @@ _ANALYTICS_HUB_DEFAULT_CONTEXT = {
 def _template_text(name: str) -> str:
     """Read a raw package-data template file from ``scaffold_templates``."""
 
-    return resources.files(__package__).joinpath(_TEMPLATE_DIR, name).read_text(encoding="utf-8")
+    return resources.files(__package__).joinpath(_TEMPLATE_DIR).joinpath(name).read_text(encoding="utf-8")
 
 
 def _help_payload(name: str) -> dict[str, Any]:

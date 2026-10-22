@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.exceptions import DashServerError
 from dash_server.mcp.tool_specs import TOOL_SPECS_BY_NAME
 
@@ -31,7 +32,7 @@ def _dedupe_preserving_order(items: list[str]) -> list[str]:
 
 
 
-class GuidanceMixin:
+class GuidanceMixin(MCPServerHost):
     """Builds the ``guidance`` block attached to every tool result."""
 
     def _append_guidance_to_text(

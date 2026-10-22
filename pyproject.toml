@@ -37,6 +37,7 @@ dev = [
   "pytest>=9.1,<10.0",
   "mypy>=2.3.1",
   "types-jsonschema>=4.26.0.20260518",
+  "types-openpyxl>=3.1.5.20261017",
   "ruff>=0.16.8",
 ]
 

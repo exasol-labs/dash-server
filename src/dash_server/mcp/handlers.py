@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -10,6 +11,7 @@ from typing import Any
 
 from flask import current_app, has_request_context
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.auth import AuthContext, Principal, current_auth_context
 from dash_server.consumption import ConsumptionService
 from dash_server.constants import GRANT_SCOPES, PRINCIPAL_TYPES
@@ -70,7 +72,7 @@ def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 
 
-class HandlersMixin:
+class HandlersMixin(MCPServerHost):
     """Tool handlers plus the argument/service helpers they share."""
 
     def _tool_input_schema(self, tool_name: str) -> dict[str, Any] | None:
@@ -2168,7 +2170,7 @@ class HandlersMixin:
         value: Any,
         *,
         field_name: str,
-        allowed: set[str],
+        allowed: Collection[str],
         tool_name: str,
     ) -> str:
         if isinstance(value, str) and value in allowed:

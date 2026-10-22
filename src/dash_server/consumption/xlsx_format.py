@@ -84,7 +84,9 @@ def _safe_cell(sheet: Any, value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, bool | int | float | Decimal | datetime | date | time):
-        cell = WriteOnlyCell(sheet, value=value)
+        # types-openpyxl narrows `value` to str | float | datetime; openpyxl itself
+        # binds Decimal, date, and time too (cell.NUMERIC_TYPES / TIME_TYPES).
+        cell = WriteOnlyCell(sheet, value=value)  # type: ignore[arg-type]
         return cell
     cell = WriteOnlyCell(sheet, value=str(value))
     cell.data_type = "s"

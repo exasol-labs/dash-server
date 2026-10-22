@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this off by setting `EXASOL_TELEMETRY_DISABLE=1` before it loads pyexasol, unless the
   variable is already set.
 
+### Fixed
+- Reading Exasol scaffold templates no longer passes two segments to `joinpath`. On Python
+  3.10 this fails for packages that are not installed as plain files on disk (for example
+  zip imports).
+- `mypy` now passes cleanly. It previously reported 129 errors, mostly from the MCP server
+  mixins calling helpers defined on their siblings. `types-openpyxl` is added to the dev
+  extras.
+
 ## [0.1.1] - 2026-09-28
 
 ### Added

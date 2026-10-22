@@ -17,6 +17,7 @@ from typing import Any
 
 from flask import current_app, has_request_context
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.build_info import server_build_status
 from dash_server.dash_apps.factory import (
     app_authoring_guide,
@@ -55,7 +56,7 @@ class _AppResource:
     description: str
 
 
-class ResourcesMixin:
+class ResourcesMixin(MCPServerHost):
     """Resource read dispatch and ``resources/list`` definitions."""
 
     def _resource_routes(self):
