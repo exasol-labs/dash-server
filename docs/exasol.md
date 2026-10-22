@@ -264,6 +264,14 @@ Rules:
   returns no rows, and dash-server then discards the connection so one app's session change
   can't leak into other apps sharing the profile.
 
+With the preprocessor active, the SQL smoke check (during builds and in `app_run_healthcheck`)
+validates Semantic SQL exactly as it runs, so a renamed or dropped metric fails the next
+healthcheck instead of waiting for a viewer. A query file that reads a published semantic model
+on a profile *without* the preprocessor fails the smoke check with the `session_init_sql` line
+to add. `app_run_healthcheck` also reports each model the app reads in a `semantic_models`
+probe: it fails when a model is `INVALID`, `PRECONDITION`, or `NOT_PUBLISHED`, and lists models
+with validation warnings.
+
 ## pyexasol Telemetry
 
 pyexasol 3 sends an anonymized usage event to Exasol on every connection. dash-server

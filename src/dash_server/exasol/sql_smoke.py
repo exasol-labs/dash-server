@@ -20,6 +20,12 @@ Queries with pyexasol placeholders (``{name!s}``, ``{name!d}``, etc.) require
 per-query sample values in ``queries/sql_smoke.json``. Without sample values they
 fail preflight with an actionable message; with values they are executed through
 pyexasol's formatter so bad columns are caught before live promotion.
+
+Queries against an Exasol Semantic Views published model need the model's SQL
+preprocessor active in the session (normally via the profile's ``session_init_sql``).
+With it, the wrapped query is checked exactly as at runtime (unknown fields, invalid
+combinations). Without it, the ``WHERE 1=0`` wrapper can pass a query that fails for
+the first viewer, so such files fail here with the fix instead.
 """
 
 from __future__ import annotations
@@ -46,6 +52,24 @@ class SqlSmokeFile:
     outcome: SmokeOutcome
     error_text: str | None = None
     skip_reason: str | None = None
+    # Names of the published semantic models the query reads.
+    semantic_models: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SemanticModelRef:
+    """A published Exasol Semantic Views model, as the smoke session sees it."""
+
+    model: str
+    published_schema: str
+    preprocessor: str
+    # From SEMANTIC_AGENT.MODELS_FOR_AGENT: VALID, WARNING, INVALID, PRECONDITION,
+    # NEEDS_VALIDATION, or NOT_PUBLISHED.
+    readiness: str | None = None
+    validation_status: str | None = None
+    validation_warning_count: int | None = None
+    validation_error_count: int | None = None
+    latest_validation_run_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +87,8 @@ class SqlSmokeReport:
     overall_status: SmokeOutcome
     files: list[SqlSmokeFile] = field(default_factory=list)
     connection_error: str | None = None
+    # The published semantic models the files read, with their readiness.
+    semantic_models: list[SemanticModelRef] = field(default_factory=list)
 
     @property
     def first_failure(self) -> SqlSmokeFile | None:
@@ -116,6 +142,7 @@ def run_sql_smoke(
         )
 
     results: list[SqlSmokeFile] = []
+    semantic = _SemanticContext(connection)
     try:
         for relative_path, sql_text in sql_files:
             results.append(
@@ -124,6 +151,8 @@ def run_sql_smoke(
                     relative_path,
                     sql_text,
                     params=(smoke_params or {}).get(relative_path, {}),
+                    semantic=semantic,
+                    profile_name=profile.name,
                 )
             )
     finally:
@@ -144,7 +173,12 @@ def run_sql_smoke(
         overall = "skipped"
     else:
         overall = "passed"
-    return SqlSmokeReport(overall_status=overall, files=results)
+    referenced = {name for entry in results for name in entry.semantic_models}
+    return SqlSmokeReport(
+        overall_status=overall,
+        files=results,
+        semantic_models=[ref for ref in semantic.known_models if ref.model in referenced],
+    )
 
 
 def _smoke_one(
@@ -153,6 +187,8 @@ def _smoke_one(
     sql_text: str,
     *,
     params: dict[str, Any],
+    semantic: _SemanticContext | None = None,
+    profile_name: str = "",
 ) -> SqlSmokeFile:
     stripped = sql_text.strip()
     if not stripped:
@@ -177,6 +213,29 @@ def _smoke_one(
                 ),
             )
 
+    semantic_models = _referenced_models(stripped, semantic.models) if semantic is not None else []
+    model_names = tuple(ref.model for ref in semantic_models)
+    inactive = [
+        ref
+        for ref in semantic_models
+        if semantic is not None and _normalize_identifier(ref.preprocessor) != semantic.session_preprocessor
+    ]
+    if inactive:
+        ref = inactive[0]
+        return SqlSmokeFile(
+            relative_path=relative_path,
+            outcome="failed",
+            semantic_models=model_names,
+            error_text=(
+                f"This query reads the published semantic model {ref.model!r} ({ref.published_schema}), "
+                f"which needs the {ref.preprocessor} SQL preprocessor active in the session, but "
+                f"sessions opened by Exasol profile {profile_name!r} don't activate it. Without it the "
+                "dashboard fails at runtime (SEMANTIC_SURFACE_001 or 'not a valid GROUP BY expression'). "
+                "Add this statement to the profile's session_init_sql (exasol_profile_create_local with "
+                f"overwrite: true): ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {ref.preprocessor}"
+            ),
+        )
+
     # Wrap so the server parses and binds names without fetching rows. Strip a
     # trailing semicolon so the wrapped query parses cleanly.
     wrapped = f"SELECT * FROM (\n{stripped.rstrip(';')}\n) WHERE 1=0"
@@ -187,6 +246,7 @@ def _smoke_one(
             relative_path=relative_path,
             outcome="failed",
             error_text=str(exc),
+            semantic_models=model_names,
         )
 
     close = getattr(statement, "close", None)
@@ -195,7 +255,125 @@ def _smoke_one(
             close()
         except Exception:
             pass
-    return SqlSmokeFile(relative_path=relative_path, outcome="passed")
+    return SqlSmokeFile(relative_path=relative_path, outcome="passed", semantic_models=model_names)
+
+
+_SEMANTIC_MODELS_COLUMNS = [
+    "MODEL_NAME",
+    "PUBLISHED_SCHEMA",
+    "PREPROCESSOR_QUALIFIED_NAME",
+    "AGENT_READINESS",
+    "VALIDATION_STATUS",
+    "VALIDATION_WARNING_COUNT",
+    "VALIDATION_ERROR_COUNT",
+    "LATEST_VALIDATION_RUN_ID",
+]
+_SEMANTIC_MODELS_QUERY = (
+    f"SELECT DISTINCT {', '.join(_SEMANTIC_MODELS_COLUMNS)} "
+    "FROM SEMANTIC_AGENT.MODELS_FOR_AGENT "
+    "WHERE MODEL_STATUS = 'PUBLISHED' AND PUBLISHED_SCHEMA IS NOT NULL"
+)
+
+
+class _SemanticContext:
+    """The smoke session's view of Semantic Views, looked up on first use.
+
+    Lazy so a batch whose files all fail before execution (missing placeholder values)
+    runs no statements at all.
+    """
+
+    def __init__(self, connection: object) -> None:
+        self._connection = connection
+        self._models: list[SemanticModelRef] | None = None
+        self._session_preprocessor: str | None = None
+
+    @property
+    def models(self) -> list[SemanticModelRef]:
+        if self._models is None:
+            self._models = _published_semantic_models(self._connection)
+            if self._models:
+                self._session_preprocessor = _session_preprocessor(self._connection)
+        return self._models
+
+    @property
+    def known_models(self) -> list[SemanticModelRef]:
+        """The models looked up so far, without triggering a lookup."""
+
+        return self._models or []
+
+    @property
+    def session_preprocessor(self) -> str | None:
+        self.models  # noqa: B018 - looks up the session state on first use
+        return self._session_preprocessor
+
+
+def _published_semantic_models(connection: object) -> list[SemanticModelRef]:
+    """Published Semantic Views models visible to the session; empty when none or not installed.
+
+    Best effort: a database without Semantic Views (or a user who can't read its agent
+    views) simply has no semantic files. The result is trusted only when the statement
+    reports exactly the queried columns.
+    """
+
+    try:
+        statement = connection.execute(_SEMANTIC_MODELS_QUERY)  # type: ignore[attr-defined]
+        if list(statement.column_names()) != _SEMANTIC_MODELS_COLUMNS:
+            return []
+        rows = statement.fetchall()
+    except Exception:
+        return []
+    return [
+        SemanticModelRef(
+            model=str(model),
+            published_schema=str(schema),
+            preprocessor=str(preprocessor),
+            readiness=readiness,
+            validation_status=validation_status,
+            validation_warning_count=_optional_int(warnings),
+            validation_error_count=_optional_int(errors),
+            latest_validation_run_id=_optional_int(run_id),
+        )
+        for model, schema, preprocessor, readiness, validation_status, warnings, errors, run_id in rows
+        if model and schema and preprocessor
+    ]
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _session_preprocessor(connection: object) -> str | None:
+    """The session's active SQL preprocessor (normalized), or None."""
+
+    try:
+        statement = connection.execute(  # type: ignore[attr-defined]
+            "SELECT SESSION_VALUE FROM EXA_PARAMETERS WHERE PARAMETER_NAME = 'SQL_PREPROCESSOR_SCRIPT'"
+        )
+        value = statement.fetchval()
+    except Exception:
+        return None
+    return _normalize_identifier(value) if value else None
+
+
+def _normalize_identifier(name: str) -> str:
+    return name.replace('"', "").upper()
+
+
+def _referenced_models(sql_text: str, models: list[SemanticModelRef]) -> list[SemanticModelRef]:
+    """The published models whose schema ``sql_text`` qualifies an object with."""
+
+    return [
+        ref
+        for ref in models
+        if re.search(
+            r'(?<![A-Za-z0-9_$])"?' + re.escape(ref.published_schema) + r'"?\s*\.',
+            sql_text,
+            flags=re.IGNORECASE,
+        )
+    ]
 
 
 def collect_sql_files(artifact_root: Path) -> list[tuple[str, str]]:
@@ -248,6 +426,7 @@ def collect_sql_smoke_params(artifact_root: Path) -> dict[str, dict[str, Any]]:
 
 
 __all__ = [
+    "SemanticModelRef",
     "SqlSmokeFile",
     "SqlSmokeReport",
     "collect_sql_files",

@@ -78,6 +78,7 @@ def query_rows(
         error_text = result.get("error", "Unknown Exasol error")
         _record_data_layer_error(server, metadata, sql_relative_path, error_text)
         return [{"_error": error_text}]
+    _record_data_layer_success(server, metadata, sql_relative_path)
     return _records_from_result(result)
 
 
@@ -114,6 +115,25 @@ def _record_data_layer_error(
             sql_file=sql_relative_path,
             profile_name=profile_name if isinstance(profile_name, str) else "",
             error_text=str(error_text),
+            revision_number=revision_number if isinstance(revision_number, int) else None,
+        )
+    except Exception:
+        # Diagnostics is best-effort; never let it kill a Dash callback.
+        return
+
+
+def _record_data_layer_success(server: Flask, metadata: dict[str, Any], sql_relative_path: str) -> None:
+    """Best-effort: let the `data_layer` probe know this SQL file works again."""
+
+    try:
+        diagnostics = server.extensions.get("diagnostics_service") if server is not None else None
+        app_name = metadata.get("name") if isinstance(metadata, dict) else None
+        if diagnostics is None or not isinstance(app_name, str) or not app_name:
+            return
+        revision_number = metadata.get("revision_number")
+        diagnostics.record_data_layer_success(
+            app_name,
+            sql_file=sql_relative_path,
             revision_number=revision_number if isinstance(revision_number, int) else None,
         )
     except Exception:

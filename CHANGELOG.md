@@ -17,8 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EXECUTE SCRIPT`, and `OPEN SCHEMA` are accepted. A failing statement closes the connection
   and reports `exasol_session_init_failed`; `exasol_profile_validate` reports the outcome under
   `session_init`. See `docs/exasol.md`.
+- `app_run_healthcheck` has a `semantic_models` probe that reports the Exasol Semantic Views
+  models an app's queries read. It fails when a model is `INVALID`, `PRECONDITION`, or
+  `NOT_PUBLISHED`, and lists models with validation warnings. The `sql_smoke` probe details
+  include the same models.
 
 ### Changed
+- The SQL smoke check (build preflight and `app_run_healthcheck`) understands Exasol Semantic
+  Views. A query file that reads a published semantic model on a profile whose sessions don't
+  activate the model's preprocessor now fails with the `session_init_sql` line to add. Before,
+  the `WHERE 1=0` probe could pass such a query, and it then failed for the first viewer.
+- A `data_layer` healthcheck error stops counting once its SQL file runs successfully again in
+  the same revision, so a repaired data source no longer needs `app_acknowledge_data_layer_errors`.
+  A repeat of the same error after a success is recorded even within the 60-second
+  deduplication window.
 - A query file whose statement returns no result set (such as `ALTER SESSION`) now returns no
   rows instead of failing with "Attempt to fetch from statement without result set". The
   cached connection is still discarded afterwards, so a session change can't leak into other

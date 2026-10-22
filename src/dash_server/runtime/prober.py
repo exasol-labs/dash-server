@@ -9,6 +9,7 @@ and downgrade the overall status. The service keeps ``run_healthcheck`` /
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,9 +17,13 @@ from werkzeug.test import Client as WSGIClient
 from werkzeug.wrappers import Response as WSGIResponse
 
 from dash_server.registry.models import AppRevision
+from dash_server.timestamps import parse_iso8601
 
 if TYPE_CHECKING:
     from .service import AppRuntimeService
+
+# Exasol Semantic Views AGENT_READINESS values that make a model's numbers untrustworthy.
+_UNUSABLE_SEMANTIC_READINESS = {"INVALID", "PRECONDITION", "NOT_PUBLISHED"}
 
 
 class HealthProber:
@@ -235,6 +240,7 @@ class HealthProber:
             connection_manager=exasol_service.connection_manager,
             smoke_params=collect_sql_smoke_params(Path(revision.artifact_path)),
         )
+        semantic_models = [asdict(ref) for ref in report.semantic_models]
         if report.overall_status == "passed":
             return {
                 "name": "sql_smoke",
@@ -247,6 +253,7 @@ class HealthProber:
                         for f in report.files
                         if f.outcome == "skipped"
                     ],
+                    **({"semantic_models": semantic_models} if semantic_models else {}),
                 },
             }
         if report.overall_status == "skipped":
@@ -276,8 +283,35 @@ class HealthProber:
                     for f in report.files
                     if f.outcome == "failed"
                 ],
+                **({"semantic_models": semantic_models} if semantic_models else {}),
             },
         }
+
+    def _semantic_models_probe(self, sql_smoke_probe: dict[str, Any]) -> dict[str, Any]:
+        """Report the readiness of the Exasol Semantic Views models the app's queries read.
+
+        Derived from the `sql_smoke` probe, whose session already looked the models up.
+        Fails when a model is unusable (INVALID, PRECONDITION, or NOT_PUBLISHED): its
+        numbers can't be trusted even if today's queries still run. WARNING passes, as in
+        the semantic layer's own agent views, but is listed so it stays visible.
+        """
+
+        models = sql_smoke_probe.get("details", {}).get("semantic_models")
+        if not models:
+            return {"name": "semantic_models", "status": "not_applicable", "details": {"reason": "no_semantic_queries"}}
+        unusable = [model for model in models if model.get("readiness") in _UNUSABLE_SEMANTIC_READINESS]
+        details: dict[str, Any] = {"models": models}
+        warnings = [model["model"] for model in models if model.get("readiness") == "WARNING"]
+        if warnings:
+            details["models_with_warnings"] = warnings
+        if unusable:
+            first = unusable[0]
+            details["latest_error"] = (
+                f"Semantic model {first['model']!r} ({first['published_schema']}) is {first['readiness']}. "
+                "Check SEMANTIC_AGENT.MODELS_FOR_AGENT and SEMANTIC_CATALOG.CURRENT_VALIDATION_ISSUES."
+            )
+            return {"name": "semantic_models", "status": "failed", "details": details}
+        return {"name": "semantic_models", "status": "passed", "details": details}
 
     def _manifest_profile_name(self, revision: AppRevision) -> str | None:
         """Return ``manifest.data_sources.primary.profile`` if it's set to an Exasol profile, else None."""
@@ -310,12 +344,12 @@ class HealthProber:
         errors = self.svc.diagnostics_service.list_errors(app_name, limit=0, source="data_layer")
         records = errors.get("errors", [])
         watermark = self.svc.diagnostics_service.data_layer_ack_watermark(app_name)
+        diagnostics = self.svc.diagnostics_service
         applicable = [
             record
             for record in records
-            if _data_layer_record_applies_to(
-                record, revision_number=revision_number, watermark=watermark
-            )
+            if _data_layer_record_applies_to(record, revision_number=revision_number, watermark=watermark)
+            and not _data_layer_record_resolved(diagnostics, app_name, record)
         ]
         if not applicable:
             return {
@@ -428,6 +462,24 @@ class HealthProber:
                 "rss_bytes": rss,
             },
         }
+
+
+def _data_layer_record_resolved(diagnostics: Any, app_name: str, record: dict[str, Any]) -> bool:
+    """True when the record's SQL file has run successfully in its revision since the error."""
+
+    sql_file = (record.get("details") or {}).get("sql_file")
+    timestamp = record.get("timestamp")
+    if not isinstance(sql_file, str) or not isinstance(timestamp, str):
+        return False
+    last_success = diagnostics.data_layer_last_success(
+        app_name, sql_file=sql_file, revision_number=record.get("revision_number")
+    )
+    if last_success is None:
+        return False
+    # Compare as datetimes: the stored strings drop the fraction when it is zero, so
+    # they don't sort lexically.
+    success_at, error_at = parse_iso8601(last_success), parse_iso8601(timestamp)
+    return success_at is not None and error_at is not None and success_at > error_at
 
 
 def _data_layer_record_applies_to(

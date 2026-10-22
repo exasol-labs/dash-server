@@ -1680,8 +1680,9 @@ def test_parameterized_sql_smoke_params_exercise_query_and_catch_bad_column(app,
     assert probe["details"]["first_failed_file"] == "queries/agent_latency.sql"
     assert "MISSING_LATENCY_MS" in probe["details"]["latest_error"]
     executions = [execution for connection in fake_module.connections for execution in connection.executions]
-    assert executions
-    assert executions[0][1] == {"agent_id": "agent-001"}
+    smoke_executions = [execution for execution in executions if "MISSING_LATENCY_MS" in execution[0]]
+    assert smoke_executions
+    assert smoke_executions[0][1] == {"agent_id": "agent-001"}
 
 
 def _sql_smoke_app_files(*, name: str, bad_column: bool) -> list[dict[str, Any]]:

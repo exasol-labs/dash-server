@@ -460,7 +460,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=(
             'Probe the mounted live or preview route, layout endpoint, dependencies '
             'endpoint, static assets, and (for Exasol-backed apps) each queries/*.sql '
-            'file via sql_smoke. A "healthy" result does not mean any @app.callback has '
+            'file via sql_smoke, plus the readiness of any Exasol Semantic Views model '
+            'those queries read (semantic_models). A "healthy" result does not mean any @app.callback has '
             'actually executed: sql_smoke runs SQL files directly, independent of '
             'app.py, and the other probes are plain GETs. To force a real callback run, '
             'POST to {mount_path}/_dash-update-component - see '
@@ -554,7 +555,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='app_acknowledge_data_layer_errors',
         handler='_tool_app_acknowledge_data_layer_errors',
         title='Acknowledge data-layer errors',
-        description='Reset the `data_layer` healthcheck probe by acknowledging all currently recorded Exasol query failures. Use after fixing SQL in-place without promoting a new revision; the underlying `dash://apps/{name}/errors` ledger is preserved, but the probe and `app_collect_diagnostics` both filter past the new watermark.',
+        description='Reset the `data_layer` healthcheck probe by acknowledging all currently recorded Exasol query failures. An error already stops counting once its SQL file runs successfully again in the same revision; acknowledge to clear errors for files that will not run again soon. The underlying `dash://apps/{name}/errors` ledger is preserved, but the probe and `app_collect_diagnostics` both filter past the new watermark.',
         input_schema={'type': 'object',
          'properties': {'name': {'type': 'string',
                                  'description': 'The hosted app to acknowledge errors for.'}},

@@ -38,6 +38,7 @@ def test_run_healthcheck_shape(make_app) -> None:
         "static_assets",
         "data_layer",
         "sql_smoke",
+        "semantic_models",
         "worker_alive",
         "worker_http",
     ]
@@ -50,6 +51,7 @@ def test_run_healthcheck_shape(make_app) -> None:
         ("static_assets", "passed"),
         ("data_layer", "passed"),
         ("sql_smoke", "not_applicable"),
+        ("semantic_models", "not_applicable"),
         ("worker_alive", "not_applicable"),
         ("worker_http", "not_applicable"),
     ]

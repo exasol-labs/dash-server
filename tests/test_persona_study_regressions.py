@@ -825,3 +825,48 @@ def test_bug_018_dash_server_error_str_includes_category() -> None:
     # Even with no summary, the string is non-empty.
     blank = DashServerError(category="workspace_validation_error", summary="")
     assert str(blank) == "workspace_validation_error"
+
+
+def test_data_layer_probe_clears_once_the_failing_file_succeeds_again(tmp_path: Path) -> None:
+    """SV-P4-13: after a data source is repaired, the next successful run of the same SQL
+    file (same revision) resolves its earlier errors without a manual acknowledge."""
+
+    app = create_app({"INSTANCE_PATH": str(tmp_path / "instance"), "TESTING": True})
+    runtime = app.extensions["runtime_service"]
+    diagnostics = runtime.diagnostics_service
+
+    def data_layer_status() -> str:
+        probes = {p["name"]: p for p in runtime.run_healthcheck("demo", record=False)["health"]["probes"]}
+        return probes["data_layer"]["status"]
+
+    for sql_file in ("queries/kpis.sql", "queries/trend.sql"):
+        diagnostics.record_data_layer_error(
+            "demo", sql_file=sql_file, profile_name="kit", error_text="metric dropped", revision_number=1
+        )
+    assert data_layer_status() == "failed"
+
+    # A success in another revision, or of another file, resolves nothing.
+    diagnostics.record_data_layer_success("demo", sql_file="queries/kpis.sql", revision_number=2)
+    assert data_layer_status() == "failed"
+
+    diagnostics.record_data_layer_success("demo", sql_file="queries/kpis.sql", revision_number=1)
+    assert data_layer_status() == "failed"  # trend.sql is still broken
+
+    diagnostics.record_data_layer_success("demo", sql_file="queries/trend.sql", revision_number=1)
+    assert data_layer_status() == "passed"
+
+    # A new failure after the success counts again, and the first success after it is
+    # recorded even within the write throttle.
+    diagnostics.record_data_layer_error(
+        "demo", sql_file="queries/trend.sql", profile_name="kit", error_text="broken again", revision_number=1
+    )
+    assert data_layer_status() == "failed"
+    diagnostics.record_data_layer_success("demo", sql_file="queries/trend.sql", revision_number=1)
+    assert data_layer_status() == "passed"
+
+    # The same error recurring within the rate-limit window is recorded again, because the
+    # file succeeded in between; otherwise the probe would report green while it fails.
+    assert diagnostics.record_data_layer_error(
+        "demo", sql_file="queries/trend.sql", profile_name="kit", error_text="broken again", revision_number=1
+    ) is not None
+    assert data_layer_status() == "failed"

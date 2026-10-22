@@ -1129,6 +1129,9 @@ class AppRuntimeService:
         sql_smoke_probe = self._sql_smoke_probe(name, revision)
         probes.append(sql_smoke_probe)
         overall_status = self.prober._downgrade(overall_status, sql_smoke_probe)
+        semantic_models_probe = self.prober._semantic_models_probe(sql_smoke_probe)
+        probes.append(semantic_models_probe)
+        overall_status = self.prober._downgrade(overall_status, semantic_models_probe)
 
         # Phase 3: when running in isolated mode, surface the worker process state alongside
         # the existing HTTP probes. In in_process mode the probe records "not_applicable" so

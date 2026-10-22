@@ -110,7 +110,7 @@ Successful rows hold Python values, not strings. `DECIMAL` columns arrive as `in
 Related platform behavior worth knowing:
 
 - Data-layer failures are recorded and surface as the `data_layer` probe in `app_run_healthcheck` and on `dash://apps/{name}/errors`.
-- After you fix SQL in place without promoting a new revision, call `app_acknowledge_data_layer_errors` to reset that probe. Otherwise the healthcheck keeps reporting the failure you already fixed.
+- An error stops counting once its SQL file runs successfully again in the same revision. To clear errors for files that won't run again soon (after fixing SQL in place, say), call `app_acknowledge_data_layer_errors`.
 
 ## Parameterizing SQL
 
@@ -530,7 +530,7 @@ Do not debug by adding `print()`, rebuilding, and promoting. That costs several 
 
 ### Server-side signals
 
-- `app_run_healthcheck` — route, layout, dependency, asset, and `data_layer` probes; in isolated mode also `worker_alive` and `worker_http`.
+- `app_run_healthcheck` — route, layout, dependency, asset, `data_layer`, `sql_smoke`, and `semantic_models` probes; in isolated mode also `worker_alive` and `worker_http`.
 - `app_collect_diagnostics` / `app_inspect_traceback` — captured errors with parsed tracebacks and attribution.
 - `app_tail_logs` — channels: `latest`, `build`, `runtime`, `health`, `worker`, `worker.events`, `session.commands`.
 - `dash://apps/{name}/errors` and `/callback-failures` — the failure ledgers, including the `_error` envelopes described above.
