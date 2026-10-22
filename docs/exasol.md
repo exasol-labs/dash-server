@@ -226,6 +226,14 @@ supported in DSNs.
 
 Connecting to a self-signed Exasol with `tls_verify: true` fails with `[SSL: CERTIFICATE_VERIFY_FAILED]`. Setting it to `false` does not disable TLS — the websocket is still encrypted.
 
+## pyexasol Telemetry
+
+pyexasol 3 sends an anonymized usage event to Exasol on every connection. dash-server
+disables this by setting `EXASOL_TELEMETRY_DISABLE=1` before it loads pyexasol, in every
+process that opens a connection. If the variable is already set, dash-server leaves it
+alone. pyexasol treats any value as "disabled", so telemetry cannot be turned back on through
+this variable.
+
 ## Which Credential Modes Are Supported
 
 Currently supported combinations are:

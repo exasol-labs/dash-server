@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import ssl
 import threading
 import time
@@ -338,4 +339,8 @@ class ExasolConnectionManager:
         return kwargs
 
     def _default_connector_loader(self) -> Any:
+        # pyexasol 3 reports every connect() to Exasol's telemetry endpoint unless
+        # this is set (to any value). A self-hosted server shouldn't phone home by
+        # default; operators can still pre-set it themselves.
+        os.environ.setdefault("EXASOL_TELEMETRY_DISABLE", "1")
         return import_module("pyexasol")

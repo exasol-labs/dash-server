@@ -1036,6 +1036,25 @@ def test_bug001_tls_verify_false_keeps_encryption_on_and_disables_cert_check(tmp
     assert kwargs["websocket_sslopt"] == {"cert_reqs": ssl.CERT_NONE}
 
 
+def test_default_connector_loader_disables_pyexasol_telemetry(tmp_path, monkeypatch) -> None:
+    """pyexasol 3 reports each connect() to Exasol telemetry unless EXASOL_TELEMETRY_DISABLE is set."""
+    import os
+
+    monkeypatch.delenv("EXASOL_TELEMETRY_DISABLE", raising=False)
+    cm = ExasolConnectionManager(ExasolSecretStore(str(tmp_path)))
+    cm._default_connector_loader()
+    assert os.environ.get("EXASOL_TELEMETRY_DISABLE") == "1"
+
+
+def test_default_connector_loader_keeps_operator_telemetry_setting(tmp_path, monkeypatch) -> None:
+    import os
+
+    monkeypatch.setenv("EXASOL_TELEMETRY_DISABLE", "yes")
+    cm = ExasolConnectionManager(ExasolSecretStore(str(tmp_path)))
+    cm._default_connector_loader()
+    assert os.environ["EXASOL_TELEMETRY_DISABLE"] == "yes"
+
+
 def test_bug001_tls_verify_true_requires_cert(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EXA_PASSWORD", "test")
     fake = _ConnectKwargsCapture()

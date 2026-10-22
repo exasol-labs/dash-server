@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Dependencies updated: pyexasol 3.0.0 (the upper bound is raised from `<3.0` to `<4.0`),
+  cryptography 50.0.2, Werkzeug 3.1.9, pydantic 2.14.1, setuptools 84.2.1, ruff 0.17.1, and
+  mypy 2.4.0, plus transitive updates. pyexasol 3's breaking changes are in its DBAPI module
+  (type conversion defaults, removal of `pyexasol.db2`). dash-server uses `pyexasol.connect`,
+  whose results are unchanged.
+- pyexasol 3 sends anonymized usage telemetry to Exasol on every connection. dash-server turns
+  this off by setting `EXASOL_TELEMETRY_DISABLE=1` before it loads pyexasol, unless the
+  variable is already set.
+
 ## [0.1.1] - 2026-09-28
 
 ### Added

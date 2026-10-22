@@ -550,7 +550,7 @@ This is one of PyExasol’s most important advanced capabilities.
 
 - One PyExasol connection == one Exasol session.
 - One session can run only one SQL query at a time.
-- `ExaConnection.threadsafety == 1` (DBAPI level 1: the module is thread-safe, connections are not). Note there is no `pyexasol.threadsafety` module attribute — it lives on the connection class and on `pyexasol.db2`.
+- `ExaConnection.threadsafety == 1` (DBAPI level 1: the module is thread-safe, connections are not). Note there is no `pyexasol.threadsafety` module attribute — it lives on the connection class. (The old `pyexasol.db2` compatibility module was removed in pyexasol 3.0.)
 - Do **not** share a connection across threads.
 - For real parallelism, use **multiple processes**.
 
