@@ -115,8 +115,12 @@ never shown.
   through pyexasol. Arbitrary SQL and undeclared parameters are rejected.
 - Export queries use a dedicated uncached connection and bounded `fetchmany`/`fetchone` batches;
   the interactive `fetchall()` path is not used.
-- CSV neutralizes spreadsheet-formula prefixes. XLSX writes typed dates, numbers, booleans, and
-  nulls, pins every string to the string cell type so source data can never execute as a formula,
+- CSV keeps Exasol's own text rendering of every value and neutralizes spreadsheet-formula
+  prefixes. XLSX exports fetch DECIMAL, DATE, and TIMESTAMP columns as Python numbers and dates
+  and write typed number, date, boolean, and null cells. Values Excel cannot hold exactly stay
+  text: numbers with more than 15 significant digits, dates before 1900, INTERVAL values, and
+  anything in a non-ISO session date format. XLSX also
+  pins every string to the string cell type so source data can never execute as a formula,
   freezes and filters the header row, and adds a `Provenance` sheet (app, revision, contract hash,
   generated-at, redacted parameters, limit outcome). Both formats share one job pipeline through a
   formatter registry.

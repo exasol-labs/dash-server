@@ -204,23 +204,26 @@ class ExasolConnectionManager:
         profile: ExasolProfile,
         *,
         query_timeout_seconds: int | None = None,
+        fetch_mapper: Callable[[Any, dict[str, Any]], Any] | None = None,
     ) -> ExaConnectionLike:
         """Open a caller-owned connection without storing it in the thread cache.
 
         Use this for one-shot probes such as SQL smoke preflight where the caller
         intentionally closes the connection. Runtime callbacks should keep using
-        `connect()` so they benefit from per-thread session reuse.
+        `connect()` so they benefit from per-thread session reuse. `fetch_mapper`
+        is passed to pyexasol as-is; None keeps its default (Exasol's text values).
         """
 
         secret_value = self.secret_store.resolve(profile.secret_ref)
         connector = self.connector_loader()
-        return connector.connect(
-            **self._connect_kwargs(
-                profile,
-                secret_value,
-                query_timeout_seconds=query_timeout_seconds,
-            )
+        kwargs = self._connect_kwargs(
+            profile,
+            secret_value,
+            query_timeout_seconds=query_timeout_seconds,
         )
+        if fetch_mapper is not None:
+            kwargs["fetch_mapper"] = fetch_mapper
+        return connector.connect(**kwargs)
 
     def invalidate(self, profile_name: str) -> None:
         """Discard the cached connection for ``profile_name`` on this thread.

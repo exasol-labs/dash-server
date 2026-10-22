@@ -62,12 +62,14 @@ class ExasolDatasetExecutor:
         parameters: dict[str, Any],
         *,
         cancelled: Callable[[], bool],
+        fetch_mapper: Callable[[Any, dict[str, Any]], Any] | None = None,
     ) -> DatasetStream:
         profile, _sql_path, sql_text = self._resolve(revision, output)
         try:
             connection = self.service.connection_manager.connect_uncached(
                 profile,
                 query_timeout_seconds=self.max_runtime_seconds,
+                fetch_mapper=fetch_mapper,
             )
             statement = connection.execute(sql_text, parameters)
         except Exception as exc:

@@ -145,7 +145,7 @@ class _FakeDatasetExecutor:
     def preflight(self, revision, output) -> None:
         self.preflight_calls += 1
 
-    def stream(self, revision, output, parameters, *, cancelled):
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None):
         from dash_server.consumption.execution import DatasetStream
 
         return DatasetStream(columns=["PERIOD", "VALUE"], batches=iter([[*self.rows]]))
@@ -157,7 +157,7 @@ class _BlockingDatasetExecutor(_FakeDatasetExecutor):
         self.started = Event()
         self.release = Event()
 
-    def stream(self, revision, output, parameters, *, cancelled):
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None):
         from dash_server.consumption.execution import DatasetStream
 
         def batches():

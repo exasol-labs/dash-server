@@ -189,11 +189,13 @@ class _FakeDatasetExecutor:
     def __init__(self, rows: list[list[Any]] | None = None) -> None:
         self.rows = rows or [["2026-07", "=SUM(A1:A2)"], ["2026-07", "safe"]]
         self.preflight_calls = 0
+        self.fetch_mappers: list[Any] = []
 
     def preflight(self, revision, output) -> None:
         self.preflight_calls += 1
 
-    def stream(self, revision, output, parameters, *, cancelled) -> DatasetStream:
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None) -> DatasetStream:
+        self.fetch_mappers.append(fetch_mapper)
         return DatasetStream(columns=["PERIOD", "VALUE"], batches=iter([[*self.rows]]))
 
 
@@ -203,7 +205,7 @@ class _BlockingDatasetExecutor(_FakeDatasetExecutor):
         self.started = Event()
         self.release = Event()
 
-    def stream(self, revision, output, parameters, *, cancelled) -> DatasetStream:
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None) -> DatasetStream:
         def batches():
             self.started.set()
             self.release.wait(timeout=5)
@@ -978,7 +980,7 @@ def test_exasol_export_executor_uses_bounded_fetch_and_closes_resources(tmp_path
     assert stream.columns == ["PERIOD"]
     assert list(stream.batches) == [[["2026-07"], ["2026-08"]]]
     assert statement.fetch_sizes == [2, 2]
-    assert connection_options == {"query_timeout_seconds": 30}
+    assert connection_options == {"query_timeout_seconds": 30, "fetch_mapper": None}
     assert statement.closed is True
     assert connection.closed is True
 
@@ -995,11 +997,11 @@ class _FlakyDatasetExecutor(_FakeDatasetExecutor):
         super().__init__()
         self.stream_calls = 0
 
-    def stream(self, revision, output, parameters, *, cancelled) -> DatasetStream:
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None) -> DatasetStream:
         self.stream_calls += 1
         if self.stream_calls == 1:
             raise RuntimeError("transient connection failure")
-        return super().stream(revision, output, parameters, cancelled=cancelled)
+        return super().stream(revision, output, parameters, cancelled=cancelled, fetch_mapper=fetch_mapper)
 
 
 def _wait_store_status(store, job_id: str, expected: set[str], timeout: float = 5.0):
@@ -1080,8 +1082,10 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
 
     from openpyxl import load_workbook
 
+    from dash_server.exasol.fetch_mappers import typed_fetch_mapper
+
     _create_output_app(app, client)
-    _enable_phase1(app)
+    service = _enable_phase1(app)
 
     outputs = _call_tool(client, "app_outputs_list", {"name": "finance-outputs"}).get_json()["result"][
         "structuredContent"
@@ -1112,6 +1116,7 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
     ).get_json()["result"]["structuredContent"]
     payload = _wait_for_job(client, created["job"]["id"])
     assert payload["job"]["status"] == "succeeded"
+    assert service.executor.fetch_mappers == [typed_fetch_mapper]
     assert payload["artifact"]["filename"].endswith(".xlsx")
     assert payload["artifact"]["content_type"] == (
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

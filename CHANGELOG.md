@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variable is already set.
 
 ### Fixed
+- XLSX exports now write `DECIMAL`, `DATE`, and `TIMESTAMP` columns as number and date cells.
+  Before, pyexasol delivered those values as strings, so they landed in the workbook as text
+  that couldn't be summed or sorted, despite what the docs said. The XLSX export connection
+  now uses a typed `fetch_mapper` built on pyexasol 3's `pyexasol.data_types`. CSV exports
+  and dashboards are unchanged. Numbers with more than 15 significant digits are now written
+  as text, so Excel no longer rounds them (this includes `DECIMAL(16..18,0)` values that were
+  written as numbers before). Dates before 1900 and `INTERVAL` values are also written as text.
 - Reading Exasol scaffold templates no longer passes two segments to `joinpath`. On Python
   3.10 this fails for packages that are not installed as plain files on disk (for example
   zip imports).
