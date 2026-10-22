@@ -204,7 +204,11 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
             'are useful. If you already know what the dashboard should be, prefer '
             'app_create_from_files with template=exasol-analytics: it takes your own '
             'files, injects dash_server_exasol.py just the same, and skips the '
-            'delete-what-you-did-not-want step.'
+            'delete-what-you-did-not-want step. When the database has a published '
+            'Exasol Semantic Views model, the scaffold builds on it instead (Semantic '
+            'SQL over its certified metrics and valid dimensions): pass the model\'s '
+            'published schema as schema_name (an object as table_name), or omit both '
+            'to let it prefer a model over raw tables.'
         ),
         input_schema='_app_scaffold_from_schema_schema',
         guidance={'next_step': 'Inspect SCHEMA_NOTES.md and the generated business SQL for the '

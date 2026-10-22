@@ -712,7 +712,7 @@ class ResourcesMixin(MCPServerHost):
                         "Read dash://exasol/help/semantic-layer",
                         "Find published models in SEMANTIC_AGENT.MODELS_FOR_AGENT and their fields in FIELDS_FOR_AGENT",
                         "exasol_profile_create_local with session_init_sql enabling the model's preprocessor",
-                        "exasol_profile_validate (session_init.status == applied)",
+                        "exasol_profile_validate (session_init.status == applied; semantic_layer lists the models)",
                         "app_create_from_files with Semantic SQL in queries/*.sql",
                         "app_validate",
                         "app_deploy_draft",

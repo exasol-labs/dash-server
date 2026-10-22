@@ -3,6 +3,7 @@
   "summary": "Build Exasol dashboards on the governed semantic layer (Exasol Semantic Views) when the database has one, so each number is the certified definition and multi-grain or multi-source data is combined correctly.",
   "why": "Metric SQL written by hand over raw tables can disagree with the certified definition (a different status filter, a different cost formula) or double-count when an order-level amount is summed over order lines. Validation, SQL smoke and the healthcheck all pass in that case, because the SQL is valid: only the number is wrong.",
   "check_first": [
+    "exasol_profile_validate lists the published semantic models the profile can see (semantic_layer.models), and whether each one's preprocessor is active in the profile's sessions.",
     "Before writing any metric SQL, look for published semantic models: SELECT MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION, AGENT_READINESS FROM SEMANTIC_AGENT.MODELS_FOR_AGENT WHERE MODEL_STATUS = 'PUBLISHED'. If the view doesn't exist, the database has no semantic layer; write SQL as usual.",
     "If a published model covers the question, query its published views (SEMANTIC_<MODEL>.<OBJECT>) instead of the tables behind them. SEMANTIC_<MODEL>.SEMANTIC_DISCOVERY and SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT describe what the model offers.",
     "Find fields in SEMANTIC_AGENT.FIELDS_FOR_AGENT and valid metric/dimension pairs in SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT. A pair that isn't listed is not valid (usually a grain fan-out).",
@@ -19,6 +20,7 @@
     ],
     "grants": "A profile user other than SYS needs the model granted (EXECUTE SCRIPT SEMANTIC_ADMIN.GRANT_MODEL_ROLE('<model>', '<role of the user>')) plus SELECT on the model's physical source tables. Broad privileges such as SELECT ANY TABLE are not enough: with them, the preprocessor can be set but semantic queries are refused."
   },
+  "scaffolding": "app_scaffold_from_schema with schema_name set to a model's published schema (and table_name to an object) generates Semantic SQL for it: certified metrics labelled with their display names, a trend over a time dimension and a breakdown by a category dimension, using only valid combinations. Without schema_name it prefers a usable published model over raw tables; schema_blueprint.semantic_candidates lists the models.",
   "writing_queries": [
     "Select dimensions and metrics directly and group by the dimensions: SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region. A metric is already aggregated; don't wrap it in SUM() or AVG().",
     "One statement per queries/*.sql file, as for any dashboard SQL. Put LIMIT in the SQL when you need a bounded result.",

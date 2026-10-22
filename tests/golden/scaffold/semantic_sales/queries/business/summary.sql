@@ -1,0 +1,3 @@
+SELECT "TOTAL_REVENUE" AS "Total Revenue",
+       "GROSS_MARGIN_PCT" AS "Gross Margin %"
+FROM "SEMANTIC_SALES"."SALES"

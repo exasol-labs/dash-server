@@ -24,6 +24,7 @@ from .scaffold import (
     exasol_sql_placeholders_help,
 )
 from .secrets import ExasolSecretStore
+from .semantic_models import MODELS_COLUMNS, MODELS_QUERY, SemanticModelRef, models_from_rows
 from .session_init import normalize_session_init_sql
 
 _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -35,8 +36,20 @@ _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 # because its name happened to match a keyword-shaped scorer, and every one of its
 # `table_candidates` was drawn from the same two schemas - the real target never
 # appeared as a candidate at all. See `_is_platform_internal_schema` below.
-_PLATFORM_INTERNAL_SCHEMA_PREFIXES = ("SEMANTIC_", "JVS_", "JSON_VIEW")
-_PLATFORM_INTERNAL_SCHEMA_NAMES = {"SYS_SEMANTIC"}
+# Only Semantic Views' own schemas are internal: a model's published schema (SEMANTIC_SALES)
+# is the governed business surface, scaffolded through the semantic path instead.
+_PLATFORM_INTERNAL_SCHEMA_PREFIXES = ("JVS_", "JSON_VIEW")
+_PLATFORM_INTERNAL_SCHEMA_NAMES = {
+    "SYS_SEMANTIC",
+    "SEMANTIC_ADMIN",
+    "SEMANTIC_AGENT",
+    "SEMANTIC_CATALOG",
+    "SEMANTIC_SOURCE",
+}
+
+# Semantic Views AGENT_READINESS values whose models scaffolding may build on.
+_USABLE_SEMANTIC_READINESS = {"VALID", "WARNING"}
+_TEMPORAL_DATA_TYPE_PREFIXES = ("DATE", "TIMESTAMP")
 
 # PS26-BUG-009: column names that look numeric but are geo-coordinates, not measures -
 # `app_scaffold_from_schema` picked `LAT` as a table's "primary measure" and generated
@@ -334,21 +347,204 @@ class ExasolDashboardService:
     ) -> dict[str, Any]:
         self._validate_app_name(app_name, field_name="name")
         profile = self.profile_store.get_profile(profile_name)
-        blueprint = self._discover_schema_blueprint(
-            profile.name, schema_name=schema_name, table_name=table_name
+        models = self._published_semantic_models(profile.name)
+        by_schema = {ref.published_schema.upper(): ref for ref in models}
+        usable = [ref for ref in models if ref.readiness in _USABLE_SEMANTIC_READINESS]
+        if schema_name and schema_name.upper() in by_schema:
+            blueprint = self._discover_semantic_blueprint(
+                profile.name, [by_schema[schema_name.upper()]], object_name=table_name, candidates=models
+            )
+        elif schema_name is None and table_name is None and usable:
+            # A governed model beats a raw table the scorer happens to like.
+            blueprint = self._discover_semantic_blueprint(profile.name, usable, candidates=models)
+        else:
+            blueprint = self._discover_schema_blueprint(
+                profile.name,
+                schema_name=schema_name,
+                table_name=table_name,
+                excluded_schemas=set(by_schema),
+            )
+        source = (
+            f"semantic model {blueprint['model']} ({blueprint['schema_name']}.{blueprint['table_name']})"
+            if blueprint.get("kind") == "semantic"
+            else f"{blueprint['schema_name']}.{blueprint['table_name']}"
         )
         return build_schema_scaffold_bundle(
             app_name=app_name,
             title=title or f"{self._humanize_name(app_name)} Analytics",
             route=route or f"/apps/{app_name}",
             description=description
-            or (
-                f"Schema-tailored Exasol analytics app for {blueprint['schema_name']}.{blueprint['table_name']} "
-                f"backed by profile {profile.name}."
-            ),
+            or f"Schema-tailored Exasol analytics app for {source} backed by profile {profile.name}.",
             profile_name=profile.name,
             blueprint=blueprint,
         )
+
+    def _published_semantic_models(self, profile_name: str) -> list[SemanticModelRef]:
+        """Published Semantic Views models the profile can see; empty when none or not installed."""
+
+        result = self.execute_profile_query(profile_name, MODELS_QUERY)
+        if result.get("status") != "ok" or result.get("columns") != MODELS_COLUMNS:
+            return []
+        return models_from_rows(result.get("rows") or [])
+
+    def _discover_semantic_blueprint(
+        self,
+        profile_name: str,
+        models: list[SemanticModelRef],
+        *,
+        object_name: str | None = None,
+        candidates: list[SemanticModelRef],
+    ) -> dict[str, Any]:
+        """Pick a published model object and the fields its scaffold queries use.
+
+        With several models, takes the one with the most certified metrics. Every
+        metric/dimension pair a generated query uses is a valid combination in the model.
+        """
+
+        names = {f"m{index}": ref.model for index, ref in enumerate(models)}
+        name_list = ", ".join(f"{{{key}!s}}" for key in names)
+        fields_result = self.execute_profile_query(
+            profile_name,
+            "SELECT MODEL_NAME, OBJECT_NAME, PUBLISHED_OBJECT_NAME, FIELD_KIND, FIELD_NAME, SQL_COLUMN_NAME,\n"
+            "       ORDINAL_POSITION, DATA_TYPE, DISPLAY_NAME, FORMAT_HINT, IS_CERTIFIED\n"
+            "FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT\n"
+            f"WHERE MODEL_NAME IN ({name_list}) AND FIELD_KIND IN ('METRIC', 'DIMENSION')\n"
+            "ORDER BY MODEL_NAME, OBJECT_NAME, ORDINAL_POSITION\n",
+            params=names,
+        )
+        if fields_result.get("status") != "ok":
+            raise DashServerError(
+                category="exasol_schema_scaffold_error",
+                summary="Reading the semantic model's fields failed for the selected Exasol profile.",
+                details={"profile": profile_name, "query_result": fields_result},
+            )
+        objects: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in self._records_from_result(fields_result):
+            key = (str(row["MODEL_NAME"]), str(row["OBJECT_NAME"]))
+            entry = objects.setdefault(
+                key, {"published_object_name": str(row["PUBLISHED_OBJECT_NAME"]), "metrics": [], "dimensions": []}
+            )
+            field = {
+                "name": str(row["FIELD_NAME"]),
+                "column": str(row["SQL_COLUMN_NAME"]),
+                "label": str(row.get("DISPLAY_NAME") or row["FIELD_NAME"]),
+                "format": row.get("FORMAT_HINT"),
+                "certified": bool(row.get("IS_CERTIFIED")),
+                "temporal": str(row.get("DATA_TYPE") or "").upper().startswith(_TEMPORAL_DATA_TYPE_PREFIXES),
+            }
+            entry["metrics" if row["FIELD_KIND"] == "METRIC" else "dimensions"].append(field)
+        for entry in objects.values():
+            # Certified metrics first; the sort is stable, so model order breaks ties.
+            entry["metrics"].sort(key=lambda field: not field["certified"])
+        with_metrics = {key: entry for key, entry in objects.items() if entry["metrics"]}
+
+        if object_name is not None:
+            wanted = object_name.upper()
+            matches = [
+                key
+                for key, entry in with_metrics.items()
+                if wanted in (key[1].upper(), entry["published_object_name"].upper())
+            ]
+            if not matches:
+                raise DashServerError(
+                    category="exasol_schema_scaffold_error",
+                    summary=f"Semantic object {object_name} has no metrics in model {models[0].model}.",
+                    details={
+                        "profile": profile_name,
+                        "model": models[0].model,
+                        "table_name": object_name,
+                        "available_objects": sorted(entry["published_object_name"] for entry in with_metrics.values()),
+                    },
+                )
+            chosen = matches[0]
+        elif with_metrics:
+            chosen = max(
+                sorted(with_metrics),
+                key=lambda key: (
+                    sum(field["certified"] for field in with_metrics[key]["metrics"]),
+                    len(with_metrics[key]["metrics"]),
+                ),
+            )
+        else:
+            raise DashServerError(
+                category="exasol_schema_scaffold_error",
+                summary="The semantic model has no metrics to scaffold.",
+                details={"profile": profile_name, "models": [ref.model for ref in models]},
+            )
+        model = next(ref for ref in models if ref.model == chosen[0])
+        entry = with_metrics[chosen]
+        valid = self._valid_semantic_combinations(profile_name, model.model, chosen[1])
+
+        metrics = entry["metrics"]
+        primary = metrics[0]
+
+        def dimension(*, temporal: bool) -> dict[str, Any] | None:
+            return next(
+                (
+                    field
+                    for field in entry["dimensions"]
+                    if field["temporal"] is temporal and (primary["name"], field["name"]) in valid
+                ),
+                None,
+            )
+
+        time_dimension = dimension(temporal=True)
+        category_dimension = dimension(temporal=False)
+        detail_dimension = category_dimension or time_dimension
+        detail_metrics = (
+            [field for field in metrics if (field["name"], detail_dimension["name"]) in valid][:4]
+            if detail_dimension is not None
+            else []
+        )
+        object_label = entry["published_object_name"]
+        return {
+            "kind": "semantic",
+            "model": model.model,
+            "model_readiness": model.readiness,
+            "preprocessor": model.preprocessor,
+            "schema_name": model.published_schema,
+            "table_name": object_label,
+            "summary_metrics": metrics[:4],
+            "primary_metric": primary,
+            "time_dimension": time_dimension,
+            "category_dimension": category_dimension,
+            "detail_dimension": detail_dimension,
+            "detail_metrics": detail_metrics,
+            "business_caption": (
+                f"Governed metrics from semantic model {model.model} ({model.published_schema}.{object_label}). "
+                "Definitions and labels come from the model; change them there, not in this app's SQL."
+            ),
+            "summary_heading": f"{object_label} KPI Snapshot",
+            "chart_heading": (
+                f"{primary['label']} by {time_dimension['label']}"
+                if time_dimension
+                else f"{primary['label']} by {category_dimension['label']}"
+                if category_dimension
+                else primary["label"]
+            ),
+            "table_heading": (
+                f"{primary['label']} by {detail_dimension['label']}" if detail_dimension else f"{object_label} Detail"
+            ),
+            "semantic_candidates": [
+                {"model": ref.model, "published_schema": ref.published_schema, "readiness": ref.readiness}
+                for ref in candidates
+            ],
+        }
+
+    def _valid_semantic_combinations(self, profile_name: str, model: str, object_name: str) -> set[tuple[str, str]]:
+        """(metric, dimension) pairs the model declares valid for one object."""
+
+        result = self.execute_profile_query(
+            profile_name,
+            "SELECT METRIC_NAME, DIMENSION_NAME FROM SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT\n"
+            "WHERE MODEL_NAME = {model!s} AND OBJECT_NAME = {object_name!s} AND IS_VALID\n",
+            params={"model": model, "object_name": object_name},
+        )
+        if result.get("status") != "ok":
+            return set()
+        return {
+            (str(row["METRIC_NAME"]), str(row["DIMENSION_NAME"])) for row in self._records_from_result(result)
+        }
 
     def execute_profile_query(
         self,
@@ -502,7 +698,9 @@ class ExasolDashboardService:
         *,
         schema_name: str | None = None,
         table_name: str | None = None,
+        excluded_schemas: set[str] | None = None,
     ) -> dict[str, Any]:
+        excluded = {schema.upper() for schema in excluded_schemas or set()}
         params = {"schema_name": schema_name} if schema_name else {}
         sql_text = (
             "SELECT COLUMN_SCHEMA,\n"
@@ -547,7 +745,9 @@ class ExasolDashboardService:
             # caller who explicitly names `schema_name` clearly wants that schema on
             # purpose, and excluding it here would wipe out every one of its rows
             # before the explicit-schema path ever sees them.
-            if schema_name is None and _is_platform_internal_schema(resolved_schema):
+            if schema_name is None and (
+                _is_platform_internal_schema(resolved_schema) or resolved_schema.upper() in excluded
+            ):
                 continue
             grouped.setdefault((resolved_schema, resolved_table), []).append(row)
         if not grouped:

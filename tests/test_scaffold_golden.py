@@ -75,6 +75,31 @@ _SCHEMA_BLUEPRINTS = {
         "measure_columns": [],
         "relationship_hints": [],
     },
+    # Semantic Views model: Semantic SQL over governed metrics, no raw aggregation.
+    "semantic_sales": {
+        "kind": "semantic",
+        "model": "sales",
+        "model_readiness": "VALID",
+        "preprocessor": "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR",
+        "schema_name": "SEMANTIC_SALES",
+        "table_name": "SALES",
+        "summary_metrics": [
+            {"name": "total_revenue", "column": "TOTAL_REVENUE", "label": "Total Revenue", "format": "currency", "certified": True, "temporal": False},
+            {"name": "gross_margin_pct", "column": "GROSS_MARGIN_PCT", "label": "Gross Margin %", "format": "percentage", "certified": True, "temporal": False},
+        ],
+        "primary_metric": {"name": "total_revenue", "column": "TOTAL_REVENUE", "label": "Total Revenue", "format": "currency", "certified": True, "temporal": False},
+        "time_dimension": {"name": "order_month", "column": "ORDER_MONTH", "label": "Order Month", "format": "month", "certified": True, "temporal": True},
+        "category_dimension": {"name": "customer_region", "column": "CUSTOMER_REGION", "label": "Customer Region", "format": None, "certified": True, "temporal": False},
+        "detail_dimension": {"name": "customer_region", "column": "CUSTOMER_REGION", "label": "Customer Region", "format": None, "certified": True, "temporal": False},
+        "detail_metrics": [
+            {"name": "total_revenue", "column": "TOTAL_REVENUE", "label": "Total Revenue", "format": "currency", "certified": True, "temporal": False},
+        ],
+        "business_caption": "Governed metrics from semantic model sales (SEMANTIC_SALES.SALES).",
+        "summary_heading": "SALES KPI Snapshot",
+        "chart_heading": "Total Revenue by Order Month",
+        "table_heading": "Total Revenue by Customer Region",
+        "semantic_candidates": [],
+    },
 }
 
 

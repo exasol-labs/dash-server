@@ -1,0 +1,14 @@
+{
+  "name": "golden-semantic_sales",
+  "title": "Golden semantic_sales",
+  "route": "/golden/semantic_sales",
+  "description": "Golden fixture for semantic_sales.",
+  "template": "exasol-analytics",
+  "data_sources": {
+    "primary": {
+      "kind": "exasol",
+      "profile": "golden-profile",
+      "auth_mode": "local_direct"
+    }
+  }
+}

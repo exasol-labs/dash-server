@@ -16,6 +16,11 @@ from dash_server.exasol._pyexasol_types import ExaConnectionLike
 from dash_server.exasol.dsn import dsn_fingerprint
 from dash_server.exasol.models import ExasolProfile
 from dash_server.exasol.secrets import ExasolSecretStore
+from dash_server.exasol.semantic_models import (
+    normalize_identifier,
+    published_semantic_models,
+    session_preprocessor,
+)
 from dash_server.exasol.session_init import session_init_statements
 
 # PS27-BUG-001 (round-2 persona study): a cached connection used to live for the
@@ -147,10 +152,13 @@ class ExasolConnectionManager:
         connect_kwargs = self._connect_kwargs(profile, secret_value)
         connection_test = {"status": "failed"}
         session_init: dict[str, Any] = {"status": "skipped"}
+        semantic_layer: dict[str, Any] = {"status": "skipped"}
         try:
             connection = connector.connect(**connect_kwargs)
             connection_test = {"status": "succeeded"}
             session_init = self._validate_session_init(profile, connection)
+            if session_init["status"] != "failed":
+                semantic_layer = self._discover_semantic_layer(connection)
             close_fn = getattr(connection, "close", None)
             if callable(close_fn):
                 close_fn()
@@ -171,7 +179,35 @@ class ExasolConnectionManager:
             "driver": {"status": "available", "module": "pyexasol"},
             "connection_test": connection_test,
             "session_init": session_init,
+            "semantic_layer": semantic_layer,
             "is_valid": connection_test["status"] == "succeeded" and session_init["status"] != "failed",
+        }
+
+    @staticmethod
+    def _discover_semantic_layer(connection: Any) -> dict[str, Any]:
+        """Report the published Semantic Views models this profile's sessions can see.
+
+        Runs after session init, so `preprocessor_active` says whether the profile's own
+        sessions can run Semantic SQL against each model.
+        """
+
+        models = published_semantic_models(connection)
+        if not models:
+            return {"status": "none_found"}
+        active = session_preprocessor(connection)
+        return {
+            "status": "found",
+            "models": [
+                {
+                    "model": ref.model,
+                    "published_schema": ref.published_schema,
+                    "description": ref.description,
+                    "readiness": ref.readiness,
+                    "preprocessor": ref.preprocessor,
+                    "preprocessor_active": normalize_identifier(ref.preprocessor) == active,
+                }
+                for ref in models
+            ],
         }
 
     def _validate_session_init(self, profile: ExasolProfile, connection: Any) -> dict[str, Any]:

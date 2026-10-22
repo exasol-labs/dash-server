@@ -29,8 +29,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dash://exasol/help/agent-workflow` now starts with "check for a governed semantic model
   first", and `dash://exasol/help/sql-placeholders` warns about summing an order-level amount
   over order lines.
+- `exasol_profile_validate` reports the published Exasol Semantic Views models the profile can
+  see (`semantic_layer`), including whether each model's preprocessor is active in the profile's
+  sessions. Its text names the models, and its next step says to build on them, or first to add
+  the `session_init_sql` they need.
+- `app_scaffold_from_schema` scaffolds Semantic SQL from a published semantic model: pass the
+  model's published schema as `schema_name` (and an object as `table_name`). The summary selects
+  certified metrics labelled with their display names, the trend uses a time dimension, and the
+  detail uses a category dimension, all from valid metric/dimension combinations. Without
+  `schema_name`, the scaffold prefers a usable published model over raw tables.
 
 ### Changed
+- `app_scaffold_from_schema` no longer treats every `SEMANTIC_*` schema as platform-internal. Only
+  Semantic Views' own schemas (`SEMANTIC_ADMIN`, `SEMANTIC_AGENT`, `SEMANTIC_CATALOG`,
+  `SEMANTIC_SOURCE`, `SYS_SEMANTIC`) are skipped. Published model schemas are scaffolded through the
+  semantic path, and a user schema that merely starts with `SEMANTIC_` is ordinary data again.
 - The Exasol skill (`skills/exasol_dash_skill.md`) has a semantic-layer section, and its creation
   path advice now matches `dash://exasol/help/dashboard-patterns`: `app_create_from_files` is the
   default once the dashboard is designed. It used to rank it last.

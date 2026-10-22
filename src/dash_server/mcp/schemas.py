@@ -200,11 +200,11 @@ class SchemasMixin(MCPServerHost):
                 },
                 "schema_name": {
                     "type": "string",
-                    "description": "Optional schema to prioritize during introspection. When omitted, the tool picks from visible non-system schemas.",
+                    "description": "Optional schema to prioritize during introspection. A published Exasol Semantic Views schema (e.g. SEMANTIC_SALES) scaffolds Semantic SQL over that model. When omitted, the tool prefers a usable published semantic model and otherwise picks from visible non-system schemas; schema_blueprint.semantic_candidates lists the models.",
                 },
                 "table_name": {
                     "type": "string",
-                    "description": "Optional specific table inside schema_name to base the scaffold on. When omitted, the highest-scoring table in the schema is picked automatically. schema_blueprint.table_candidates lists alternatives.",
+                    "description": "Optional specific table inside schema_name to base the scaffold on (for a semantic model, an object such as SALES). When omitted, the highest-scoring table in the schema is picked automatically (for a semantic model, the object with the most certified metrics). schema_blueprint.table_candidates lists alternatives.",
                 },
                 "title": {"type": "string", "description": "Optional dashboard title."},
                 "route": {"type": "string", "description": "Optional route. Defaults to /apps/{name}."},

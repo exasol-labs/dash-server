@@ -2316,7 +2316,7 @@ def test_semantic_layer_guidance_is_discoverable(client) -> None:
     assert "dash://exasol/help/semantic-layer" in {resource["uri"] for resource in listed}
 
     guide = _resource_json(client, "dash://exasol/help/semantic-layer", request_id=2)
-    assert "MODELS_FOR_AGENT" in guide["check_first"][0]
+    assert any("MODELS_FOR_AGENT" in step for step in guide["check_first"])
     assert guide["profile_setup"]["session_init_sql"] == [
         "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
     ]

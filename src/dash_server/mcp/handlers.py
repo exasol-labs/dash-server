@@ -198,9 +198,14 @@ class HandlersMixin(MCPServerHost):
     def _tool_exasol_profile_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         payload = self._exasol_service().validate_profile(self._require_name(arguments))
         validation_state = "passed" if payload["is_valid"] else "failed"
+        text = f"Exasol profile validation {validation_state} for {payload['profile']['name']}."
+        semantic_models = (payload.get("semantic_layer") or {}).get("models") or []
+        if semantic_models:
+            names = ", ".join(f"{model['model']} ({model['published_schema']})" for model in semantic_models)
+            text += f" Published semantic models: {names}."
         return self._tool_result(
             "exasol_profile_validate",
-            text=f"Exasol profile validation {validation_state} for {payload['profile']['name']}.",
+            text=text,
             structured_content=payload,
         )
 
@@ -491,9 +496,23 @@ class HandlersMixin(MCPServerHost):
         preflight_error = self._preflight_failure_error(created)
         if preflight_error is not None:
             return self._tool_error_result("app_scaffold_from_schema", preflight_error, extra_payload=structured)
+        text = f"Created schema-tailored Exasol scaffold {created['app']['name']} at {browser_url}."
+        blueprint = bundle["schema_blueprint"]
+        if blueprint.get("kind") == "semantic":
+            text += (
+                f" Built on semantic model {blueprint['model']} ({blueprint['schema_name']}.{blueprint['table_name']}):"
+                " queries/business/*.sql are Semantic SQL; see SCHEMA_NOTES.md."
+            )
+            others = [
+                f"{candidate['model']} ({candidate['published_schema']})"
+                for candidate in blueprint.get("semantic_candidates") or []
+                if candidate["model"] != blueprint["model"]
+            ]
+            if others and not schema_name:
+                text += f" Other published models: {', '.join(others)}; pass schema_name to choose one."
         return self._tool_result(
             "app_scaffold_from_schema",
-            text=f"Created schema-tailored Exasol scaffold {created['app']['name']} at {browser_url}.",
+            text=text,
             structured_content=structured,
         )
 

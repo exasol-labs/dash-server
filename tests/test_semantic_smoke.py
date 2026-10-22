@@ -9,7 +9,7 @@ from dash_server.exasol.sql_smoke import run_sql_smoke
 PREPROCESSOR = "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
 SEMANTIC_QUERY = ("queries/kpis.sql", "SELECT total_revenue FROM semantic_sales.SALES")
 RAW_QUERY = ("queries/raw.sql", "SELECT COUNT(*) FROM MART.ORDERS")
-SALES_MODEL = ("sales", "SEMANTIC_SALES", PREPROCESSOR, "WARNING", "WARNING", 2, 0, 755)
+SALES_MODEL = ("sales", "SEMANTIC_SALES", PREPROCESSOR, "WARNING", "WARNING", 2, 0, 755, "Certified sales model")
 
 
 class _Connection:
@@ -33,6 +33,7 @@ class _Connection:
             "VALIDATION_WARNING_COUNT",
             "VALIDATION_ERROR_COUNT",
             "LATEST_VALIDATION_RUN_ID",
+            "DESCRIPTION",
         ]
         self.statements: list[str] = []
         self.catalog_lookups = 0

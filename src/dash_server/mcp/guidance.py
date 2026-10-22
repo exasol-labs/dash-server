@@ -32,6 +32,40 @@ def _dedupe_preserving_order(items: list[str]) -> list[str]:
 
 
 
+def _semantic_layer_guidance(semantic_layer: Any) -> dict[str, Any] | None:
+    """Next step for a valid profile whose database has published semantic models."""
+
+    if not isinstance(semantic_layer, dict):
+        return None
+    models = [model for model in semantic_layer.get("models") or [] if isinstance(model, dict)]
+    if not models:
+        return None
+    names = ", ".join(f"{model.get('model')} ({model.get('published_schema')})" for model in models)
+    related = ["dash://exasol/help/semantic-layer", "dash://exasol/help/agent-workflow"]
+    inactive = [model for model in models if not model.get("preprocessor_active")]
+    if inactive:
+        statement = f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {inactive[0].get('preprocessor')}"
+        return {
+            "next_step": (
+                f"Published semantic models are available: {names}. This profile's sessions don't activate "
+                "their preprocessor, so Semantic SQL against them would fail. Re-create the profile with "
+                f'session_init_sql ["{statement}"] (exasol_profile_create_local, overwrite: true), validate '
+                "again, then build metrics on the published views instead of the raw tables behind them. "
+                "Read dash://exasol/help/semantic-layer first."
+            ),
+            "suggested_tools": ["exasol_profile_create_local", "exasol_profile_validate"],
+            "related_resources": related,
+        }
+    return {
+        "next_step": (
+            f"Published semantic models are available: {names}. Build metrics on their published views "
+            "instead of the raw tables behind them. Read dash://exasol/help/semantic-layer first."
+        ),
+        "suggested_tools": ["app_create_from_files", "app_scaffold_from_schema"],
+        "related_resources": related,
+    }
+
+
 class GuidanceMixin(MCPServerHost):
     """Builds the ``guidance`` block attached to every tool result."""
 
@@ -91,6 +125,11 @@ class GuidanceMixin(MCPServerHost):
     ) -> dict[str, Any]:
         if is_error:
             return self._error_guidance(tool_name, exc)
+
+        if tool_name == "exasol_profile_validate" and payload.get("is_valid"):
+            semantic_guidance = _semantic_layer_guidance(payload.get("semantic_layer"))
+            if semantic_guidance is not None:
+                return semantic_guidance
 
         validation = payload.get("validation")
         if tool_name == "app_validate" and isinstance(validation, dict):
