@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from _helpers import call_mcp, wait_for
+from _helpers import call_mcp, wait_for, wait_for_audit_events
 
 pytestmark = pytest.mark.slow
 
@@ -266,11 +266,4 @@ def test_export_job_lifecycle_queued_running_succeeded(app, client):
     assert service.parameter_codec.decode(encoded) == {"period": "2026-07"}
 
     # Audit trail records the full lifecycle.
-    with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
-        audit_events = {
-            row[0]
-            for row in connection.execute(
-                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?", (job_id,)
-            ).fetchall()
-        }
-    assert {"export.created", "export.succeeded"} <= audit_events
+    wait_for_audit_events(app.config["REGISTRY_DB_PATH"], job_id, {"export.created", "export.succeeded"})

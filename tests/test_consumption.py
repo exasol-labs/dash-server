@@ -19,7 +19,7 @@ from dash_server.consumption import consumption_contract_hash, normalize_consump
 from dash_server.consumption.execution import DatasetStream, ExasolDatasetExecutor
 from dash_server.exceptions import DashServerError
 
-from _helpers import wait_for
+from _helpers import wait_for, wait_for_audit_events
 
 
 _APP_PY = """from dash import Dash, html
@@ -756,19 +756,11 @@ def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client)
     assert artifact_path.exists() is False
     expired = _call_tool(client, "export_get", {"job_id": job_id})
     assert expired.get_json()["result"]["structuredContent"]["job"]["status"] == "expired"
-    with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
-        audit_events = {
-            row[0]
-            for row in connection.execute(
-                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?", (job_id,)
-            ).fetchall()
-        }
-    assert {
-        "export.created",
-        "export.succeeded",
-        "artifact.downloaded",
-        "artifact.expired",
-    } <= audit_events
+    wait_for_audit_events(
+        app.config["REGISTRY_DB_PATH"],
+        job_id,
+        {"export.created", "export.succeeded", "artifact.downloaded", "artifact.expired"},
+    )
 
 
 @pytest.mark.slow
@@ -1161,16 +1153,11 @@ def test_phase2_retry_recovers_from_transient_failure(app, client):
     assert payload["job"]["status"] == "succeeded"
     assert payload["job"]["attempt_count"] == 2
     assert executor.stream_calls == 2
-    db_path = app.config["REGISTRY_DB_PATH"]
-    with sqlite3.connect(db_path) as connection:
-        events = {
-            row[0]
-            for row in connection.execute(
-                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?",
-                (created["job"]["id"],),
-            ).fetchall()
-        }
-    assert {"export.created", "export.retried", "export.succeeded"} <= events
+    wait_for_audit_events(
+        app.config["REGISTRY_DB_PATH"],
+        created["job"]["id"],
+        {"export.created", "export.retried", "export.succeeded"},
+    )
 
 
 @pytest.mark.slow
