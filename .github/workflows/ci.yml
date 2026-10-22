@@ -17,30 +17,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Set up uv and Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v10.2.0
         with:
+          # Same uv that writes uv.lock locally, so `--locked` judges it consistently.
+          version: "0.9.24"
           python-version: ${{ matrix.python-version }}
-          cache: pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+        # --locked fails if uv.lock has drifted from pyproject.toml, and pins mypy/ruff
+        # to the locked versions so a new upstream release can't flip the gates below.
+        run: uv sync --locked --extra dev
 
       - name: Ruff lint
-        run: ruff check src tests
+        run: uv run ruff check src tests
 
       - name: Ruff format check
         # Advisory only (see pyproject.toml's ruff section) — the codebase has pre-existing
         # formatting drift that isn't auto-formatted yet, so this doesn't block CI.
-        run: ruff format --check src tests
+        run: uv run ruff format --check src tests
         continue-on-error: true
 
       - name: mypy
-        # dash_server/mcp/{resources,dispatch,schemas,handlers}.py use a mixin pattern that
-        # mypy can't resolve across sibling mixins, producing a known, stable set of
-        # false-positive "has no attribute" errors. Non-blocking until that's refactored.
-        run: mypy src/dash_server src/dash_server_runtime
-        continue-on-error: true
+        # Paths come from `[tool.mypy] files` in pyproject.toml.
+        run: uv run mypy
 
       - name: pytest
-        run: pytest -m "not slow"
+        run: uv run pytest -m "not slow"

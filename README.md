@@ -312,6 +312,17 @@ code, so **when a skill and a resource disagree, the resource is right.**
 pytest
 ```
 
+CI blocks merges to `main`, and so releases, on these checks. Run them before pushing:
+
+```bash
+uv sync --locked --extra dev   # fails if uv.lock is out of date with pyproject.toml
+uv run ruff check src tests
+uv run mypy
+uv run pytest -m "not slow"
+```
+
+`ruff format --check` also runs in CI, but it is advisory and does not block.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.

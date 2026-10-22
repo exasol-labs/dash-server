@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `mypy` now passes cleanly. It previously reported 129 errors, mostly from the MCP server
   mixins calling helpers defined on their siblings. `types-openpyxl` is added to the dev
   extras.
+- CI now fails on mypy errors (before, it only reported them), as it already did on
+  `ruff check`. CI installs from `uv.lock` with `uv sync --locked`. This pins mypy and ruff to
+  the locked versions and fails the build if the lock has drifted from `pyproject.toml`.
 
 ## [0.1.1] - 2026-09-28
 
