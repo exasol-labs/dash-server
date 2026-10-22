@@ -6,11 +6,11 @@ import re
 from typing import Any
 
 from dash_server.exceptions import DashServerError
-from dash_server.exasol.fetch_mappers import dashboard_fetch_mapper
 from dash_server.gitops import GitRepoService
 
 from .connection_manager import ExasolConnectionManager
 from .dsn import default_tls_verify, dsn_parse_error
+from .fetch_mappers import dashboard_fetch_mapper
 from .models import ExasolProfile, ExasolSecretRef
 from .profiles import ExasolProfileStore
 from .scaffold import (
@@ -23,6 +23,7 @@ from .scaffold import (
     exasol_sql_placeholders_help,
 )
 from .secrets import ExasolSecretStore
+from .session_init import normalize_session_init_sql
 
 _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
@@ -140,6 +141,7 @@ class ExasolDashboardService:
         secret_env_var: str | None = None,
         statement_timeout_seconds: int | None = None,
         row_limit: int | None = None,
+        session_init_sql: list[str] | None = None,
     ) -> dict[str, Any]:
         self._validate_app_name(name, field_name="name")
         self._validate_backend_mode(backend, credential_mode)
@@ -150,6 +152,11 @@ class ExasolDashboardService:
             raise self._field_error("dsn", dsn_error)
         if not user:
             raise self._field_error("user", "must be a non-empty string.")
+        if session_init_sql is not None:
+            try:
+                session_init_sql = normalize_session_init_sql(session_init_sql)
+            except ValueError as exc:
+                raise self._field_error("session_init_sql", str(exc)) from exc
         if bool(secret_value) == bool(secret_env_var):
             raise DashServerError(
                 category="exasol_profile_validation_error",
@@ -173,6 +180,7 @@ class ExasolDashboardService:
             secret_ref=secret_ref,
             statement_timeout_seconds=statement_timeout_seconds,
             row_limit=row_limit,
+            session_init_sql=session_init_sql,
         )
         stored = self.profile_store.save_profile(profile)
         return {
@@ -196,6 +204,7 @@ class ExasolDashboardService:
         secret_env_var: str,
         statement_timeout_seconds: int | None = None,
         row_limit: int | None = None,
+        session_init_sql: list[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Compare the stored profile with what ``create_local_profile`` would write.
 
@@ -216,6 +225,7 @@ class ExasolDashboardService:
             secret_ref=self.secret_store.env_secret_ref(secret_env_var),
             statement_timeout_seconds=statement_timeout_seconds,
             row_limit=row_limit,
+            session_init_sql=session_init_sql,
         )
 
         def comparable(profile: ExasolProfile) -> dict[str, Any]:
@@ -230,6 +240,7 @@ class ExasolDashboardService:
                 "secret_ref": f"{profile.secret_ref.provider}:{profile.secret_ref.key}",
                 "statement_timeout_seconds": query_defaults.get("statement_timeout_seconds"),
                 "row_limit": query_defaults.get("row_limit"),
+                "session_init_sql": query_defaults.get("session_init_sql") or [],
             }
 
         stored_fields, requested_fields = comparable(stored), comparable(requested)
@@ -252,7 +263,14 @@ class ExasolDashboardService:
         secret_ref: ExasolSecretRef,
         statement_timeout_seconds: int | None,
         row_limit: int | None,
+        session_init_sql: list[str] | None = None,
     ) -> ExasolProfile:
+        query_defaults: dict[str, Any] = {
+            "statement_timeout_seconds": statement_timeout_seconds or 30,
+            "row_limit": row_limit or 50000,
+        }
+        if session_init_sql:
+            query_defaults["session_init_sql"] = list(session_init_sql)
         return ExasolProfile(
             name=name,
             backend=backend,
@@ -263,10 +281,7 @@ class ExasolDashboardService:
             description=description or f"Local Exasol profile {name}.",
             tls_verify=default_tls_verify(dsn) if tls_verify is None else tls_verify,
             secret_ref=secret_ref,
-            query_defaults={
-                "statement_timeout_seconds": statement_timeout_seconds or 30,
-                "row_limit": row_limit or 50000,
-            },
+            query_defaults=query_defaults,
         )
 
     def validate_profile(self, name: str) -> dict[str, Any]:
@@ -355,6 +370,8 @@ class ExasolDashboardService:
                 # downstream code expects covers connection-level failures too. (BUG-006.)
                 connection = self.connection_manager.connect(profile)
                 statement = connection.execute(sql_text, params or {})
+                if getattr(statement, "result_type", None) == "rowCount":
+                    return self._no_result_set(profile, statement)
                 visible_rows, truncated = self._fetch_bounded_rows(statement, row_limit)
                 visible_rows = self._typed_rows(statement, visible_rows)
                 columns = self._extract_columns(statement)
@@ -405,6 +422,33 @@ class ExasolDashboardService:
             "profile": profile.name,
             "error": "exceeded retry budget",
             "summary": f"Exasol query failed for profile {profile.name}.",
+        }
+
+    def _no_result_set(self, profile: ExasolProfile, statement: Any) -> dict[str, Any]:
+        """Result for a statement without a result set (ALTER SESSION, DML, EXECUTE SCRIPT ...).
+
+        Fetching would raise, so this answers with no rows instead. The cached connection is
+        then discarded: it is shared by every app on this profile and thread, and a session
+        change made by one app's query file must not leak into another's queries. Session
+        setup belongs in the profile's `session_init_sql`, which runs on every connection.
+        """
+
+        rowcount = getattr(statement, "rowcount", None)
+        affected_rows = rowcount() if callable(rowcount) else 0
+        self.connection_manager.invalidate(profile.name)
+        return {
+            "status": "ok",
+            "profile": profile.name,
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "affected_rows": affected_rows,
+            "truncated": False,
+            "summary": (
+                f"Statement ran on Exasol profile {profile.name} and returned no result set. "
+                "Session changes made by a query file do not persist; declare session setup in "
+                "the profile's session_init_sql instead."
+            ),
         }
 
     def _serialize_profile(self, profile: ExasolProfile) -> dict[str, Any]:

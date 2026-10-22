@@ -59,5 +59,18 @@
     "Hosted apps should refer to Exasol profiles by name and let the server resolve credentials.",
     "Do not call pyexasol.connect(...) directly from hosted app code unless the server architecture is explicitly extended to support that safely."
   ],
+  "session_setup": {
+    "example": [
+      "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+    ],
+    "field": "session_init_sql",
+    "rules": [
+      "One statement per entry, at most 10; only ALTER SESSION, EXECUTE SCRIPT, and OPEN SCHEMA are accepted.",
+      "Set it with exasol_profile_create_local (overwrite: true for an existing profile) and confirm session_init.status == \"applied\" with exasol_profile_validate.",
+      "Do not put session setup in queries/*.sql: changes made by a query file are discarded so they can't leak into other apps on the profile."
+    ],
+    "summary": "Session statements a profile runs on every new connection (dashboards, SQL smoke, exports, validation) before use, like a BI tool's initial SQL.",
+    "use_when": "A feature must be enabled per session, such as the Exasol Semantic Views preprocessor that Semantic SQL against a published model requires."
+  },
   "summary": "Supported Exasol connection modes for phase 0 local dashboard creation."
 }

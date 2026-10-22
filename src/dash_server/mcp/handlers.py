@@ -184,6 +184,7 @@ class HandlersMixin(MCPServerHost):
                 tool_name="exasol_profile_create_local",
                 field_name="row_limit",
             ),
+            session_init_sql=arguments.get("session_init_sql"),
         )
         payload["was_already_present"] = existing
         verb = "Rewrote" if existing else "Created"

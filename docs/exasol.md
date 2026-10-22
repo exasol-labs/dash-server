@@ -68,6 +68,7 @@ export DASH_SERVER_EXASOL_SECRETS_ROOT='/path/to/exasol-secrets'   # default: <i
 | `DASH_SERVER_EXASOL_DESCRIPTION` | `Local Exasol profile <name>.` | Human-readable description. |
 | `DASH_SERVER_EXASOL_STATEMENT_TIMEOUT_SECONDS` | `30` | Per-statement timeout. |
 | `DASH_SERVER_EXASOL_ROW_LIMIT` | `50000` | Maximum rows returned per query. |
+| `DASH_SERVER_EXASOL_SESSION_INIT_SQL` | unset | `;`-separated session statements run on every new connection; see [Session setup statements](#session-setup-statements). |
 | `DASH_SERVER_EXASOL_SECRETS_ROOT` | `<instance>/exasol-secrets` | Where secrets passed as `secret_value` are stored. |
 | `DASH_SERVER_EXASOL_OVERWRITE` | `false` | Rewrite an existing profile when it differs from these settings (see below). |
 
@@ -185,6 +186,7 @@ Optional fields:
 - `tls_verify`
 - `statement_timeout_seconds`
 - `row_limit`
+- `session_init_sql` (see [Session setup statements](#session-setup-statements))
 
 ### About `tls_verify`
 
@@ -225,6 +227,42 @@ and `exasol_profile_create_local` rejects it too, with an explanation. IPv6 lite
 supported in DSNs.
 
 Connecting to a self-signed Exasol with `tls_verify: true` fails with `[SSL: CERTIFICATE_VERIFY_FAILED]`. Setting it to `false` does not disable TLS — the websocket is still encrypted.
+
+### Session setup statements
+
+Some Exasol features are switched on per session rather than per query. `session_init_sql` lists
+statements that run on **every** connection the profile opens, before it is used: cached
+dashboard connections, SQL smoke checks during builds, exports, and `exasol_profile_validate`.
+It works like a BI tool's "initial SQL".
+
+The main use is [Exasol Semantic Views](https://github.com/exasol-labs/exasol-semantic-views):
+Semantic SQL against a published model only works once the session has its preprocessor
+activated.
+
+```json
+"session_init_sql": [
+  "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+]
+```
+
+or, for the startup bootstrap:
+
+```bash
+export DASH_SERVER_EXASOL_SESSION_INIT_SQL='ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR'
+```
+
+Rules:
+
+- One statement per entry, at most 10. Only `ALTER SESSION`, `EXECUTE SCRIPT`, and
+  `OPEN SCHEMA` are accepted, since the statements run on every connection.
+- If a statement fails, the connection is closed and the query (or build check) fails with
+  `exasol_session_init_failed`, naming the statement. `exasol_profile_validate` reports the
+  outcome under `session_init` (`not_configured`, `applied`, or `failed`).
+- Changing a profile's settings (for example with `exasol_profile_create_local` and
+  `overwrite: true`) replaces cached connections on their next use.
+- Don't put session setup in a hosted app's `queries/*.sql`. A statement without a result set
+  returns no rows, and dash-server then discards the connection so one app's session change
+  can't leak into other apps sharing the profile.
 
 ## pyexasol Telemetry
 

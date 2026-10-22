@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Exasol profiles can declare session setup statements, `session_init_sql`: run on every new
+  connection the profile opens (dashboards, SQL smoke, exports, and `exasol_profile_validate`),
+  like a BI tool's "initial SQL". This makes Exasol Semantic Views usable from hosted dashboards:
+  set `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR` and
+  Semantic SQL works in `queries/*.sql`. Set it through `exasol_profile_create_local` or the
+  `DASH_SERVER_EXASOL_SESSION_INIT_SQL` bootstrap variable. Only `ALTER SESSION`,
+  `EXECUTE SCRIPT`, and `OPEN SCHEMA` are accepted. A failing statement closes the connection
+  and reports `exasol_session_init_failed`; `exasol_profile_validate` reports the outcome under
+  `session_init`. See `docs/exasol.md`.
+
 ### Changed
+- A query file whose statement returns no result set (such as `ALTER SESSION`) now returns no
+  rows instead of failing with "Attempt to fetch from statement without result set". The
+  cached connection is still discarded afterwards, so a session change can't leak into other
+  apps sharing the profile.
+- A cached Exasol connection is replaced when its profile's settings change (for example a
+  rewrite with `overwrite: true`). Before, a busy thread kept using a connection opened from the
+  old DSN, user, or session setup until it went idle.
 - **Breaking for hosted apps:** dashboard queries (`query_rows`, `query_one`, `query_scalar`
   and the generated `load_*` wrappers) now return `DECIMAL` values as `int` or
   `decimal.Decimal`, `DATE` as `datetime.date`, and `TIMESTAMP` as `datetime.datetime`.

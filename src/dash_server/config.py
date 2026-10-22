@@ -222,6 +222,9 @@ class Config:
     EXASOL_BOOTSTRAP_ROW_LIMIT: int = int(
         os.environ.get("DASH_SERVER_EXASOL_ROW_LIMIT", "50000")
     )
+    # `;`-separated session statements run on every new connection (e.g. the Semantic Views
+    # preprocessor); stored as the profile's `query_defaults.session_init_sql`.
+    EXASOL_BOOTSTRAP_SESSION_INIT_SQL: str | None = os.environ.get("DASH_SERVER_EXASOL_SESSION_INIT_SQL")
     AUTO_INSTALL_DEPENDENCIES = True
     PYTHON_EXECUTABLE = sys.executable
     DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 120

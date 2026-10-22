@@ -31,6 +31,7 @@ from .consumption.blueprint import create_consumption_blueprint
 from .dependencies import DependencyEnvironmentService, DependencyInstaller
 from .diagnostics import DiagnosticsService
 from .exasol import ExasolDashboardService
+from .exasol.session_init import normalize_session_init_sql, split_sql_statements
 from .exceptions import DashServerError
 from .gitops import GitRepoService, GitWorktreeService
 from .mailer import InvitationEmailSender
@@ -352,6 +353,7 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
         "secret_env_var": str(secret_env_var),
         "statement_timeout_seconds": int(app.config["EXASOL_BOOTSTRAP_STATEMENT_TIMEOUT_SECONDS"]),
         "row_limit": int(app.config["EXASOL_BOOTSTRAP_ROW_LIMIT"]),
+        "session_init_sql": _bootstrap_session_init_sql(app.config.get("EXASOL_BOOTSTRAP_SESSION_INIT_SQL")),
     }
 
     if exists:
@@ -382,6 +384,17 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
         )
 
     exasol_dashboard_service.create_local_profile(**settings)
+
+
+def _bootstrap_session_init_sql(raw: Any) -> list[str] | None:
+    """Parse DASH_SERVER_EXASOL_SESSION_INIT_SQL (`;`-separated) into validated statements."""
+
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return normalize_session_init_sql(split_sql_statements(str(raw)))
+    except ValueError as exc:
+        raise _startup_error(f"DASH_SERVER_EXASOL_SESSION_INIT_SQL is invalid: {exc}") from exc
 
 
 @dataclass(frozen=True)

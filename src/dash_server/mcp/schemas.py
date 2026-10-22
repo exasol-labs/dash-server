@@ -96,6 +96,19 @@ class SchemasMixin(MCPServerHost):
                 },
                 "statement_timeout_seconds": {"type": "integer", "minimum": 1},
                 "row_limit": {"type": "integer", "minimum": 1},
+                "session_init_sql": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 10,
+                    "description": (
+                        "Session statements run on every new connection this profile opens "
+                        "(dashboards, SQL smoke, exports, validation), like a BI tool's initial SQL. "
+                        "One statement per entry; only ALTER SESSION, EXECUTE SCRIPT, and OPEN SCHEMA "
+                        "are accepted. Use it for session-level features such as Exasol Semantic "
+                        "Views: [\"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "
+                        "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR\"]."
+                    ),
+                },
                 "overwrite": {
                     "type": "boolean",
                     "description": (

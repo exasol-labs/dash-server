@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import ssl
 import threading
@@ -15,6 +16,7 @@ from dash_server.exasol._pyexasol_types import ExaConnectionLike
 from dash_server.exasol.dsn import dsn_fingerprint
 from dash_server.exasol.models import ExasolProfile
 from dash_server.exasol.secrets import ExasolSecretStore
+from dash_server.exasol.session_init import session_init_statements
 
 # PS27-BUG-001 (round-2 persona study): a cached connection used to live for the
 # lifetime of its worker thread, released only via incidental error-triggered
@@ -24,6 +26,12 @@ from dash_server.exasol.secrets import ExasolSecretStore
 # bounds how long an unused cached connection can survive before the next
 # `connect()` call on that thread evicts and replaces it.
 _DEFAULT_IDLE_TIMEOUT_SECONDS = 300
+
+
+def _profile_fingerprint(profile: ExasolProfile) -> str:
+    """Identity of the settings a cached connection was opened from."""
+
+    return json.dumps(profile.to_dict(), sort_keys=True, default=str)
 
 
 def _classify_connection_error(error_text: str) -> dict[str, str] | None:
@@ -138,12 +146,14 @@ class ExasolConnectionManager:
 
         connect_kwargs = self._connect_kwargs(profile, secret_value)
         connection_test = {"status": "failed"}
+        session_init: dict[str, Any] = {"status": "skipped"}
         try:
             connection = connector.connect(**connect_kwargs)
+            connection_test = {"status": "succeeded"}
+            session_init = self._validate_session_init(profile, connection)
             close_fn = getattr(connection, "close", None)
             if callable(close_fn):
                 close_fn()
-            connection_test = {"status": "succeeded"}
         except Exception as exc:
             error_text = str(exc)
             connection_test = {
@@ -160,8 +170,50 @@ class ExasolConnectionManager:
             "secret_resolution": secret_resolution,
             "driver": {"status": "available", "module": "pyexasol"},
             "connection_test": connection_test,
-            "is_valid": connection_test["status"] == "succeeded",
+            "session_init": session_init,
+            "is_valid": connection_test["status"] == "succeeded" and session_init["status"] != "failed",
         }
+
+    def _validate_session_init(self, profile: ExasolProfile, connection: Any) -> dict[str, Any]:
+        """Run the profile's session init on a validation connection and report the outcome."""
+
+        statements = session_init_statements(profile)
+        if not statements:
+            return {"status": "not_configured"}
+        try:
+            self._run_session_init(profile, connection)
+        except DashServerError as exc:
+            return {"status": "failed", **exc.details, "statements": len(statements)}
+        return {"status": "applied", "statements": len(statements)}
+
+    def _run_session_init(self, profile: ExasolProfile, connection: Any) -> None:
+        """Execute the profile's session init statements on a freshly opened connection.
+
+        A failing statement closes the connection: half-initialized sessions must never be
+        cached or handed out (Semantic SQL would fail later with a misleading error).
+        """
+
+        for index, statement in enumerate(session_init_statements(profile), start=1):
+            try:
+                connection.execute(statement)
+            except Exception as exc:
+                close_fn = getattr(connection, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
+                reason = getattr(exc, "message", None) or str(exc)
+                raise DashServerError(
+                    category="exasol_session_init_failed",
+                    summary=f"Session init statement {index} of Exasol profile {profile.name} failed: {reason}",
+                    details={
+                        "profile": profile.name,
+                        "statement_index": index,
+                        "statement": statement,
+                        "error": reason,
+                    },
+                ) from exc
 
     def connect(self, profile: ExasolProfile) -> ExaConnectionLike:
         """Return a per-thread cached connection, opening a new one on first use.
@@ -182,21 +234,27 @@ class ExasolConnectionManager:
         `query_defaults.connection_idle_timeout_seconds` (default 300s) is evicted
         and replaced here rather than reused, so a long-lived-but-unused connection
         doesn't hold an Exasol license slot indefinitely.
+
+        A cached connection opened from different profile settings (the profile was
+        rewritten: new DSN, user, or `session_init_sql`) is replaced too, so a thread
+        that stays busy never keeps serving sessions set up from the old profile.
         """
 
         cache = self._thread_cache()
+        fingerprint = _profile_fingerprint(profile)
         cached = cache.get(profile.name)
         if cached is not None:
-            connection, last_used = cached
-            if time.monotonic() - last_used <= self.connection_idle_timeout_seconds(profile):
-                cache[profile.name] = (connection, time.monotonic())
+            connection, last_used, cached_fingerprint = cached
+            idle_seconds = time.monotonic() - last_used
+            if cached_fingerprint == fingerprint and idle_seconds <= self.connection_idle_timeout_seconds(profile):
+                cache[profile.name] = (connection, time.monotonic(), fingerprint)
                 return connection
             self.invalidate(profile.name)
         connection = self.connect_uncached(
             profile,
             query_timeout_seconds=self.statement_timeout_seconds(profile),
         )
-        cache[profile.name] = (connection, time.monotonic())
+        cache[profile.name] = (connection, time.monotonic(), fingerprint)
         return connection
 
     def connect_uncached(
@@ -212,6 +270,9 @@ class ExasolConnectionManager:
         intentionally closes the connection. Runtime callbacks should keep using
         `connect()` so they benefit from per-thread session reuse. `fetch_mapper`
         is passed to pyexasol as-is; None keeps its default (Exasol's text values).
+        Every connection runs the profile's session init statements before it's returned
+        (raising `exasol_session_init_failed` if one fails), so cached runtime connections,
+        SQL smoke and exports all see the same session setup.
         """
 
         secret_value = self.secret_store.resolve(profile.secret_ref)
@@ -223,7 +284,9 @@ class ExasolConnectionManager:
         )
         if fetch_mapper is not None:
             kwargs["fetch_mapper"] = fetch_mapper
-        return connector.connect(**kwargs)
+        connection = connector.connect(**kwargs)
+        self._run_session_init(profile, connection)
+        return connection
 
     def invalidate(self, profile_name: str) -> None:
         """Discard the cached connection for ``profile_name`` on this thread.
@@ -236,7 +299,7 @@ class ExasolConnectionManager:
         cached = cache.pop(profile_name, None)
         if cached is None:
             return
-        connection, _last_used = cached
+        connection = cached[0]
         close = getattr(connection, "close", None)
         if callable(close):
             try:
@@ -295,7 +358,7 @@ class ExasolConnectionManager:
         except (TypeError, ValueError):
             return _DEFAULT_IDLE_TIMEOUT_SECONDS
 
-    def _thread_cache(self) -> dict[str, tuple[ExaConnectionLike, float]]:
+    def _thread_cache(self) -> dict[str, tuple[ExaConnectionLike, float, str]]:
         cache = getattr(self._local, "connections", None)
         if cache is None:
             cache = {}
