@@ -33,7 +33,7 @@ _53 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`app_output_get`** — Inspect one governed output declared by the current live revision.
 - **`app_outputs_list`** — List governed dataset and view outputs declared by the current live revision, including parameter schemas, effective formats, limits, and policy decisions.
 - **`app_patch_file`** — Apply a search/replace patch to one file in the app draft workspace and return a compact line-context preview of the updated file.
-- **`app_promote_revision`** — Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route. Pass require_healthy=true to refuse promoting a revision with a recorded build-preflight or data-layer failure (defaults to false: promotion is unconditional unless you opt in).
+- **`app_promote_revision`** — Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route. Pass require_healthy=true to refuse promoting a revision with a recorded build-preflight or data-layer failure (defaults to false: promotion goes ahead, and the result carries a warning when the revision has such a failure).
 - **`app_put_files`** — Create or replace one or more files in the app draft workspace. Use this before app_validate.
 - **`app_read_file`** — Return the current content of one draft workspace file. Use this to inspect app.py, requirements.txt, or other uploaded files before patching.
 - **`app_restart`** — Remount the current live revision for a hosted app.

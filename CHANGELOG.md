@@ -75,6 +75,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows instead of failing with "Attempt to fetch from statement without result set". The
   cached connection is still discarded afterwards, so a session change can't leak into other
   apps sharing the profile.
+- An app whose first revision fails artifact preflight (from `app_create`,
+  `app_create_from_files`, `app_create_exasol_dashboard`, or `app_scaffold_from_schema`) is no
+  longer started: there is no earlier revision to fall back on, so the failing one would serve
+  viewers. The `artifact_preflight_failed` error says so; fix the draft and run
+  `app_deploy_draft`, which builds, checks, and starts the app.
+- `app_promote_revision` adds a `warnings` entry when the revision has a recorded build-preflight
+  or data-layer failure (`require_healthy: true` still refuses it). A preview `app_deploy_draft`
+  whose preflight failed says so in its result text, and preflight errors name the failing check.
 - The `semantic_models` healthcheck probe takes a model's readiness from its newest *finished*
   validation run. A run left unfinished (Exasol Semantic Views 0.5.0's `CHECK_PARTITION_COVERAGE`
   leaves one behind on every call) made an `INVALID` model read as `VALID`. Without read access to

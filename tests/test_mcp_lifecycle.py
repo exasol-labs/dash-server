@@ -870,6 +870,20 @@ def test_app_deploy_draft_preview_can_report_failed_preflight_without_blocking_m
     assert payload["health"]["target"] == "preview"
     assert payload["health"]["health"]["status"] == "healthy"
     assert payload["app"]["preview_path"] == "/preview/preflight-preview/2"
+    assert "Warning: artifact preflight failed (failed probes: static_assets)" in deploy_result["content"][0]["text"]
+
+    # Promoting the failed revision is allowed by default, but says what it is promoting.
+    promote_result = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_promote_revision", "arguments": {"name": "preflight-preview", "revision_number": 2}},
+        request_id=183,
+    ).get_json()["result"]
+    assert promote_result["isError"] is False
+    assert promote_result["structuredContent"]["warnings"][0].startswith(
+        "Revision 2 has a recorded build-preflight or data-layer failure"
+    )
+    assert "Warning: Revision 2 has a recorded" in promote_result["content"][0]["text"]
 
 
 @pytest.mark.slow

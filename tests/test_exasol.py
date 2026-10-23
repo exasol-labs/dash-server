@@ -1858,16 +1858,43 @@ def test_ps26_bug005_app_create_from_files_runs_preflight_on_the_first_revision(
     assert probe["status"] == "failed"
     assert "MISSING_LATENCY_MS" in probe["details"]["latest_error"]
 
-    # The app still exists (creation isn't blocked outright, matching app_build's
-    # "revision exists, but preflight failed" contract) - a healthcheck independently
-    # confirms the same failure, so the two surfaces agree.
+    # The app and its revision exist (creation isn't blocked outright, matching
+    # app_build's "revision exists, but preflight failed" contract), but a first
+    # revision that failed preflight has nothing to fall back on, so it isn't started.
+    assert "so the app was not started" in structured["error"]["summary"]
+    assert structured["app"]["status"] == "stopped"
+    assert structured["app"]["published"] is False
+    assert client.get("/apps/preflight-on-create").status_code == 503  # stopped: not serving
     health = _call_mcp(
         client,
         "tools/call",
         {"name": "app_run_healthcheck", "arguments": {"name": "preflight-on-create"}},
         request_id=992,
     ).get_json()["result"]["structuredContent"]
-    assert health["health"]["status"] == "degraded"
+    assert health["health"]["status"] == "stopped"
+
+    # Fixing the query and deploying builds, checks, and starts the app.
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_put_files",
+            "arguments": {
+                "name": "preflight-on-create",
+                "files": _sql_smoke_app_files(name="preflight-on-create", bad_column=False),
+            },
+        },
+        request_id=993,
+    )
+    deployed = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_deploy_draft", "arguments": {"name": "preflight-on-create"}},
+        request_id=994,
+    ).get_json()["result"]
+    assert deployed["isError"] is False, deployed["content"][0]["text"]
+    assert deployed["structuredContent"]["app"]["status"] == "running"
+    assert client.get("/apps/preflight-on-create").status_code == 200
 
 
 @pytest.mark.slow

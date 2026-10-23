@@ -21,6 +21,23 @@ from dash_server.mailer import InvitationEmailSender
 from dash_server.registry.models import Invitation, ShareLink
 
 
+def _preflight_headline(preflight: dict[str, Any]) -> str:
+    """One line on why an artifact preflight didn't pass, for a tool result's summary."""
+
+    error = preflight.get("error")
+    if isinstance(error, dict) and error.get("summary"):
+        text = str(error["summary"])
+    else:
+        failed = [
+            str(probe.get("name"))
+            for probe in preflight.get("probes") or []
+            if isinstance(probe, dict) and probe.get("status") == "failed"
+        ]
+        text = f"failed probes: {', '.join(failed)}" if failed else f"status {preflight.get('status')}"
+    text = " ".join(text.split())
+    return text if len(text) <= 300 else text[:299] + "…"
+
+
 def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
     """Build the top-level `{valid, error_count, warning_count}` summary for app_validate.
 
@@ -730,11 +747,18 @@ class HandlersMixin(MCPServerHost):
                 },
             )
 
+        preflight = built.get("preflight")
+        preflight_warning = (
+            f" Warning: artifact preflight failed ({_preflight_headline(preflight)}); don't promote this revision "
+            "until it passes."
+            if isinstance(preflight, dict) and preflight.get("status") not in (None, "passed")
+            else ""
+        )
         return self._tool_result(
             "app_deploy_draft",
             text=(
                 f"Deployed draft preview for app {name} as revision {built['revision']['revision_number']} "
-                f"at {self._absolute_url(deployed['app'].get('preview_path') or '')}."
+                f"at {self._absolute_url(deployed['app'].get('preview_path') or '')}.{preflight_warning}"
                 if deployment_target == "preview"
                 else (
                     f"Deployed draft for app {name} as revision "
@@ -789,6 +813,8 @@ class HandlersMixin(MCPServerHost):
                 " The app runtime is currently stopped, so this revision is not serving "
                 "traffic yet - call app_start to mount it."
             )
+        for warning in promoted.get("warnings") or []:
+            text += f" Warning: {warning}"
         return self._tool_result(
             "app_promote_revision",
             text=text,
@@ -2165,12 +2191,20 @@ class HandlersMixin(MCPServerHost):
         # either so this one helper covers both shapes.
         revision = created.get("revision") or created.get("current_revision") or {}
         revision_number = revision.get("revision_number")
+        if "current_revision" in created and not created["app"].get("mounted"):
+            summary = (
+                f"Created app {created['app']['name']} with revision {revision_number}, but artifact preflight "
+                f"failed ({_preflight_headline(preflight)}), so the app was not started. Fix the draft, then "
+                "run app_deploy_draft: it builds, checks, and starts the app."
+            )
+        else:
+            summary = (
+                f"Created/built revision {revision_number} but artifact preflight failed "
+                f"({_preflight_headline(preflight)}); fix the runtime issue before trusting this app as live."
+            )
         return DashServerError(
             category="artifact_preflight_failed",
-            summary=(
-                f"Created/built revision {revision_number} but artifact preflight failed; "
-                "fix the runtime issue before trusting this app as live."
-            ),
+            summary=summary,
             details={
                 "app": created["app"]["name"],
                 "revision_number": revision_number,

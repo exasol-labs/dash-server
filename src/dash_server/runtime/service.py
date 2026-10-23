@@ -542,6 +542,12 @@ class AppRuntimeService:
             build_status = "failed"
             build_summary = "Created initial revision from draft workspace, but artifact preflight failed."
             log_level = "error"
+            if app.status == "running":
+                # A failed first revision has nothing good to fall back on, so it must not
+                # serve viewers. Leave the app stopped; app_deploy_draft starts it once a
+                # revision passes preflight.
+                self.stop_app(app.name)
+                build_summary += " The app was not started."
         self.diagnostics_service.record_build_result(
             app.name,
             status=build_status,
@@ -1637,7 +1643,8 @@ class AppRuntimeService:
         with self._locked_app_operation(name, "app_promote_revision", source="runtime"):
             app = self._require_app(name)
             revision = self._require_revision(name, revision_number)
-            if require_healthy and self._revision_has_recorded_failure(name, revision_number):
+            has_recorded_failure = self._revision_has_recorded_failure(name, revision_number)
+            if require_healthy and has_recorded_failure:
                 # PS26-BUG-006: by default (require_healthy=False, unchanged from
                 # before this existed) promotion is unconditional - a revision whose
                 # own preview healthcheck reported degraded promotes silently. This
@@ -1689,7 +1696,14 @@ class AppRuntimeService:
                 revision_number=revision.revision_number,
                 data={"route": app.route},
             )
-            return self._serialize_status(app.name)
+            promoted = self._serialize_status(app.name)
+            if has_recorded_failure:
+                promoted["warnings"] = [
+                    f"Revision {revision.revision_number} has a recorded build-preflight or data-layer failure; "
+                    "it is now live anyway. Check app_get_diagnostics, or pass require_healthy: true to refuse "
+                    "such promotions."
+                ]
+            return promoted
 
     def rollback(self, name: str) -> dict[str, Any]:
         with self._locked_app_operation(name, "app_rollback", source="runtime"):

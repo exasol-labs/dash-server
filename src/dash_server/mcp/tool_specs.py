@@ -299,7 +299,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='app_promote_revision',
         handler='_tool_app_promote_revision',
         title='Promote a revision to live',
-        description='Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route. Pass require_healthy=true to refuse promoting a revision with a recorded build-preflight or data-layer failure (defaults to false: promotion is unconditional unless you opt in).',
+        description='Switch the live route to a built revision and retain the previous live revision for rollback. If the app runtime is currently stopped, call app_start afterwards to remount the live route. Pass require_healthy=true to refuse promoting a revision with a recorded build-preflight or data-layer failure (defaults to false: promotion goes ahead, and the result carries a warning when the revision has such a failure).',
         input_schema='_app_promote_revision_schema',
         guidance={'next_step': 'If the app runtime is running, run health checks on the live route. If the '
                       'app is stopped, call app_start to remount it first.',
