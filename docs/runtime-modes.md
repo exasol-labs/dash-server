@@ -151,7 +151,7 @@ and network access. A hostile dashboard can still:
 - exhaust memory or CPU,
 - enumerate other workers via the loopback interface.
 
-Real sandboxing (containers, seccomp, restricted filesystems, network policy) is a separate effort
-tracked in `plans/runtime-sandboxing-adapter-plan.md` (forthcoming). Treat the isolated runtime as
-operational isolation: workers can't take down each other or the control plane, dependencies can't
-silently collide, and idle workers don't accumulate RAM. That's the whole bargain.
+Real sandboxing (containers, seccomp, restricted filesystems, network policy) is a separate, future
+effort. Treat the isolated runtime as operational isolation: workers can't take down each other or
+the control plane, dependencies can't silently collide, and idle workers don't accumulate RAM.
+That's the whole bargain.

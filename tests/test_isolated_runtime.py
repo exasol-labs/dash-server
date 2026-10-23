@@ -1107,15 +1107,15 @@ def test_phase_5d_hosted_mode_override_emits_startup_warning(tmp_path, monkeypat
     assert "development-only" in messages
 
 
-def test_phase_5e_sandboxing_followup_plan_exists():
-    """5e: the placeholder plan file exists for operators looking for the next step."""
-    plan = Path(__file__).resolve().parents[1] / "plans" / "runtime-sandboxing-adapter-plan.md"
-    assert plan.exists()
-    text = plan.read_text().lower()
-    # Plan must distinguish operational isolation (shipped) from a real security sandbox (future).
+def test_phase_5e_docs_say_isolation_is_not_a_security_sandbox():
+    """5e: operators read that the isolated runtime is operational isolation, not a security sandbox.
+
+    This used to check a plan under plans/, which is local-only (gitignored), so it failed
+    on every checkout but the author's. The operator-facing statement is in the docs.
+    """
+    text = (Path(__file__).resolve().parents[1] / "docs" / "runtime-modes.md").read_text().lower()
+    assert "process isolation is **not** a security sandbox" in text
     assert "operational" in text
-    assert "sandbox" in text
-    assert "process isolation" in text
 
 
 def test_phase_5f_readme_mentions_runtime_isolation():
