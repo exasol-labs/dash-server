@@ -19,7 +19,9 @@ from importlib import resources
 from typing import Any
 
 EXASOL_DASHBOARD_PATTERNS = ("analytics-hub", "overview", "kpi-trend", "ops-monitor")
-EXASOL_SCAFFOLD_REQUIREMENTS = "dash>=4.0,<5.0\nplotly>=5.18\npyexasol>=2.2.2,<3.0\n"
+# The same dash and pyexasol ranges the server itself requires (test_scaffold_requirements_match_the_server
+# keeps them in step): with shared dependencies an app's requirements are installed next to the server's.
+EXASOL_SCAFFOLD_REQUIREMENTS = "dash>=4.3,<5.0\nplotly>=5.18\npyexasol>=3.0.1,<4.0\n"
 
 _TEMPLATE_DIR = "scaffold_templates"
 _HELPER_MODULE = "scaffold_helper.py"

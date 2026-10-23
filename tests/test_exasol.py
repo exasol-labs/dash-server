@@ -498,7 +498,7 @@ def test_exasol_patterns_help_and_kpi_trend_scaffold(app, client) -> None:
     )
     assert requirements_response.status_code == 200
     requirements_text = requirements_response.get_json()["result"]["structuredContent"]["content"]
-    assert "pyexasol>=2.2.2,<3.0" in requirements_text
+    assert "pyexasol>=3.0.1,<4.0" in requirements_text
     assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
@@ -578,7 +578,7 @@ def test_app_scaffold_from_schema_generates_schema_specific_bundle(app, client) 
     )
     assert requirements_response.status_code == 200
     requirements_text = requirements_response.get_json()["result"]["structuredContent"]["content"]
-    assert "pyexasol>=2.2.2,<3.0" in requirements_text
+    assert "pyexasol>=3.0.1,<4.0" in requirements_text
     assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
@@ -2355,3 +2355,30 @@ def test_semantic_layer_guidance_is_discoverable(client) -> None:
     workflows = _resource_json(client, "dash://meta/workflows", request_id=4)
     names = {workflow["name"] for workflow in workflows["workflows"]}
     assert "create_exasol_dashboard_on_semantic_model" in names
+
+
+def test_scaffold_requirements_match_the_server() -> None:
+    """Scaffolded apps must ask for the dash and pyexasol the server runs with.
+
+    With shared dependencies, an app's requirements are installed into the server's own
+    environment, so a stale range (pyexasol<3 after the server moved to 3) either fails the
+    install or changes the server's packages.
+    """
+
+    from importlib import metadata
+
+    from packaging.requirements import Requirement
+
+    from dash_server.exasol.scaffold import EXASOL_SCAFFOLD_REQUIREMENTS
+
+    server = {
+        requirement.name.lower(): requirement.specifier
+        for requirement in map(Requirement, metadata.requires("dash-server") or [])
+        if requirement.marker is None
+    }
+    scaffold = {
+        requirement.name.lower(): requirement.specifier
+        for requirement in map(Requirement, EXASOL_SCAFFOLD_REQUIREMENTS.split())
+    }
+    for name in ("dash", "pyexasol"):
+        assert scaffold[name] == server[name], name

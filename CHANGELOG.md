@@ -124,6 +124,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variable is already set.
 
 ### Fixed
+- Scaffolded Exasol apps (`app_create_exasol_dashboard`, `app_scaffold_from_schema`) still
+  declared `pyexasol>=2.2.2,<3.0` in `requirements.txt` after the server moved to pyexasol 3.
+  With shared dependencies, building such an app installed pyexasol 2 into the server's own
+  environment. They now declare the server's ranges (`dash>=4.3,<5.0`, `pyexasol>=3.0.1,<4.0`),
+  and a test keeps them in step.
 - Isolated-mode app workers ignored `SIGTERM`. The worker's handler called `httpd.shutdown()` on
   the thread running `serve_forever()`, which deadlocks, so only the manager's `SIGKILL` fallback
   stopped them. Workers forked from the forkserver baseline also inherited the baseline's signal
