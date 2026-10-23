@@ -54,15 +54,28 @@ class DependencyInstaller:
                 "notes": "Automatic dependency install is disabled for this server.",
             }
 
+        conflicts = self._server_conflicts(requirements)
+        if conflicts:
+            # These packages are the server's own: installing would change them for the
+            # server and every other app sharing this environment.
+            return {
+                "status": "failed",
+                "requirements": requirements,
+                "conflicts": conflicts,
+                "notes": (
+                    "These requirements would change packages dash-server itself runs on, in the environment "
+                    f"every app on this server shares: {'; '.join(conflicts)}. Widen them to accept the installed "
+                    "version (or drop them: the server provides these packages), or give apps their own "
+                    "environments with DASH_SERVER_APP_DEPENDENCY_ISOLATION=per_app."
+                ),
+            }
+
         state_path = self.state_root / f"{app_name}.json"
         requirements_hash = self._requirements_hash(requirements)
         state = self._read_state(state_path)
-        if (
-            not force_clean
-            and (
+        if not force_clean and (
             state.get("requirements_hash") == requirements_hash
             and state.get("python_executable") == self.python_executable
-            )
         ):
             return {
                 "status": "cached",
@@ -123,6 +136,51 @@ class DependencyInstaller:
             "force_clean": force_clean,
         }
 
+    def _targets_server_environment(self) -> bool:
+        return Path(self.python_executable).absolute() == Path(sys.executable).absolute()
+
+    def _server_conflicts(self, requirements: list[str]) -> list[str]:
+        """Requirements that exclude the installed version of a package in the server's environment."""
+
+        if not self._targets_server_environment():
+            return []
+        conflicts = []
+        for entry in requirements:
+            try:
+                requirement = Requirement(entry)
+            except InvalidRequirement:
+                continue
+            try:
+                if requirement.marker is not None and not requirement.marker.evaluate():
+                    continue
+            except (UndefinedComparison, UndefinedEnvironmentName):
+                pass
+            try:
+                installed_version = metadata.version(requirement.name)
+            except metadata.PackageNotFoundError:
+                continue
+            if not requirement.specifier.contains(installed_version, prereleases=True):
+                conflicts.append(f"{entry} (the server has {requirement.name} {installed_version})")
+        return conflicts
+
+    def _server_constraints_file(self) -> Path:
+        """Pin every package installed in the server's environment, so an install only adds packages.
+
+        Covers what a requirement pulls in transitively, which ``_server_conflicts`` can't see.
+        """
+
+        pins = sorted(
+            {
+                f"{distribution.metadata['Name']}=={distribution.version}"
+                for distribution in metadata.distributions()
+                if distribution.metadata["Name"]
+            },
+            key=str.lower,
+        )
+        path = self.state_root / "server-constraints.txt"
+        path.write_text("\n".join(pins) + "\n", encoding="utf-8")
+        return path
+
     def _requirements_already_satisfied(self, requirements: list[str]) -> bool:
         """Return whether every requirement is met by the running server interpreter.
 
@@ -132,7 +190,7 @@ class DependencyInstaller:
         installed state cannot be verified from distribution metadata alone.
         """
 
-        if Path(self.python_executable).absolute() != Path(sys.executable).absolute():
+        if not self._targets_server_environment():
             return False
         for entry in requirements:
             try:
@@ -162,11 +220,14 @@ class DependencyInstaller:
         without pip, so ``python -m pip`` alone is not a safe assumption.
         """
 
+        constraints: list[str] = []
+        if self._targets_server_environment():
+            constraints = ["--constraint", str(self._server_constraints_file())]
         if self._has_pip():
-            return [self.python_executable, "-m", "pip", "install", *requirements]
+            return [self.python_executable, "-m", "pip", "install", *constraints, *requirements]
         uv_executable = shutil.which("uv")
         if uv_executable is not None:
-            return [uv_executable, "pip", "install", "--python", self.python_executable, *requirements]
+            return [uv_executable, "pip", "install", "--python", self.python_executable, *constraints, *requirements]
         return None
 
     def _has_pip(self) -> bool:

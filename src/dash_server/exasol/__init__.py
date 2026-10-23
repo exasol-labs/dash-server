@@ -10,6 +10,7 @@ from .scaffold import (
     exasol_agent_workflow_help,
     exasol_connection_modes_help,
     exasol_dashboard_patterns_help,
+    exasol_semantic_layer_help,
     exasol_sql_placeholders_help,
     render_exasol_helper_py,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "exasol_agent_workflow_help",
     "exasol_connection_modes_help",
     "exasol_dashboard_patterns_help",
+    "exasol_semantic_layer_help",
     "exasol_sql_placeholders_help",
     "render_exasol_helper_py",
 ]

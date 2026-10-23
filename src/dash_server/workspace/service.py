@@ -48,7 +48,6 @@ from dash_server.workspace.validation_pipeline import (
 )
 
 
-
 # Calls removed in plotly 7 (https://github.com/plotly/plotly.py/blob/main/CHANGELOG.md),
 # keyed by the called attribute/function name, with the suggested replacement. Hosted apps
 # run against the server's plotly, so these fail at import or first render.
@@ -71,11 +70,9 @@ _PLOTLY7_REMOVED_CALLS: dict[str, str] = {
     **{name: f"use go.{name.removesuffix('mapbox')}map (MapLibre) instead." for name in _PLOTLY7_MAPBOX_TRACES},
     **{name: f"use px.{name.removesuffix('mapbox')}map (MapLibre) instead." for name in _PLOTLY7_MAPBOX_EXPRESS},
     "create_hexbin_mapbox": "use ff.create_hexbin_map instead.",
-    **{
-        name: "use the plotly.express or graph_objects equivalent instead."
-        for name in _PLOTLY7_REMOVED_FIGURE_FACTORY
-    },
+    **{name: "use the plotly.express or graph_objects equivalent instead." for name in _PLOTLY7_REMOVED_FIGURE_FACTORY},
 }
+
 
 class WorkspaceService:
     """Manage editable draft workspaces for hosted apps."""
@@ -118,9 +115,7 @@ class WorkspaceService:
             }
         return {
             "storage_backend": (
-                "git_worktree"
-                if self._is_git_workspace_path(app_name, workspace_dir)
-                else "filesystem"
+                "git_worktree" if self._is_git_workspace_path(app_name, workspace_dir) else "filesystem"
             ),
             "workspace_path": str(workspace_dir),
         }
@@ -303,9 +298,7 @@ class WorkspaceService:
         files = self.read_all_files(app_name)
         manifest = self._load_manifest(app_name)
         requirements = self._parse_requirements(files.get(self._requirements_filename, ""))
-        python_files = {
-            path: content for path, content in files.items() if path.endswith(".py")
-        }
+        python_files = {path: content for path, content in files.items() if path.endswith(".py")}
         parsed_trees, syntax_errors = self._parse_python_files(python_files)
 
         context = ValidationContext(
@@ -568,12 +561,10 @@ class WorkspaceService:
         # Phase 2: when dependency install reported a non-server python_executable
         # (i.e. per_app dependency isolation is on), run the smoke check inside that
         # interpreter as a child process. The in-process path stays the default.
-        subprocess_python = dependency_install.get("python_executable") if isinstance(dependency_install, dict) else None
-        if (
-            isinstance(subprocess_python, str)
-            and subprocess_python
-            and subprocess_python != sys.executable
-        ):
+        subprocess_python = (
+            dependency_install.get("python_executable") if isinstance(dependency_install, dict) else None
+        )
+        if isinstance(subprocess_python, str) and subprocess_python and subprocess_python != sys.executable:
             return self._import_smoke_check_subprocess(
                 app_name=app_name,
                 manifest=manifest,
@@ -672,9 +663,7 @@ class WorkspaceService:
         # `src/` is the directory holding both `dash_server/` and `dash_server_runtime/`.
         src_root = str(Path(__file__).resolve().parents[2])
         env["PYTHONPATH"] = (
-            f"{src_root}{__import__('os').pathsep}{existing_pythonpath}"
-            if existing_pythonpath
-            else src_root
+            f"{src_root}{__import__('os').pathsep}{existing_pythonpath}" if existing_pythonpath else src_root
         )
 
         cmd = [
@@ -753,9 +742,7 @@ class WorkspaceService:
         parsed["subprocess"] = subprocess_meta
         return parsed
 
-    def _workspace_files_from_bundle(
-        self, manifest: AppManifest, dashboard: dict[str, Any]
-    ) -> dict[str, str]:
+    def _workspace_files_from_bundle(self, manifest: AppManifest, dashboard: dict[str, Any]) -> dict[str, str]:
         return {
             self._manifest_filename: json.dumps(manifest.to_dict(), indent=2),
             self._app_filename: self._render_app_py(manifest, dashboard),
@@ -766,7 +753,7 @@ class WorkspaceService:
         metrics_literal = json.dumps(dashboard["metrics"], indent=4)
         headline_literal = json.dumps(dashboard["headline"])
         summary_literal = json.dumps(dashboard["summary"])
-        return f'''from dash import Dash, Input, Output, dcc, html
+        return f"""from dash import Dash, Input, Output, dcc, html
 
 HEADLINE = {headline_literal}
 SUMMARY = {summary_literal}
@@ -824,7 +811,7 @@ def create_dash_app(server, url_base_pathname, metadata):
         return f"{{selected_metric}}: {{lookup[selected_metric]}}"
 
     return app
-'''
+"""
 
     def _parse_requirements(self, content: str) -> dict[str, Any]:
         entries: list[str] = []
@@ -893,14 +880,10 @@ def create_dash_app(server, url_base_pathname, metadata):
                 fallback_key=output_key,
             )
             referenced_ids = {
-                reference["id"]
-                for reference in [*inputs, *state, *outputs]
-                if isinstance(reference.get("id"), str)
+                reference["id"] for reference in [*inputs, *state, *outputs] if isinstance(reference.get("id"), str)
             }
             callback_missing_ids = sorted(
-                reference_id
-                for reference_id in referenced_ids
-                if reference_id not in layout_ids
+                reference_id for reference_id in referenced_ids if reference_id not in layout_ids
             )
             missing_layout_ids.update(callback_missing_ids)
             callbacks.append(
@@ -979,9 +962,7 @@ def create_dash_app(server, url_base_pathname, metadata):
         component_id = getattr(output, "component_id", None)
         component_property = getattr(output, "component_property", None)
         if component_id is not None or component_property is not None:
-            return [
-                {"id": _to_jsonable(component_id), "property": _to_jsonable(component_property)}
-            ]
+            return [{"id": _to_jsonable(component_id), "property": _to_jsonable(component_property)}]
         if "." in fallback_key:
             output_id, output_property = fallback_key.split(".", 1)
             return [{"id": output_id, "property": output_property}]
@@ -1314,12 +1295,9 @@ def create_dash_app(server, url_base_pathname, metadata):
         traceback_text = traceback.format_exc()
         missing_dependency = self._extract_missing_dependency(error_text)
         declared = (
-            missing_dependency is not None
-            and self._normalize_requirement_name(missing_dependency) in declared_packages
+            missing_dependency is not None and self._normalize_requirement_name(missing_dependency) in declared_packages
         )
-        if missing_dependency is not None and (
-            declared or dependency_install.get("status") == "failed"
-        ):
+        if missing_dependency is not None and (declared or dependency_install.get("status") == "failed"):
             return {
                 "status": "failed",
                 "category": "environment_missing_dependency",

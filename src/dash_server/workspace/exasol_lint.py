@@ -12,6 +12,7 @@ import json
 import re
 from typing import Any
 
+from dash_server.exasol.semantic_models import looks_like_compiled_semantic_sql
 from dash_server.registry.models import AppManifest
 
 _EXASOL_QUERY_CALLS = {
@@ -28,9 +29,23 @@ _EXASOL_QUERY_CALLS = {
 # aliases. Exasol's full reserved list is much larger; these are the ones we've
 # actually seen trip up persona-1 / persona-2 / persona-3 SQL.
 _RESERVED_ALIAS_WORDS = {
-    "DAY", "MONTH", "YEAR", "HOUR", "MINUTE", "SECOND",
-    "ORDER", "GROUP", "LEVEL", "USER", "TIMESTAMP", "DATE",
-    "TYPE", "VALUE", "ROW", "RANK", "COUNT",
+    "DAY",
+    "MONTH",
+    "YEAR",
+    "HOUR",
+    "MINUTE",
+    "SECOND",
+    "ORDER",
+    "GROUP",
+    "LEVEL",
+    "USER",
+    "TIMESTAMP",
+    "DATE",
+    "TYPE",
+    "VALUE",
+    "ROW",
+    "RANK",
+    "COUNT",
 }
 _RESERVED_ALIAS_RE = re.compile(
     r"\bAS\s+(" + "|".join(sorted(_RESERVED_ALIAS_WORDS)) + r")\b",
@@ -38,12 +53,23 @@ _RESERVED_ALIAS_RE = re.compile(
 )
 
 
+# A query against an Exasol Semantic Views published schema (SEMANTIC_<MODEL>, the default
+# naming): metrics aggregate implicitly, so the LIMIT/aggregation heuristic doesn't apply.
+_SEMANTIC_SCHEMA_REF_RE = re.compile(r'\bFROM\s+"?SEMANTIC_[A-Z0-9_]+"?\s*\.', re.IGNORECASE)
+_SQL_COMMENT_OR_LITERAL_RE = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"", re.DOTALL)
+
+
+def _without_comments_and_literals(sql: str) -> str:
+    """``sql`` with comments and quoted strings/identifiers blanked, for structural checks."""
+
+    return _SQL_COMMENT_OR_LITERAL_RE.sub(" ", sql)
+
+
 def is_exasol_workspace(manifest: AppManifest) -> bool:
     data_sources = manifest.data_sources if isinstance(manifest.data_sources, dict) else {}
     primary = data_sources.get("primary")
     return bool(
-        manifest.template == "exasol-analytics"
-        or (isinstance(primary, dict) and primary.get("kind") == "exasol")
+        manifest.template == "exasol-analytics" or (isinstance(primary, dict) and primary.get("kind") == "exasol")
     )
 
 
@@ -206,7 +232,7 @@ def exasol_validation_report(
                     "message": "Avoid SELECT * in Exasol query files. Select only the columns the dashboard needs.",
                 }
             )
-        stripped = content.strip()
+        stripped = _without_comments_and_literals(content).strip()
         if ";" in stripped[:-1]:
             issues.append(
                 {
@@ -219,13 +245,24 @@ def exasol_validation_report(
         # Skip the "no LIMIT or aggregation" warning for single-row scalar queries
         # that come only from DUAL (e.g. the scaffold's placeholder
         # `SELECT 1240 AS ACTIVE_CUSTOMERS FROM DUAL`).
-        only_from_dual = (
-            " FROM DUAL " in from_clause
-            and " JOIN " not in from_clause
-            and " UNION " not in from_clause
-        )
+        only_from_dual = " FROM DUAL " in from_clause and " JOIN " not in from_clause and " UNION " not in from_clause
+        if looks_like_compiled_semantic_sql(content):
+            issues.append(
+                {
+                    "level": "warning",
+                    "path": relative_path,
+                    "message": (
+                        "This looks like SQL compiled by Exasol Semantic Views (COMPILE_SQL or "
+                        "COMPILE_REQUEST_JSON output). Saved compiled SQL freezes today's metric definitions "
+                        "(and, for a fused model, its coverage and authority): later fixes never reach this "
+                        "dashboard, and nothing detects the drift. Query the published semantic view live "
+                        "instead; see dash://exasol/help/semantic-layer."
+                    ),
+                }
+            )
         if (
             " FROM " in from_clause
+            and not _SEMANTIC_SCHEMA_REF_RE.search(content)
             and " LIMIT " not in from_clause
             and " GROUP BY " not in from_clause
             and not any(token in normalized for token in ("COUNT(", "SUM(", "AVG(", "MIN(", "MAX("))
@@ -289,9 +326,7 @@ def _is_cast_target(content: str, match_start: int) -> bool:
                 before = content[:i].rstrip()
                 if before.upper().endswith("CAST"):
                     boundary_index = len(before) - len("CAST") - 1
-                    if boundary_index < 0 or not (
-                        before[boundary_index].isalnum() or before[boundary_index] == "_"
-                    ):
+                    if boundary_index < 0 or not (before[boundary_index].isalnum() or before[boundary_index] == "_"):
                         return True
                 return False
             depth -= 1

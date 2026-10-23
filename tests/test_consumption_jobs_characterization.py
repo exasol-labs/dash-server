@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from _helpers import call_mcp, wait_for
+from _helpers import call_mcp, wait_for, wait_for_audit_events
 
 pytestmark = pytest.mark.slow
 
@@ -94,8 +94,8 @@ class _ConsumptionSmokeFakePyExasolModule:
 
 
 def _create_output_app(app, client, *, name: str = "finance-outputs") -> None:
-    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = (
-        lambda: _ConsumptionSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: (
+        _ConsumptionSmokeFakePyExasolModule()
     )
     profile_response = call_mcp(
         client,
@@ -145,7 +145,7 @@ class _FakeDatasetExecutor:
     def preflight(self, revision, output) -> None:
         self.preflight_calls += 1
 
-    def stream(self, revision, output, parameters, *, cancelled):
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None):
         from dash_server.consumption.execution import DatasetStream
 
         return DatasetStream(columns=["PERIOD", "VALUE"], batches=iter([[*self.rows]]))
@@ -157,7 +157,7 @@ class _BlockingDatasetExecutor(_FakeDatasetExecutor):
         self.started = Event()
         self.release = Event()
 
-    def stream(self, revision, output, parameters, *, cancelled):
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None):
         from dash_server.consumption.execution import DatasetStream
 
         def batches():
@@ -211,11 +211,7 @@ def test_export_job_lifecycle_queued_running_succeeded(app, client):
     # running: the blocking executor holds the worker mid-stream.
     assert executor.started.wait(timeout=5)
     running = wait_for(
-        lambda: (
-            payload
-            if (payload := _export_get(client, job_id))["job"]["status"] == "running"
-            else None
-        ),
+        lambda: payload if (payload := _export_get(client, job_id))["job"]["status"] == "running" else None,
         message="job to reach running",
     )
     assert running["job"]["status"] == "running"
@@ -225,8 +221,7 @@ def test_export_job_lifecycle_queued_running_succeeded(app, client):
     completed = wait_for(
         lambda: (
             payload
-            if (payload := _export_get(client, job_id))["job"]["status"]
-            in {"succeeded", "failed", "cancelled"}
+            if (payload := _export_get(client, job_id))["job"]["status"] in {"succeeded", "failed", "cancelled"}
             else None
         ),
         message="job to reach a terminal state",
@@ -259,18 +254,11 @@ def test_export_job_lifecycle_queued_running_succeeded(app, client):
     # The preflight ran exactly once and encrypted parameters are stored, not plaintext.
     assert executor.preflight_calls == 1
     with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
-        encoded = connection.execute(
-            "SELECT parameters_json FROM consumption_jobs WHERE id = ?", (job_id,)
-        ).fetchone()[0]
+        encoded = connection.execute("SELECT parameters_json FROM consumption_jobs WHERE id = ?", (job_id,)).fetchone()[
+            0
+        ]
     assert "2026-07" not in encoded
     assert service.parameter_codec.decode(encoded) == {"period": "2026-07"}
 
     # Audit trail records the full lifecycle.
-    with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
-        audit_events = {
-            row[0]
-            for row in connection.execute(
-                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?", (job_id,)
-            ).fetchall()
-        }
-    assert {"export.created", "export.succeeded"} <= audit_events
+    wait_for_audit_events(app.config["REGISTRY_DB_PATH"], job_id, {"export.created", "export.succeeded"})

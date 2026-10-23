@@ -19,7 +19,9 @@ from importlib import resources
 from typing import Any
 
 EXASOL_DASHBOARD_PATTERNS = ("analytics-hub", "overview", "kpi-trend", "ops-monitor")
-EXASOL_SCAFFOLD_REQUIREMENTS = "dash>=4.0,<5.0\nplotly>=5.18\npyexasol>=2.2.2,<3.0\n"
+# The same dash and pyexasol ranges the server itself requires (test_scaffold_requirements_match_the_server
+# keeps them in step): with shared dependencies an app's requirements are installed next to the server's.
+EXASOL_SCAFFOLD_REQUIREMENTS = "dash>=4.3,<5.0\nplotly>=5.18\npyexasol>=3.0.1,<4.0\n"
 
 _TEMPLATE_DIR = "scaffold_templates"
 _HELPER_MODULE = "scaffold_helper.py"
@@ -35,7 +37,7 @@ _ANALYTICS_HUB_DEFAULT_CONTEXT = {
 def _template_text(name: str) -> str:
     """Read a raw package-data template file from ``scaffold_templates``."""
 
-    return resources.files(__package__).joinpath(_TEMPLATE_DIR, name).read_text(encoding="utf-8")
+    return resources.files(__package__).joinpath(_TEMPLATE_DIR).joinpath(name).read_text(encoding="utf-8")
 
 
 def _help_payload(name: str) -> dict[str, Any]:
@@ -120,7 +122,33 @@ def build_schema_scaffold_bundle(
             }
         },
     }
-    files = [
+    if blueprint.get("kind") == "semantic":
+        files = [
+            {"path": "dash-app.json", "content": json.dumps(manifest, indent=2) + "\n"},
+            {"path": "app.py", "content": _render_semantic_app_py(title, blueprint)},
+            {"path": "dash_server_exasol.py", "content": render_exasol_helper_py()},
+            *_business_files(blueprint),
+            {"path": "requirements.txt", "content": EXASOL_SCAFFOLD_REQUIREMENTS},
+        ]
+        pattern = "semantic-model"
+    else:
+        files = _schema_scaffold_files(manifest, title, blueprint)
+        pattern = "analytics-hub"
+    return {
+        "name": app_name,
+        "title": title,
+        "route": route,
+        "description": description,
+        "template": "exasol-analytics",
+        "data_sources": manifest["data_sources"],
+        "pattern": pattern,
+        "schema_blueprint": blueprint,
+        "files": files,
+    }
+
+
+def _schema_scaffold_files(manifest: dict[str, Any], title: str, blueprint: dict[str, Any]) -> list[dict[str, str]]:
+    return [
         {"path": "dash-app.json", "content": json.dumps(manifest, indent=2) + "\n"},
         {
             "path": "app.py",
@@ -139,26 +167,12 @@ def build_schema_scaffold_bundle(
         {"path": "queries/system/monitor.sql", "content": _ops_monitor_sql()},
         {"path": "queries/system/usage.sql", "content": _ops_usage_sql()},
         {"path": "queries/system/sql_hist.sql", "content": _ops_sql_hist_sql()},
-        {"path": "queries/business/summary.sql", "content": _schema_summary_sql(blueprint)},
-        {"path": "queries/business/trend.sql", "content": _schema_trend_sql(blueprint)},
-        {"path": "queries/business/detail.sql", "content": _schema_detail_sql(blueprint)},
-        {"path": "SCHEMA_NOTES.md", "content": _schema_notes_md(blueprint)},
+        *_business_files(blueprint),
         {
             "path": "requirements.txt",
             "content": EXASOL_SCAFFOLD_REQUIREMENTS,
         },
     ]
-    return {
-        "name": app_name,
-        "title": title,
-        "route": route,
-        "description": description,
-        "template": "exasol-analytics",
-        "data_sources": manifest["data_sources"],
-        "pattern": "analytics-hub",
-        "schema_blueprint": blueprint,
-        "files": files,
-    }
 
 
 def exasol_connection_modes_help() -> dict[str, Any]:
@@ -167,6 +181,10 @@ def exasol_connection_modes_help() -> dict[str, Any]:
 
 def exasol_sql_placeholders_help() -> dict[str, Any]:
     return _help_payload("help_sql_placeholders.json")
+
+
+def exasol_semantic_layer_help() -> dict[str, Any]:
+    return _help_payload("help_semantic_layer.json")
 
 
 def exasol_dashboard_patterns_help() -> dict[str, Any]:
@@ -239,6 +257,20 @@ def _render_analytics_hub_app_py(title: str, business_context: dict[str, str] | 
     )
 
 
+def _render_semantic_app_py(title: str, blueprint: dict[str, Any]) -> str:
+    trend_dimension = blueprint.get("time_dimension") or blueprint.get("category_dimension")
+    detail_dimension = blueprint.get("detail_dimension")
+    return _template_text("semantic_app.py.tmpl").format(
+        title=title,
+        model=blueprint["model"],
+        object_ref=f"{blueprint['schema_name']}.{blueprint['table_name']}",
+        trend_x=trend_dimension["column"] if trend_dimension else None,
+        trend_y=blueprint["primary_metric"]["column"],
+        trend_is_time=bool(blueprint.get("time_dimension")),
+        detail_dimension=detail_dimension["column"] if detail_dimension else None,
+    )
+
+
 def _render_overview_app_py(title: str) -> str:
     return _template_text("overview_app.py.tmpl").format(title=title)
 
@@ -301,6 +333,139 @@ def _ops_usage_sql() -> str:
 
 def _ops_sql_hist_sql() -> str:
     return _template_text("ops_sql_hist.sql")
+
+
+def _business_files(blueprint: dict[str, Any]) -> list[dict[str, str]]:
+    """The business tab's SQL and notes: Semantic SQL for a semantic model, else table SQL."""
+
+    if blueprint.get("kind") == "semantic":
+        return [
+            {"path": "queries/business/summary.sql", "content": _semantic_summary_sql(blueprint)},
+            {"path": "queries/business/trend.sql", "content": _semantic_trend_sql(blueprint)},
+            {"path": "queries/business/detail.sql", "content": _semantic_detail_sql(blueprint)},
+            {"path": "queries/business/fields.sql", "content": _semantic_fields_sql(blueprint)},
+            {"path": "queries/business/provenance.sql", "content": _semantic_provenance_sql(blueprint)},
+            {"path": "SCHEMA_NOTES.md", "content": _semantic_notes_md(blueprint)},
+        ]
+    return [
+        {"path": "queries/business/summary.sql", "content": _schema_summary_sql(blueprint)},
+        {"path": "queries/business/trend.sql", "content": _schema_trend_sql(blueprint)},
+        {"path": "queries/business/detail.sql", "content": _schema_detail_sql(blueprint)},
+        {"path": "SCHEMA_NOTES.md", "content": _schema_notes_md(blueprint)},
+    ]
+
+
+def _semantic_object_ref(blueprint: dict[str, Any]) -> str:
+    return _qualified_table_name(blueprint["schema_name"], blueprint["table_name"])
+
+
+# Semantic SQL selects the model's columns by their SQL names, unaliased: the app reads labels,
+# formats, and certification from the model at runtime (fields.sql), so they follow changes made
+# there. Metrics are already aggregated, so they are selected bare and grouped by dimensions.
+def _semantic_summary_sql(blueprint: dict[str, Any]) -> str:
+    columns = ",\n       ".join(_quoted_identifier(metric["column"]) for metric in blueprint["summary_metrics"])
+    return f"SELECT {columns}\nFROM {_semantic_object_ref(blueprint)}\n"
+
+
+def _semantic_trend_sql(blueprint: dict[str, Any]) -> str:
+    metric = _quoted_identifier(blueprint["primary_metric"]["column"])
+    time_dimension = blueprint.get("time_dimension")
+    category_dimension = blueprint.get("category_dimension")
+    if time_dimension:
+        dimension = _quoted_identifier(time_dimension["column"])
+        order = f"ORDER BY {dimension}\n"
+    elif category_dimension:
+        dimension = _quoted_identifier(category_dimension["column"])
+        order = f"ORDER BY {metric} DESC\nLIMIT 15\n"
+    else:
+        return f"SELECT {metric}\nFROM {_semantic_object_ref(blueprint)}\n"
+    return (
+        f"SELECT {dimension},\n       {metric}\nFROM {_semantic_object_ref(blueprint)}\nGROUP BY {dimension}\n" + order
+    )
+
+
+def _semantic_detail_sql(blueprint: dict[str, Any]) -> str:
+    dimension = blueprint.get("detail_dimension")
+    metrics = blueprint.get("detail_metrics") or []
+    if dimension is None or not metrics:
+        return _semantic_summary_sql(blueprint)
+    dimension_ref = _quoted_identifier(dimension["column"])
+    columns = ",\n       ".join([dimension_ref] + [_quoted_identifier(metric["column"]) for metric in metrics])
+    return (
+        f"SELECT {columns}\n"
+        f"FROM {_semantic_object_ref(blueprint)}\n"
+        f"GROUP BY {dimension_ref}\n"
+        f"ORDER BY {_quoted_identifier(metrics[0]['column'])} DESC\n"
+        "LIMIT 25\n"
+    )
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _semantic_fields_sql(blueprint: dict[str, Any]) -> str:
+    return (
+        "SELECT SQL_COLUMN_NAME, FIELD_KIND, DISPLAY_NAME, FORMAT_HINT, UNIT_HINT, IS_CERTIFIED\n"
+        "FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT\n"
+        f"WHERE PUBLISHED_SCHEMA = {_sql_string(blueprint['schema_name'])}\n"
+        f"  AND PUBLISHED_OBJECT_NAME = {_sql_string(blueprint['table_name'])}\n"
+        "ORDER BY ORDINAL_POSITION\n"
+    )
+
+
+def _semantic_provenance_sql(blueprint: dict[str, Any]) -> str:
+    # The newest *finished* validation run: an unfinished one (some Semantic Views checks
+    # leave one behind) has no issues recorded yet and would read as passing.
+    return (
+        "SELECT m.MODEL_NAME, m.VERSION_NUMBER, vr.VALIDATION_RUN_ID, vr.STATUS AS VALIDATION_STATUS,\n"
+        "       vr.ERROR_COUNT, vr.WARNING_COUNT, vr.FINISHED_AT\n"
+        "FROM SEMANTIC_AGENT.MODELS_FOR_AGENT m\n"
+        "LEFT JOIN (SELECT MODEL_ID, VERSION_ID, MAX(VALIDATION_RUN_ID) AS VALIDATION_RUN_ID\n"
+        "           FROM SEMANTIC_SOURCE.VALIDATION_RUNS\n"
+        "           WHERE STATUS <> 'RUNNING'\n"
+        "           GROUP BY MODEL_ID, VERSION_ID) latest\n"
+        "  ON latest.MODEL_ID = m.MODEL_ID AND latest.VERSION_ID = m.VERSION_ID\n"
+        "LEFT JOIN SEMANTIC_SOURCE.VALIDATION_RUNS vr ON vr.VALIDATION_RUN_ID = latest.VALIDATION_RUN_ID\n"
+        f"WHERE m.MODEL_NAME = {_sql_string(blueprint['model'])}\n"
+    )
+
+
+def _semantic_notes_md(blueprint: dict[str, Any]) -> str:
+    def describe(field: dict[str, Any]) -> str:
+        details = ", ".join(
+            part for part in (field.get("format"), "certified" if field.get("certified") else None) if part
+        )
+        return f"`{field['name']}` ({field['label']}{', ' + details if details else ''})"
+
+    lines = [
+        f"# Semantic Scaffold Notes for {blueprint['schema_name']}.{blueprint['table_name']}",
+        "",
+        f"Built on the published semantic model `{blueprint['model']}` "
+        f"(readiness: {blueprint.get('model_readiness') or 'unknown'}). The queries in `queries/business/` are "
+        "Semantic SQL: metrics are governed definitions, already aggregated, so they are selected bare "
+        "and grouped by dimensions.",
+        "",
+        "- Metrics: " + ", ".join(describe(metric) for metric in blueprint["summary_metrics"]),
+    ]
+    for key, title in (("time_dimension", "Time dimension"), ("category_dimension", "Category dimension")):
+        field = blueprint.get(key)
+        lines.append(f"- {title}: {describe(field) if field else 'none valid for the primary metric'}")
+    lines += [
+        "",
+        "Rules:",
+        "",
+        "- The profile needs the model's preprocessor in every session: `session_init_sql` "
+        f'`["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {blueprint["preprocessor"]}"]`.',
+        "- Only combine a metric with a dimension listed for it in `SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT`.",
+        "- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes "
+        "today's definition.",
+        "- `app.py` reads labels, formats (`FORMAT_HINT`, `UNIT_HINT`; a percentage is a fraction), and "
+        "certification from `SEMANTIC_AGENT.FIELDS_FOR_AGENT` at runtime (`queries/business/fields.sql`), and "
+        "shows the model's last finished validation (`queries/business/provenance.sql`). Keep query columns "
+        "unaliased so they match `SQL_COLUMN_NAME`; see `dash://exasol/help/semantic-layer`.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _schema_notes_md(blueprint: dict[str, Any]) -> str:
@@ -369,7 +534,7 @@ def _schema_trend_sql(blueprint: dict[str, Any]) -> str:
             "SELECT TO_CHAR(CAST("
             + time_ref
             + " AS DATE), 'YYYY-MM-DD') AS \"LABEL\",\n"
-            + f"       CAST(SUM({measure_ref}) AS DOUBLE) AS \"VALUE\"\n"
+            + f'       CAST(SUM({measure_ref}) AS DOUBLE) AS "VALUE"\n'
             + f"FROM {table_ref}\n"
             + f"WHERE {time_ref} IS NOT NULL\n"
             + "GROUP BY 1\n"
@@ -391,7 +556,7 @@ def _schema_trend_sql(blueprint: dict[str, Any]) -> str:
             foreign_key = _quoted_identifier(joined["other_key_column"])
             return (
                 f"SELECT TO_CHAR(CAST(j.{time_ref} AS DATE), 'YYYY-MM-DD') AS \"LABEL\",\n"
-                f"       CAST(SUM(t.{measure_ref}) AS DOUBLE) AS \"VALUE\"\n"
+                f'       CAST(SUM(t.{measure_ref}) AS DOUBLE) AS "VALUE"\n'
                 f"FROM {table_ref} t\n"
                 f"JOIN {join_table_ref} j ON t.{local_key} = j.{foreign_key}\n"
                 f"WHERE j.{time_ref} IS NOT NULL\n"
@@ -404,18 +569,15 @@ def _schema_trend_sql(blueprint: dict[str, Any]) -> str:
         measure_ref = _quoted_identifier(measure)
         dimension_ref = _quoted_identifier(dimension)
         return (
-            f"SELECT CAST({dimension_ref} AS VARCHAR(128)) AS \"LABEL\",\n"
-            f"       CAST(SUM({measure_ref}) AS DOUBLE) AS \"VALUE\"\n"
+            f'SELECT CAST({dimension_ref} AS VARCHAR(128)) AS "LABEL",\n'
+            f'       CAST(SUM({measure_ref}) AS DOUBLE) AS "VALUE"\n'
             f"FROM {table_ref}\n"
             f"WHERE {dimension_ref} IS NOT NULL\n"
             "GROUP BY 1\n"
             "ORDER BY 2 DESC\n"
             "LIMIT 15\n"
         )
-    return (
-        "SELECT 'Populate business trend SQL' AS \"LABEL\", 1 AS \"VALUE\"\n"
-        "FROM DUAL\n"
-    )
+    return 'SELECT \'Populate business trend SQL\' AS "LABEL", 1 AS "VALUE"\nFROM DUAL\n'
 
 
 def _schema_detail_sql(blueprint: dict[str, Any]) -> str:
@@ -429,10 +591,7 @@ def _schema_detail_sql(blueprint: dict[str, Any]) -> str:
         if column_name and column_name not in select_columns:
             select_columns.append(column_name)
     if not select_columns:
-        return (
-            "SELECT 'Populate business detail SQL' AS \"DETAIL_NOTE\"\n"
-            "FROM DUAL\n"
-        )
+        return "SELECT 'Populate business detail SQL' AS \"DETAIL_NOTE\"\nFROM DUAL\n"
     rendered_columns = ",\n       ".join(_quoted_identifier(column_name) for column_name in select_columns)
     order_column = blueprint.get("time_column") or select_columns[0]
     return (

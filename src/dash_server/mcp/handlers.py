@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from collections.abc import Collection
+from datetime import timedelta
 import hashlib
 import json
 import secrets
@@ -10,6 +11,7 @@ from typing import Any
 
 from flask import current_app, has_request_context
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.auth import AuthContext, Principal, current_auth_context
 from dash_server.consumption import ConsumptionService
 from dash_server.constants import GRANT_SCOPES, PRINCIPAL_TYPES
@@ -17,6 +19,66 @@ from dash_server.exasol import ExasolDashboardService
 from dash_server.exceptions import DashServerError
 from dash_server.mailer import InvitationEmailSender
 from dash_server.registry.models import Invitation, ShareLink
+from dash_server.timestamps import utc_now_naive
+
+
+def _healthcheck_text(health: dict[str, Any]) -> str:
+    """The health status, failed probes, and findings that pass but need a human look."""
+
+    probes = health.get("probes") or []
+    lines = [str(health.get("status"))]
+    failed = [probe for probe in probes if probe.get("status") == "failed"]
+    for probe in failed:
+        error = (probe.get("details") or {}).get("latest_error")
+        lines.append(f"Failed: {probe.get('name')}" + (f" - {' '.join(str(error).split())[:300]}" if error else ""))
+    semantic = next((probe for probe in probes if probe.get("name") == "semantic_models"), None)
+    details = (semantic or {}).get("details") or {}
+    review = []
+    if details.get("changed_since_build"):
+        changes = []
+        for entry in details["changed_since_build"]:
+            if entry.get("change") == "not_compiled":
+                changes.append(f"{entry['path']} no longer compiles")
+            elif entry.get("change") == "renamed":
+                changes.append(f"{entry['model']}.{entry['field']} renamed to {entry['renamed_to']}")
+            elif entry.get("change") == "missing":
+                changes.append(f"{entry['model']}.{entry['field']} missing")
+            else:
+                changes.append(f"{entry['model']}.{entry['field']}")
+        review.append(f"definitions changed since build: {', '.join(sorted(set(changes)))}")
+    for entry in details.get("fusion_changed_since_build") or []:
+        review.append(f"{entry['model']} {entry['change']}")
+    for summary in details.get("fusion") or []:
+        if summary.get("unresolved"):
+            review.append(f"{summary['model']} unresolved keys: {'; '.join(summary['unresolved'])}")
+    if details.get("raw_governed_reads"):
+        review.append(
+            "SQL over governed tables: " + ", ".join(entry["path"] for entry in details["raw_governed_reads"])
+        )
+    if details.get("models_with_warnings"):
+        review.append("models with validation warnings: " + ", ".join(details["models_with_warnings"]))
+    if details.get("models_not_assessed"):
+        review.append("models not assessed: " + ", ".join(details["models_not_assessed"]))
+    if review:
+        lines.append("Review (semantic_models): " + "; ".join(review))
+    return "\n".join(lines)
+
+
+def _preflight_headline(preflight: dict[str, Any]) -> str:
+    """One line on why an artifact preflight didn't pass, for a tool result's summary."""
+
+    error = preflight.get("error")
+    if isinstance(error, dict) and error.get("summary"):
+        text = str(error["summary"])
+    else:
+        failed = [
+            str(probe.get("name"))
+            for probe in preflight.get("probes") or []
+            if isinstance(probe, dict) and probe.get("status") == "failed"
+        ]
+        text = f"failed probes: {', '.join(failed)}" if failed else f"status {preflight.get('status')}"
+    text = " ".join(text.split())
+    return text if len(text) <= 300 else text[:299] + "…"
 
 
 def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
@@ -69,8 +131,7 @@ def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-
-class HandlersMixin:
+class HandlersMixin(MCPServerHost):
     """Tool handlers plus the argument/service helpers they share."""
 
     def _tool_input_schema(self, tool_name: str) -> dict[str, Any] | None:
@@ -82,7 +143,6 @@ class HandlersMixin:
             }
         return self._tool_schemas_cache.get(tool_name)
 
-
     def _tool_apps_list(self, _: dict[str, Any]) -> dict[str, Any]:
         apps = self.runtime_service.list_apps()
         app_names = ", ".join(app["name"] for app in apps) if apps else "none"
@@ -92,7 +152,6 @@ class HandlersMixin:
             structured_content={"apps": apps},
         )
 
-
     def _tool_repo_reconcile(self, _: dict[str, Any]) -> dict[str, Any]:
         reconciled = self.runtime_service.reconcile_git_desired_state()
         return self._tool_result(
@@ -100,7 +159,6 @@ class HandlersMixin:
             text="Reconciled runtime state from the Git desired-state manifests.",
             structured_content=reconciled,
         )
-
 
     def _tool_exasol_profiles_list(self, _: dict[str, Any]) -> dict[str, Any]:
         payload = self._exasol_service().list_profiles()
@@ -111,96 +169,84 @@ class HandlersMixin:
             structured_content=payload,
         )
 
-
     def _tool_exasol_profile_create_local(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tool = "exasol_profile_create_local"
         name = self._require_name(arguments)
-        backend = self._require_choice(
-            arguments.get("backend"),
-            field_name="backend",
-            allowed={"onprem", "saas"},
-            tool_name="exasol_profile_create_local",
-        )
-        credential_mode = self._require_choice(
-            arguments.get("credential_mode"),
-            field_name="credential_mode",
-            allowed={"password", "access_token", "refresh_token", "saas_pat"},
-            tool_name="exasol_profile_create_local",
-        )
-        dsn = self._require_non_empty_string(
-            arguments.get("dsn"),
-            field_name="dsn",
-            tool_name="exasol_profile_create_local",
-        )
-        user = self._require_non_empty_string(
-            arguments.get("user"),
-            field_name="user",
-            tool_name="exasol_profile_create_local",
-        )
-        tls_verify = arguments.get("tls_verify")
-        if tls_verify is not None and not isinstance(tls_verify, bool):
-            raise self._field_error("exasol_profile_create_local", "tls_verify", "must be a boolean.")
-        secret_value = arguments.get("secret_value")
-        if secret_value is not None and not isinstance(secret_value, str):
-            raise self._field_error("exasol_profile_create_local", "secret_value", "must be a string.")
-        secret_env_var = arguments.get("secret_env_var")
-        if secret_env_var is not None and not isinstance(secret_env_var, str):
-            raise self._field_error("exasol_profile_create_local", "secret_env_var", "must be a string.")
         # BUG-011 fix: opt-in upsert. Without this, calling the tool twice with the
         # same name silently rewrites the profile (different DSN → silent clobber).
         overwrite = arguments.get("overwrite", False)
         if not isinstance(overwrite, bool):
-            raise self._field_error("exasol_profile_create_local", "overwrite", "must be a boolean.")
-
+            raise self._field_error(tool, "overwrite", "must be a boolean.")
         existing = self._exasol_service().profile_store.profile_exists(name)
         if existing and not overwrite:
             raise DashServerError(
                 category="exasol_profile_already_exists",
                 summary=(
-                    f"Exasol profile {name} already exists. Pass overwrite=true to rewrite it, "
-                    "or call exasol_profile_validate to inspect the current configuration."
+                    f"Exasol profile {name} already exists. Pass overwrite=true to rewrite it (settings you "
+                    "leave out are kept), or call exasol_profile_validate to inspect the current configuration."
                 ),
                 details={"profile": name, "overwrite": False},
             )
 
-        payload = self._exasol_service().create_local_profile(
-            name=name,
-            backend=backend,
-            credential_mode=credential_mode,
-            dsn=dsn,
-            user=user,
-            description=arguments.get("description") if isinstance(arguments.get("description"), str) else None,
+        changes: dict[str, Any] = {}
+        for field_name, allowed in (
+            ("backend", {"onprem", "saas"}),
+            ("credential_mode", {"password", "access_token", "refresh_token", "saas_pat"}),
+        ):
+            if arguments.get(field_name) is not None or not existing:
+                changes[field_name] = self._require_choice(
+                    arguments.get(field_name), field_name=field_name, allowed=allowed, tool_name=tool
+                )
+        for field_name in ("dsn", "user"):
+            if arguments.get(field_name) is not None or not existing:
+                changes[field_name] = self._require_non_empty_string(
+                    arguments.get(field_name), field_name=field_name, tool_name=tool
+                )
+        tls_verify = arguments.get("tls_verify")
+        if tls_verify is not None and not isinstance(tls_verify, bool):
+            raise self._field_error(tool, "tls_verify", "must be a boolean.")
+        for field_name in ("secret_value", "secret_env_var"):
+            if arguments.get(field_name) is not None and not isinstance(arguments.get(field_name), str):
+                raise self._field_error(tool, field_name, "must be a string.")
+        changes.update(
             tls_verify=tls_verify,
-            secret_value=secret_value,
-            secret_env_var=secret_env_var,
+            description=arguments.get("description") if isinstance(arguments.get("description"), str) else None,
+            secret_value=arguments.get("secret_value"),
+            secret_env_var=arguments.get("secret_env_var"),
             statement_timeout_seconds=self._optional_positive_int(
-                arguments.get("statement_timeout_seconds"),
-                tool_name="exasol_profile_create_local",
-                field_name="statement_timeout_seconds",
+                arguments.get("statement_timeout_seconds"), tool_name=tool, field_name="statement_timeout_seconds"
             ),
-            row_limit=self._optional_positive_int(
-                arguments.get("row_limit"),
-                tool_name="exasol_profile_create_local",
-                field_name="row_limit",
-            ),
+            row_limit=self._optional_positive_int(arguments.get("row_limit"), tool_name=tool, field_name="row_limit"),
+            session_init_sql=arguments.get("session_init_sql"),
         )
+
+        if existing:
+            # A rewrite keeps whatever the call leaves out, so adding session_init_sql (or
+            # changing the DSN) doesn't mean restating the whole profile.
+            payload = self._exasol_service().update_local_profile(name=name, changes=changes)
+        else:
+            payload = self._exasol_service().create_local_profile(name=name, **changes)
         payload["was_already_present"] = existing
         verb = "Rewrote" if existing else "Created"
         return self._tool_result(
-            "exasol_profile_create_local",
+            tool,
             text=f"{verb} local Exasol profile {payload['profile']['name']}.",
             structured_content=payload,
         )
 
-
     def _tool_exasol_profile_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         payload = self._exasol_service().validate_profile(self._require_name(arguments))
         validation_state = "passed" if payload["is_valid"] else "failed"
+        text = f"Exasol profile validation {validation_state} for {payload['profile']['name']}."
+        semantic_models = (payload.get("semantic_layer") or {}).get("models") or []
+        if semantic_models:
+            names = ", ".join(f"{model['model']} ({model['published_schema']})" for model in semantic_models)
+            text += f" Published semantic models: {names}."
         return self._tool_result(
             "exasol_profile_validate",
-            text=f"Exasol profile validation {validation_state} for {payload['profile']['name']}.",
+            text=text,
             structured_content=payload,
         )
-
 
     def _tool_app_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
         start_immediately = arguments.get("start_immediately", True)
@@ -231,9 +277,7 @@ class HandlersMixin:
             )
         if bundle is None and "name" in arguments:
             bundle = self._bundle_from_top_level_arguments(arguments)
-        created = self.runtime_service.create_app(
-            bundle, start_immediately=start_immediately
-        )
+        created = self.runtime_service.create_app(bundle, start_immediately=start_immediately)
         preflight_error = self._preflight_failure_error(created)
         if preflight_error is not None:
             return self._tool_error_result("app_create", preflight_error, extra_payload=created)
@@ -243,7 +287,6 @@ class HandlersMixin:
             text=f"Created app {created['app']['name']} at {browser_url}.",
             structured_content=created,
         )
-
 
     def _tool_app_create_from_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         start_immediately = arguments.get("start_immediately", True)
@@ -260,8 +303,7 @@ class HandlersMixin:
         template = arguments.get("template") or (manifest_payload or {}).get("template")
         if template == "exasol-analytics":
             has_helper = any(
-                isinstance(entry, dict) and entry.get("path") == "dash_server_exasol.py"
-                for entry in files
+                isinstance(entry, dict) and entry.get("path") == "dash_server_exasol.py" for entry in files
             )
             if not has_helper:
                 from dash_server.exasol.scaffold import render_exasol_helper_py
@@ -312,7 +354,6 @@ class HandlersMixin:
             structured_content=created,
         )
 
-
     # dash-app.json fields that app_create_from_files also accepts as tool arguments.
     _MANIFEST_ARGUMENT_FIELDS = ("name", "title", "route", "description", "template", "data_sources", "consumption")
 
@@ -350,9 +391,7 @@ class HandlersMixin:
 
         supplied = {field: arguments[field] for field in self._MANIFEST_ARGUMENT_FIELDS if field in arguments}
         conflicts = sorted(
-            field
-            for field, value in supplied.items()
-            if field in manifest_payload and manifest_payload[field] != value
+            field for field, value in supplied.items() if field in manifest_payload and manifest_payload[field] != value
         )
         if conflicts:
             raise DashServerError(
@@ -440,7 +479,6 @@ class HandlersMixin:
             structured_content=structured,
         )
 
-
     def _tool_app_scaffold_from_schema(self, arguments: dict[str, Any]) -> dict[str, Any]:
         start_immediately = arguments.get("start_immediately", True)
         if not isinstance(start_immediately, bool):
@@ -488,12 +526,25 @@ class HandlersMixin:
         preflight_error = self._preflight_failure_error(created)
         if preflight_error is not None:
             return self._tool_error_result("app_scaffold_from_schema", preflight_error, extra_payload=structured)
+        text = f"Created schema-tailored Exasol scaffold {created['app']['name']} at {browser_url}."
+        blueprint = bundle["schema_blueprint"]
+        if blueprint.get("kind") == "semantic":
+            text += (
+                f" Built on semantic model {blueprint['model']} ({blueprint['schema_name']}.{blueprint['table_name']}):"
+                " queries/business/*.sql are Semantic SQL; see SCHEMA_NOTES.md."
+            )
+            others = [
+                f"{candidate['model']} ({candidate['published_schema']})"
+                for candidate in blueprint.get("semantic_candidates") or []
+                if candidate["model"] != blueprint["model"]
+            ]
+            if others and not schema_name:
+                text += f" Other published models: {', '.join(others)}; pass schema_name to choose one."
         return self._tool_result(
             "app_scaffold_from_schema",
-            text=f"Created schema-tailored Exasol scaffold {created['app']['name']} at {browser_url}.",
+            text=text,
             structured_content=structured,
         )
-
 
     def _tool_app_build(self, arguments: dict[str, Any]) -> dict[str, Any]:
         force_clean = arguments.get("force_clean", False)
@@ -513,7 +564,6 @@ class HandlersMixin:
             structured_content=built,
         )
 
-
     def _tool_app_read_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = arguments.get("path")
         if not isinstance(path, str) or not path:
@@ -527,7 +577,6 @@ class HandlersMixin:
             text=f"Read draft file {path} for app {payload['app']['name']}.",
             structured_content=payload,
         )
-
 
     def _tool_app_diff_draft_vs_artifact(self, arguments: dict[str, Any]) -> dict[str, Any]:
         revision_number = arguments.get("revision_number")
@@ -553,7 +602,6 @@ class HandlersMixin:
             text=f"Compared the draft workspace for app {payload['app']['name']} against {target_text}.",
             structured_content=payload,
         )
-
 
     def _tool_app_deploy_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -600,11 +648,7 @@ class HandlersMixin:
         try:
             built = self.runtime_service.build_revision(name)
             preflight = built.get("preflight")
-            if (
-                deployment_target == "live"
-                and isinstance(preflight, dict)
-                and preflight.get("status") != "passed"
-            ):
+            if deployment_target == "live" and isinstance(preflight, dict) and preflight.get("status") != "passed":
                 exc = DashServerError(
                     category="artifact_preflight_failed",
                     summary=(
@@ -657,11 +701,7 @@ class HandlersMixin:
                 extra_payload={"force_clean": force_clean, "diagnostics": diagnostics},
             )
 
-        if (
-            deployment_target == "live"
-            and auto_rollback_on_health_failure
-            and health["health"]["status"] != "healthy"
-        ):
+        if deployment_target == "live" and auto_rollback_on_health_failure and health["health"]["status"] != "healthy":
             rollback = None
             rollback_health = None
             try:
@@ -708,11 +748,18 @@ class HandlersMixin:
                 },
             )
 
+        preflight = built.get("preflight")
+        preflight_warning = (
+            f" Warning: artifact preflight failed ({_preflight_headline(preflight)}); don't promote this revision "
+            "until it passes."
+            if isinstance(preflight, dict) and preflight.get("status") not in (None, "passed")
+            else ""
+        )
         return self._tool_result(
             "app_deploy_draft",
             text=(
                 f"Deployed draft preview for app {name} as revision {built['revision']['revision_number']} "
-                f"at {self._absolute_url(deployed['app'].get('preview_path') or '')}."
+                f"at {self._absolute_url(deployed['app'].get('preview_path') or '')}.{preflight_warning}"
                 if deployment_target == "preview"
                 else (
                     f"Deployed draft for app {name} as revision "
@@ -730,7 +777,6 @@ class HandlersMixin:
             },
         )
 
-
     def _tool_app_start_preview(self, arguments: dict[str, Any]) -> dict[str, Any]:
         previewed = self.runtime_service.start_preview(
             self._require_name(arguments),
@@ -743,7 +789,6 @@ class HandlersMixin:
             text=f"Started preview for app {previewed['app']['name']} at {preview_url}.",
             structured_content=previewed,
         )
-
 
     def _tool_app_promote_revision(self, arguments: dict[str, Any]) -> dict[str, Any]:
         require_healthy = arguments.get("require_healthy", False)
@@ -767,12 +812,13 @@ class HandlersMixin:
                 " The app runtime is currently stopped, so this revision is not serving "
                 "traffic yet - call app_start to mount it."
             )
+        for warning in promoted.get("warnings") or []:
+            text += f" Warning: {warning}"
         return self._tool_result(
             "app_promote_revision",
             text=text,
             structured_content=promoted,
         )
-
 
     def _tool_app_rollback(self, arguments: dict[str, Any]) -> dict[str, Any]:
         rolled_back = self.runtime_service.rollback(self._require_name(arguments))
@@ -781,7 +827,6 @@ class HandlersMixin:
             text=f"Rolled back app {rolled_back['app']['name']} to revision {rolled_back['current_revision']['revision_number']}.",
             structured_content=rolled_back,
         )
-
 
     def _tool_app_put_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         files = arguments.get("files")
@@ -801,7 +846,6 @@ class HandlersMixin:
             structured_content=updated,
         )
 
-
     def _tool_app_patch_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         patched = self.runtime_service.patch_file(
             self._require_name(arguments),
@@ -816,7 +860,6 @@ class HandlersMixin:
             structured_content=patched,
         )
 
-
     def _tool_app_delete_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         deleted = self.runtime_service.delete_file(
             self._require_name(arguments),
@@ -828,7 +871,6 @@ class HandlersMixin:
             structured_content=deleted,
         )
 
-
     def _tool_app_list_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         # Capability enforced centrally via ToolSpec(enforce_in_handler=True).
         name = self._require_name(arguments)
@@ -838,7 +880,6 @@ class HandlersMixin:
             text=f"Listed {len(listed['draft']['files'])} draft file(s) for app {listed['app']['name']}.",
             structured_content=listed,
         )
-
 
     def _tool_app_outputs_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -851,7 +892,6 @@ class HandlersMixin:
             text=f"Listed {payload['output_count']} registered output(s) for app {name}.",
             structured_content=payload,
         )
-
 
     def _tool_app_output_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -866,7 +906,6 @@ class HandlersMixin:
             text=f"Read registered output {output_id} for app {name}.",
             structured_content=payload,
         )
-
 
     def _tool_app_export_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -900,66 +939,50 @@ class HandlersMixin:
             structured_content=payload,
         )
 
-
     def _tool_app_exports_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
-        payload = self._consumption_service().list_exports(
-            self._consumption_auth_context(), app_name=name
-        )
+        payload = self._consumption_service().list_exports(self._consumption_auth_context(), app_name=name)
         return self._tool_result(
             "app_exports_list",
             text=f"Listed {payload['job_count']} export job(s) for app {name}.",
             structured_content=payload,
         )
 
-
     def _tool_app_exports_admin_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
-        payload = self._consumption_service().list_app_jobs(
-            name, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().list_app_jobs(name, self._consumption_auth_context())
         return self._tool_result(
             "app_exports_admin_list",
             text=f"Listed {payload['job_count']} app-wide export job(s) for app {name}.",
             structured_content=payload,
         )
 
-
     def _tool_export_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_string(arguments.get("job_id"), "job_id")
-        payload = self._consumption_service().get_export(
-            job_id, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().get_export(job_id, self._consumption_auth_context())
         return self._tool_result(
             "export_get",
             text=f"Export {job_id} is {payload['job']['status']}.",
             structured_content=payload,
         )
 
-
     def _tool_export_cancel(self, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_string(arguments.get("job_id"), "job_id")
-        payload = self._consumption_service().cancel_export(
-            job_id, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().cancel_export(job_id, self._consumption_auth_context())
         return self._tool_result(
             "export_cancel",
             text=f"Export {job_id} cancellation state is {payload['job']['status']}.",
             structured_content=payload,
         )
 
-
     def _tool_export_download_link_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_string(arguments.get("job_id"), "job_id")
-        payload = self._consumption_service().create_download_link(
-            job_id, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().create_download_link(job_id, self._consumption_auth_context())
         return self._tool_result(
             "export_download_link_create",
             text=f"Created a principal-bound download link for export {job_id}.",
             structured_content=payload,
         )
-
 
     def _tool_app_delete(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -981,7 +1004,6 @@ class HandlersMixin:
             structured_content=deleted,
         )
 
-
     def _tool_app_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         validation = self.runtime_service.validate_workspace(self._require_name(arguments))
         report = validation["validation"]
@@ -996,10 +1018,7 @@ class HandlersMixin:
         # BUG-015 fix: surface warning count in the visible text so an agent following
         # `guidance.next_step` doesn't ship warnings unnoticed.
         if summary["warning_count"]:
-            text += (
-                f"\nWarnings: {summary['warning_count']}"
-                " (see structured payload `validation` for full list)."
-            )
+            text += f"\nWarnings: {summary['warning_count']} (see structured payload `validation` for full list)."
         if details:
             text = text + "\n" + "\n".join(details)
         # Build the structured response the same way for pass and fail so the
@@ -1025,7 +1044,6 @@ class HandlersMixin:
             }
         return response
 
-
     def _tool_app_start(self, arguments: dict[str, Any]) -> dict[str, Any]:
         started = self.runtime_service.start_app(self._require_name(arguments))
         return self._tool_result(
@@ -1033,7 +1051,6 @@ class HandlersMixin:
             text=f"Started app {started['app']['name']}.",
             structured_content=started,
         )
-
 
     def _tool_app_stop(self, arguments: dict[str, Any]) -> dict[str, Any]:
         stopped = self.runtime_service.stop_app(self._require_name(arguments))
@@ -1043,7 +1060,6 @@ class HandlersMixin:
             structured_content=stopped,
         )
 
-
     def _tool_app_restart(self, arguments: dict[str, Any]) -> dict[str, Any]:
         restarted = self.runtime_service.restart_app(self._require_name(arguments))
         return self._tool_result(
@@ -1051,7 +1067,6 @@ class HandlersMixin:
             text=f"Restarted app {restarted['app']['name']}.",
             structured_content=restarted,
         )
-
 
     def _tool_app_get_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
         status = self.runtime_service.get_app_status(self._require_name(arguments))
@@ -1061,7 +1076,6 @@ class HandlersMixin:
             structured_content=status,
         )
 
-
     def _tool_app_collect_diagnostics(self, arguments: dict[str, Any]) -> dict[str, Any]:
         diagnostics = self.runtime_service.collect_diagnostics(self._require_name(arguments))
         return self._tool_result(
@@ -1069,7 +1083,6 @@ class HandlersMixin:
             text=f"Collected diagnostics for app {diagnostics['app']['name']}.",
             structured_content=diagnostics,
         )
-
 
     def _tool_app_inspect_traceback(self, arguments: dict[str, Any]) -> dict[str, Any]:
         traceback_text = arguments.get("traceback_text")
@@ -1084,7 +1097,6 @@ class HandlersMixin:
             text=f"Inspected traceback for app {inspected['app']['name']}.",
             structured_content=inspected,
         )
-
 
     def _tool_app_tail_logs(self, arguments: dict[str, Any]) -> dict[str, Any]:
         channel = arguments.get("channel", "latest")
@@ -1106,7 +1118,6 @@ class HandlersMixin:
             structured_content=logs,
         )
 
-
     def _tool_app_run_healthcheck(self, arguments: dict[str, Any]) -> dict[str, Any]:
         target = arguments.get("target", "live")
         if target not in {"live", "preview"}:
@@ -1114,10 +1125,9 @@ class HandlersMixin:
         health = self.runtime_service.run_healthcheck(self._require_name(arguments), target=target)
         return self._tool_result(
             "app_run_healthcheck",
-            text=f"Ran {target} health check for app {health['app']['name']}.",
+            text=f"Ran {target} health check for app {health['app']['name']}: {_healthcheck_text(health['health'])}",
             structured_content=health,
         )
-
 
     def _tool_app_share_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1127,7 +1137,6 @@ class HandlersMixin:
             text=f"Returned sharing policy and {len(payload['grants'])} active grant(s) for app {name}.",
             structured_content=payload,
         )
-
 
     def _tool_app_share_grant(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1189,7 +1198,6 @@ class HandlersMixin:
             structured_content={"app": app.to_dict(), "grant": grant.to_dict()},
         )
 
-
     def _tool_app_share_revoke(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         grant_id = arguments.get("grant_id")
@@ -1241,7 +1249,6 @@ class HandlersMixin:
                 "revoked_grants": [grant.to_dict() for grant in revoked],
             },
         )
-
 
     def _tool_app_share_set_link_scope(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1308,7 +1315,6 @@ class HandlersMixin:
             structured_content={"app": app.to_dict(), "share_policy": policy.to_dict()},
         )
 
-
     def _tool_app_share_explain_access(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         target = self._require_choice(
@@ -1342,7 +1348,6 @@ class HandlersMixin:
             },
         )
 
-
     def _tool_app_share_create_one_time_link(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         role = self._require_choice(
@@ -1369,7 +1374,7 @@ class HandlersMixin:
         app = self._require_existing_app(name, tool_name="app_share_create_one_time_link")
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-        expires_at = (datetime.utcnow() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
+        expires_at = (utc_now_naive() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
         link = self.runtime_service.registry.create_share_link(
             name,
             token_hash=token_hash,
@@ -1418,7 +1423,6 @@ class HandlersMixin:
             structured_content=payload,
         )
 
-
     def _tool_app_share_revoke_one_time_link(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         link_id = arguments.get("link_id")
@@ -1443,7 +1447,6 @@ class HandlersMixin:
             text=f"Revoked one-time sharing link {link_id} for app {name}.",
             structured_content={"app": app.to_dict(), "one_time_link": self._sanitize_share_link(revoked)},
         )
-
 
     def _tool_app_invite_external_user(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1472,7 +1475,7 @@ class HandlersMixin:
         app = self._require_existing_app(name, tool_name="app_invite_external_user")
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-        expires_at = (datetime.utcnow() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
+        expires_at = (utc_now_naive() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
         invitation = self.runtime_service.registry.create_invitation(
             name,
             token_hash=token_hash,
@@ -1519,13 +1522,16 @@ class HandlersMixin:
             inviter_display_name=self._current_principal().display_name,
             message=message,
         )
-        invitation = self.runtime_service.registry.update_invitation_delivery(
-            int(invitation.id),
-            delivery_status=delivery_result.status,
-            delivery_provider=delivery_result.provider,
-            delivery_message_id=delivery_result.message_id,
-            delivery_error=delivery_result.error,
-        ) or invitation
+        invitation = (
+            self.runtime_service.registry.update_invitation_delivery(
+                int(invitation.id),
+                delivery_status=delivery_result.status,
+                delivery_provider=delivery_result.provider,
+                delivery_message_id=delivery_result.message_id,
+                delivery_error=delivery_result.error,
+            )
+            or invitation
+        )
         self.runtime_service.registry.append_event(
             name,
             "external_invitation_delivery_updated",
@@ -1561,7 +1567,6 @@ class HandlersMixin:
             structured_content=payload,
         )
 
-
     def _tool_app_revoke_external_invitation(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         invitation_id = arguments.get("invitation_id")
@@ -1593,7 +1598,6 @@ class HandlersMixin:
 
     # ---- Phase 4f: runtime / environment tools -------------------------------------
 
-
     def _session_channel_or_error(self, tool_name: str) -> Any:
         """Third of the three enforcement points for the local-mode-only channel.
 
@@ -1612,7 +1616,6 @@ class HandlersMixin:
             )
         service.require_enabled(tool_name=tool_name)
         return service
-
 
     def _tool_app_session_eval_js(self, arguments: dict[str, Any]) -> dict[str, Any]:
         service = self._session_channel_or_error("app_session_eval_js")
@@ -1641,12 +1644,10 @@ class HandlersMixin:
             error = payload.get("error") or {}
             # A page-side exception is a *result*, not a transport error: the agent needs
             # the message and the code-relative line to fix and retry in one hop.
-            text = (
-                f"The page reported {error.get('name', 'Error')}: {error.get('message', '')}"
-                + (f" (line {error['line']} of the submitted code)" if error.get("line") else "")
+            text = f"The page reported {error.get('name', 'Error')}: {error.get('message', '')}" + (
+                f" (line {error['line']} of the submitted code)" if error.get("line") else ""
             )
         return self._tool_result("app_session_eval_js", text=text, structured_content=payload)
-
 
     def _tool_app_sessions_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         service = self._session_channel_or_error("app_sessions_list")
@@ -1656,23 +1657,14 @@ class HandlersMixin:
         payload = service.list_sessions(app_name=name.strip() if isinstance(name, str) else None)
         return self._tool_result(
             "app_sessions_list",
-            text=(
-                f"{payload['live_count']} live browser session(s) of "
-                f"{len(payload['sessions'])} registered."
-            ),
+            text=(f"{payload['live_count']} live browser session(s) of {len(payload['sessions'])} registered."),
             structured_content=payload,
         )
 
-
     def _tool_app_runtime_workers_list(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         payload = self._workers_payload()
-        text = (
-            f"Listed {payload['worker_count']} worker(s); rss_bytes_total={payload['rss_bytes_total']}."
-        )
-        return self._tool_result(
-            "app_runtime_workers_list", text=text, structured_content=payload
-        )
-
+        text = f"Listed {payload['worker_count']} worker(s); rss_bytes_total={payload['rss_bytes_total']}."
+        return self._tool_result("app_runtime_workers_list", text=text, structured_content=payload)
 
     def _tool_app_runtime_workers_restart(self, arguments: dict[str, Any]) -> dict[str, Any]:
         manager = self._worker_manager_or_error()
@@ -1703,7 +1695,6 @@ class HandlersMixin:
             },
         )
 
-
     def _tool_app_environment_invalidate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         env_service = self._dep_env_service_or_error()
         env_id = arguments.get("environment_id")
@@ -1723,7 +1714,6 @@ class HandlersMixin:
             ),
             structured_content={"environment_id": env_id, "invalidated": invalidated},
         )
-
 
     def _tool_app_acknowledge_data_layer_errors(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Reset the `data_layer` healthcheck probe by acknowledging current errors.
@@ -1749,7 +1739,6 @@ class HandlersMixin:
             structured_content={"app": name, "watermark": watermark},
         )
 
-
     def _tool_result(
         self,
         tool_name: str,
@@ -1769,7 +1758,6 @@ class HandlersMixin:
             "structuredContent": payload,
             "isError": False,
         }
-
 
     def _tool_error_result(
         self,
@@ -1812,7 +1800,6 @@ class HandlersMixin:
             "isError": True,
         }
 
-
     def _worker_manager_or_error(self) -> Any:
         if not has_request_context():
             raise DashServerError(
@@ -1825,13 +1812,11 @@ class HandlersMixin:
             raise DashServerError(
                 category="runtime_mode_error",
                 summary=(
-                    "No worker manager is configured. Set APP_RUNTIME_MODE=isolated to "
-                    "enable out-of-process workers."
+                    "No worker manager is configured. Set APP_RUNTIME_MODE=isolated to enable out-of-process workers."
                 ),
                 details={"runtime_mode": current_app.config.get("APP_RUNTIME_MODE")},
             )
         return manager
-
 
     def _dep_env_service_or_error(self) -> Any:
         if not has_request_context():
@@ -1848,12 +1833,9 @@ class HandlersMixin:
                     "No per-app dependency-environment service is configured. Set "
                     "APP_DEPENDENCY_ISOLATION=per_app to enable per-app envs."
                 ),
-                details={
-                    "app_dependency_isolation": current_app.config.get("APP_DEPENDENCY_ISOLATION")
-                },
+                details={"app_dependency_isolation": current_app.config.get("APP_DEPENDENCY_ISOLATION")},
             )
         return service
-
 
     def _exasol_service(self) -> ExasolDashboardService:
         if self.exasol_dashboard_service is None:
@@ -1864,7 +1846,6 @@ class HandlersMixin:
             )
         return self.exasol_dashboard_service
 
-
     def _consumption_service(self) -> ConsumptionService:
         if self.consumption_service is None:
             raise DashServerError(
@@ -1874,13 +1855,11 @@ class HandlersMixin:
             )
         return self.consumption_service
 
-
     @staticmethod
     def _consumption_auth_context() -> AuthContext:
         if has_request_context():
             return current_auth_context()
         return AuthContext.for_mode("local", auth_enabled=False)
-
 
     def _require_name(self, arguments: dict[str, Any]) -> str:
         name = arguments.get("name")
@@ -1892,13 +1871,11 @@ class HandlersMixin:
             details={"field": "name"},
         )
 
-
     def _require_revision_number(self, arguments: dict[str, Any], field_name: str) -> int:
         value = arguments.get(field_name)
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             return value
         raise self._field_error("revision_tool", field_name, "must be a positive integer.")
-
 
     def _require_existing_app(self, name: str, *, tool_name: str):
         app = self.runtime_service.registry.get_app(name)
@@ -1910,7 +1887,6 @@ class HandlersMixin:
             )
         return app
 
-
     def _share_payload(self, name: str) -> dict[str, Any]:
         app = self._require_existing_app(name, tool_name="app_share_get")
         all_grants = self.runtime_service.registry.list_acl_entries(
@@ -1921,9 +1897,7 @@ class HandlersMixin:
             "app": app.to_dict(),
             "share_policy": self.runtime_service.registry.get_share_policy(name).to_dict(),
             "grants": [grant.to_dict() for grant in self.runtime_service.registry.list_acl_entries(name)],
-            "revoked_grants": [
-                grant.to_dict() for grant in all_grants if grant.revoked_at is not None
-            ],
+            "revoked_grants": [grant.to_dict() for grant in all_grants if grant.revoked_at is not None],
             "one_time_links": [
                 self._sanitize_share_link(link)
                 for link in self.runtime_service.registry.list_share_links(name, include_revoked=True)
@@ -1935,26 +1909,15 @@ class HandlersMixin:
             "warnings": self._sharing_warnings(name),
         }
 
-
     def _sanitize_share_link(self, link: ShareLink | None) -> dict[str, Any] | None:
         if link is None:
             return None
-        return {
-            key: value
-            for key, value in link.to_dict().items()
-            if key != "token_hash"
-        }
-
+        return {key: value for key, value in link.to_dict().items() if key != "token_hash"}
 
     def _sanitize_invitation(self, invitation: Invitation | None) -> dict[str, Any] | None:
         if invitation is None:
             return None
-        return {
-            key: value
-            for key, value in invitation.to_dict().items()
-            if key != "token_hash"
-        }
-
+        return {key: value for key, value in invitation.to_dict().items() if key != "token_hash"}
 
     def _sharing_warnings(self, name: str) -> list[dict[str, str]]:
         app = self.runtime_service.registry.get_app(name)
@@ -1982,7 +1945,6 @@ class HandlersMixin:
                 }
             )
         return warnings
-
 
     def _principal_for_access_explanation(self, arguments: dict[str, Any]) -> Principal:
         principal_id = arguments.get("principal_id")
@@ -2050,18 +2012,15 @@ class HandlersMixin:
             tenant_id=tenant_id,
         )
 
-
     def _current_principal_id(self) -> str:
         if has_request_context():
             return current_auth_context().principal.principal_id
         return "system"
 
-
     def _current_principal(self) -> Principal:
         if has_request_context():
             return current_auth_context().principal
         return Principal.local_admin()
-
 
     def _normalize_email_argument(self, value: Any, *, tool_name: str) -> str:
         if not isinstance(value, str):
@@ -2071,22 +2030,15 @@ class HandlersMixin:
             raise self._field_error(tool_name, "recipient_email", "must be an email address.")
         return email.lower()
 
-
     def _normalize_allowed_domain(self, value: Any, *, tool_name: str) -> str:
         if not isinstance(value, str):
             raise self._field_error(tool_name, "allowed_domain", "is required when link_scope is domain.")
         domain = value.strip().lower()
         if domain.startswith("@"):
             domain = domain[1:]
-        if (
-            not domain
-            or "@" in domain
-            or "/" in domain
-            or any(character.isspace() for character in domain)
-        ):
+        if not domain or "@" in domain or "/" in domain or any(character.isspace() for character in domain):
             raise self._field_error(tool_name, "allowed_domain", "must be a DNS domain such as example.com.")
         return domain
-
 
     def _email_sender(self) -> InvitationEmailSender:
         if self.email_sender is not None:
@@ -2094,7 +2046,6 @@ class HandlersMixin:
         if has_request_context():
             return current_app.extensions["email_sender"]
         return InvitationEmailSender({"DASH_SERVER_EMAIL_PROVIDER": "manual"})
-
 
     def _invitation_delivery_note(self, invitation: Invitation) -> str:
         status = invitation.delivery_status
@@ -2104,16 +2055,13 @@ class HandlersMixin:
             return "Email delivery failed. Use the display-once accept_url for manual recovery or fix the provider configuration and create a new invitation."
         return "Email sender integration is manual/disabled; deliver the accept_url to the recipient through an approved channel."
 
-
     def _authorization_service(self):
         return current_app.extensions["authorization_service"]
-
 
     def _require_string(self, value: Any, field_name: str, *, allow_empty: bool = False) -> str:
         if isinstance(value, str) and (allow_empty or value):
             return value
         raise self._field_error("string_tool", field_name, "must be a string.")
-
 
     def _field_error(self, tool_name: str, field_name: str, detail: str) -> DashServerError:
         return DashServerError(
@@ -2121,7 +2069,6 @@ class HandlersMixin:
             summary=f"{field_name} {detail}",
             details={"tool": tool_name, "field": field_name},
         )
-
 
     def _preflight_failure_error(self, created: dict[str, Any]) -> DashServerError | None:
         """Build the `artifact_preflight_failed` error for a create/build result whose
@@ -2143,12 +2090,20 @@ class HandlersMixin:
         # either so this one helper covers both shapes.
         revision = created.get("revision") or created.get("current_revision") or {}
         revision_number = revision.get("revision_number")
+        if "current_revision" in created and not created["app"].get("mounted"):
+            summary = (
+                f"Created app {created['app']['name']} with revision {revision_number}, but artifact preflight "
+                f"failed ({_preflight_headline(preflight)}), so the app was not started. Fix the draft, then "
+                "run app_deploy_draft: it builds, checks, and starts the app."
+            )
+        else:
+            summary = (
+                f"Created/built revision {revision_number} but artifact preflight failed "
+                f"({_preflight_headline(preflight)}); fix the runtime issue before trusting this app as live."
+            )
         return DashServerError(
             category="artifact_preflight_failed",
-            summary=(
-                f"Created/built revision {revision_number} but artifact preflight failed; "
-                "fix the runtime issue before trusting this app as live."
-            ),
+            summary=summary,
             details={
                 "app": created["app"]["name"],
                 "revision_number": revision_number,
@@ -2156,19 +2111,17 @@ class HandlersMixin:
             },
         )
 
-
     def _require_non_empty_string(self, value: Any, *, field_name: str, tool_name: str) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
         raise self._field_error(tool_name, field_name, "must be a non-empty string.")
-
 
     def _require_choice(
         self,
         value: Any,
         *,
         field_name: str,
-        allowed: set[str],
+        allowed: Collection[str],
         tool_name: str,
     ) -> str:
         if isinstance(value, str) and value in allowed:
@@ -2179,14 +2132,12 @@ class HandlersMixin:
             f"must be one of {', '.join(sorted(allowed))}.",
         )
 
-
     def _optional_positive_int(self, value: Any, *, tool_name: str, field_name: str) -> int | None:
         if value is None:
             return None
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             return value
         raise self._field_error(tool_name, field_name, "must be a positive integer.")
-
 
     def _bundle_from_top_level_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         bundle: dict[str, Any] = {}
@@ -2205,4 +2156,3 @@ class HandlersMixin:
             if field_name in arguments:
                 bundle[field_name] = arguments[field_name]
         return bundle
-

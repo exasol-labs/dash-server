@@ -163,9 +163,7 @@ class SessionRegistry:
             if session_id and session_id != "auto":
                 return self._sessions.get(session_id)
             candidates = [
-                session
-                for session in self._sessions.values()
-                if session.app_name == app_name and self.is_live(session)
+                session for session in self._sessions.values() if session.app_name == app_name and self.is_live(session)
             ]
             if not candidates:
                 return None
@@ -175,13 +173,10 @@ class SessionRegistry:
         now = time.monotonic()
         with self._lock:
             sessions = [
-                session
-                for session in self._sessions.values()
-                if app_name is None or session.app_name == app_name
+                session for session in self._sessions.values() if app_name is None or session.app_name == app_name
             ]
             payloads = [
-                session.to_dict(now_monotonic=now, stale_after_seconds=self.stale_after_seconds)
-                for session in sessions
+                session.to_dict(now_monotonic=now, stale_after_seconds=self.stale_after_seconds) for session in sessions
             ]
         if not include_stale:
             payloads = [payload for payload in payloads if payload["live"]]
@@ -210,9 +205,7 @@ class SessionRegistry:
         cutoff = time.monotonic() - max(0.0, older_than_seconds)
         with self._lock:
             dropped = [
-                session_id
-                for session_id, session in self._sessions.items()
-                if session.last_poll_monotonic < cutoff
+                session_id for session_id, session in self._sessions.items() if session.last_poll_monotonic < cutoff
             ]
             for session_id in dropped:
                 self._sessions.pop(session_id, None)

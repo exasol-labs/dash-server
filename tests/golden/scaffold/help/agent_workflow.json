@@ -9,6 +9,7 @@
     ]
   },
   "recommended_workflow": [
+    "Check for a governed semantic model first: SELECT MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION FROM SEMANTIC_AGENT.MODELS_FOR_AGENT WHERE MODEL_STATUS = 'PUBLISHED'. If one covers the question, build on its published views, not the raw tables behind them (dash://exasol/help/semantic-layer).",
     "Use the external Exasol MCP server to inspect schema, test candidate SQL, and understand the dataset.",
     "Create or validate a dash-server Exasol profile with exasol_profile_create_local and exasol_profile_validate.",
     "Create the hosted app with app_create_from_files (template=exasol-analytics) once you know what you are building - it takes your app.py and queries/*.sql directly and injects dash_server_exasol.py. Use app_scaffold_from_schema instead only while you are still exploring an unfamiliar schema, or app_create_exasol_dashboard for a prebuilt pattern as-is.",
@@ -32,7 +33,8 @@
     "Use the external Exasol MCP server for discovery and SQL design, not for dashboard runtime execution.",
     "Use dash-server profiles for hosted dashboards so credentials stay server-side.",
     "Do not copy DSN, user, password, PAT, token, or raw secret values from Exasol MCP output into app files.",
-    "Do not make a hosted dashboard depend on live MCP tool calls. Put final runtime SQL in queries/*.sql and execute it through dash_server_exasol.py or server-side helpers."
+    "Do not make a hosted dashboard depend on live MCP tool calls. Put final runtime SQL in queries/*.sql and execute it through dash_server_exasol.py or server-side helpers.",
+    "Query helpers return typed values: DECIMAL columns come back as int or decimal.Decimal, DATE as datetime.date, and TIMESTAMP as datetime.datetime. Numbers with more than 15 significant digits and INTERVAL values stay strings, because a browser can't show them exactly. Format dates with strftime() and numbers with format specs; don't slice or concatenate them as strings. Convert with float() before mixing a Decimal into float arithmetic."
   ],
   "summary": "How dash-server should coexist with a separate Exasol MCP server in agent workflows."
 }

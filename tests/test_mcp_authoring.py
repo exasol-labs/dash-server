@@ -12,6 +12,7 @@ from _mcp_helpers import (
     _app_callback_app_py,
 )
 
+
 def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     tools_response = _call_mcp(
         client,
@@ -22,20 +23,12 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     tools = tools_response.get_json()["result"]["tools"]
     app_create = next(tool for tool in tools if tool["name"] == "app_create")
     app_create_from_files = next(tool for tool in tools if tool["name"] == "app_create_from_files")
-    app_create_exasol_dashboard = next(
-        tool for tool in tools if tool["name"] == "app_create_exasol_dashboard"
-    )
-    app_scaffold_from_schema = next(
-        tool for tool in tools if tool["name"] == "app_scaffold_from_schema"
-    )
-    exasol_profile_create_local = next(
-        tool for tool in tools if tool["name"] == "exasol_profile_create_local"
-    )
+    app_create_exasol_dashboard = next(tool for tool in tools if tool["name"] == "app_create_exasol_dashboard")
+    app_scaffold_from_schema = next(tool for tool in tools if tool["name"] == "app_scaffold_from_schema")
+    exasol_profile_create_local = next(tool for tool in tools if tool["name"] == "exasol_profile_create_local")
     app_read_file = next(tool for tool in tools if tool["name"] == "app_read_file")
     app_patch_file = next(tool for tool in tools if tool["name"] == "app_patch_file")
-    app_diff_draft_vs_artifact = next(
-        tool for tool in tools if tool["name"] == "app_diff_draft_vs_artifact"
-    )
+    app_diff_draft_vs_artifact = next(tool for tool in tools if tool["name"] == "app_diff_draft_vs_artifact")
     app_build = next(tool for tool in tools if tool["name"] == "app_build")
     app_deploy_draft = next(tool for tool in tools if tool["name"] == "app_deploy_draft")
     bundle_schema = app_create["inputSchema"]["properties"]["bundle"]
@@ -50,13 +43,12 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     assert app_create_exasol_dashboard["inputSchema"]["properties"]["pattern"]["default"] == "analytics-hub"
     assert "analytics-hub" in app_create_exasol_dashboard["inputSchema"]["properties"]["pattern"]["enum"]
     assert app_scaffold_from_schema["inputSchema"]["required"] == ["name", "profile_name"]
-    assert exasol_profile_create_local["inputSchema"]["required"] == [
-        "name",
-        "backend",
-        "credential_mode",
-        "dsn",
-        "user",
-    ]
+    # Only name is required by the schema: a rewrite (overwrite: true) keeps what it leaves out.
+    # Each field a new profile needs says so.
+    profile_schema = exasol_profile_create_local["inputSchema"]
+    assert profile_schema["required"] == ["name"]
+    for field_name in ("backend", "credential_mode", "dsn", "user"):
+        assert "Required to create a profile." in profile_schema["properties"][field_name]["description"]
     assert app_read_file["inputSchema"]["required"] == ["name", "path"]
     assert "compact line-context preview" in app_patch_file["description"]
     assert app_diff_draft_vs_artifact["inputSchema"]["required"] == ["name"]
@@ -117,9 +109,7 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     # boundary so an agent doesn't mistake is_valid: true for a schema-correctness
     # guarantee.
     schema_typo_entry = next(
-        entry
-        for entry in authoring_guide["common_failures"]
-        if "nonexistent column" in entry["problem"]
+        entry for entry in authoring_guide["common_failures"] if "nonexistent column" in entry["problem"]
     )
     assert "sql_smoke" in schema_typo_entry["fix"]
 
@@ -514,4 +504,3 @@ def test_app_patch_file_returns_line_context_preview_and_guidance(client):
     ]
     assert payload["guidance"]["next_step"] == "Review the patch preview, then validate the updated draft workspace."
     assert payload["guidance"]["suggested_tools"] == ["app_validate", "app_patch_file", "app_put_files"]
-

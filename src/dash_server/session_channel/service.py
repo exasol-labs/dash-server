@@ -128,9 +128,7 @@ class SessionChannelService:
                 details={"field": "mount_path"},
             )
         revision_number = body.get("revision_number")
-        if revision_number is not None and (
-            not isinstance(revision_number, int) or isinstance(revision_number, bool)
-        ):
+        if revision_number is not None and (not isinstance(revision_number, int) or isinstance(revision_number, bool)):
             revision_number = None
         capabilities = body.get("capabilities")
         session = self.registry.register(
@@ -314,8 +312,7 @@ class SessionChannelService:
                     "stale_after_ms": int(self.stale_after_seconds * 1000),
                     "live_sessions": live_sessions,
                     "hint": (
-                        "That tab's state is no longer observable. Do not report its last "
-                        "known values as current."
+                        "That tab's state is no longer observable. Do not report its last known values as current."
                     ),
                 },
             )

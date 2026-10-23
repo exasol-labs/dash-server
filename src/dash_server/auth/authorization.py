@@ -68,9 +68,7 @@ class AuthorizationService:
 
     def __init__(self, registry: SQLiteAppRegistry, config: dict[str, Any]) -> None:
         self.registry = registry
-        self.public_dashboards_enabled = coerce_bool(
-            config.get("DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED")
-        )
+        self.public_dashboards_enabled = coerce_bool(config.get("DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED"))
 
     def authorize_path(
         self,

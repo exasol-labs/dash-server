@@ -275,11 +275,7 @@ class AppRuntimeService:
         # collision policy serially so behavior matches the legacy loop exactly.
         live_candidates: list[Any] = []
         for app in apps:
-            if (
-                app.status == "running"
-                and app.enabled
-                and app.current_revision_number is not None
-            ):
+            if app.status == "running" and app.enabled and app.current_revision_number is not None:
                 if app.route in seen_live_routes:
                     self.diagnostics_service.record_error(
                         app.name,
@@ -312,9 +308,7 @@ class AppRuntimeService:
                 if current_revision is not None:
                     self._seed_workspace_from_revision(app.name, current_revision)
 
-    def _bootstrap_mount_parallel(
-        self, live_candidates: list[Any], all_apps: list[Any]
-    ) -> None:
+    def _bootstrap_mount_parallel(self, live_candidates: list[Any], all_apps: list[Any]) -> None:
         """Spawn live + preview mounts concurrently when running isolated workers."""
 
         from concurrent.futures import ThreadPoolExecutor
@@ -368,6 +362,59 @@ class AppRuntimeService:
         """Reconstruct app and revision cache rows from the authoritative GitOps repository."""
 
         return self.reconciler.rebuild_cache_from_git()
+
+    def semantic_usage(self) -> dict[str, Any]:
+        """Which live dashboards use which semantic model fields, from their build-time locks.
+
+        Answers a metric owner's "what breaks or changes if I edit this metric?". Covers each
+        app's current (live) revision; a revision built before definition locks existed, or
+        whose queries don't touch a semantic model, contributes nothing. Query files that
+        bypass a model (saved compiler output, or SQL over its source tables) are listed
+        under ``bypasses``: a definition change never reaches them.
+        """
+
+        models: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        bypasses: dict[str, list[dict[str, Any]]] = {}
+        for app in self.registry.list_apps():
+            revision_number = app.current_revision_number
+            if revision_number is None:
+                continue
+            for entry in self.diagnostics_service.semantic_lock(app.name, revision_number) or []:
+                if entry.get("lane") == "fusion":
+                    continue
+                if entry.get("lane") in ("frozen", "raw"):
+                    for model in entry.get("models") or ["(unknown model)"]:
+                        bypasses.setdefault(str(model), []).append(
+                            {
+                                "app": app.name,
+                                "revision_number": revision_number,
+                                "path": entry.get("path"),
+                                "lane": entry["lane"],
+                            }
+                        )
+                    continue
+                for kind in ("metrics", "dimensions"):
+                    for field, definition_hash in (entry.get(kind) or {}).items():
+                        models.setdefault(str(entry.get("model")), {}).setdefault(field, []).append(
+                            {
+                                "app": app.name,
+                                "revision_number": revision_number,
+                                "path": entry.get("path"),
+                                "kind": kind[:-1],
+                                "definition_hash": definition_hash,
+                            }
+                        )
+        return {
+            "models": models,
+            "bypasses": bypasses,
+            "note": (
+                "Fields used by each app's live revision, recorded when it was built. definition_hash is the "
+                "field's hash at that time; compare it with SEMANTIC_AGENT.DEFINITION_HASHES_FOR_AGENT to see "
+                "which dashboards a definition change has reached. bypasses lists query files that don't follow "
+                "definition changes at all: lane 'frozen' is SQL saved from the compiler, lane 'raw' computes "
+                "from the model's source tables. A metric change never reaches them; review them by hand."
+            ),
+        }
 
     def git_drift_report(self) -> dict[str, Any]:
         """Return a comparison between desired Git state and the observed runtime state."""
@@ -491,6 +538,12 @@ class AppRuntimeService:
             build_status = "failed"
             build_summary = "Created initial revision from draft workspace, but artifact preflight failed."
             log_level = "error"
+            if app.status == "running":
+                # A failed first revision has nothing good to fall back on, so it must not
+                # serve viewers. Leave the app stopped; app_deploy_draft starts it once a
+                # revision passes preflight.
+                self.stop_app(app.name)
+                build_summary += " The app was not started."
         self.diagnostics_service.record_build_result(
             app.name,
             status=build_status,
@@ -515,9 +568,7 @@ class AppRuntimeService:
         app = self._require_app(name)
         revisions = self.registry.list_revisions(name)
         preview_mount = (
-            self.preview_path(name, app.preview_revision_number)
-            if app.preview_revision_number is not None
-            else None
+            self.preview_path(name, app.preview_revision_number) if app.preview_revision_number is not None else None
         )
 
         if preview_mount is not None:
@@ -677,9 +728,7 @@ class AppRuntimeService:
                     revision_number=revision.revision_number,
                 )
                 build_status = "failed"
-                build_summary = (
-                    f"Built revision {revision.revision_number}, but artifact preflight failed."
-                )
+                build_summary = f"Built revision {revision.revision_number}, but artifact preflight failed."
                 log_level = "error"
                 self._append_canonical_event(
                     name,
@@ -740,9 +789,7 @@ class AppRuntimeService:
     ) -> dict[str, Any]:
         with self._locked_app_operation(name, "app_patch_file"):
             self._require_app(name)
-            result = self.workspace_service.patch_file(
-                name, path, search, replace, replace_all=replace_all
-            )
+            result = self.workspace_service.patch_file(name, path, search, replace, replace_all=replace_all)
             self.registry.append_event(name, "workspace_patched", data=result)
             self.diagnostics_service.append_log(
                 name,
@@ -959,9 +1006,7 @@ class AppRuntimeService:
         emit the audit event, log, and return the refreshed status."""
 
         revision = self._require_current_revision(name)
-        self._write_live_desired_state_for_revision(
-            name, revision, commit_message=commit_message, **write_kwargs
-        )
+        self._write_live_desired_state_for_revision(name, revision, commit_message=commit_message, **write_kwargs)
         self._reconcile_or_raise(name)
         self.registry.append_event(name, event_type, data=event_data)
         self.diagnostics_service.append_log(name, "runtime", log_message, data=log_data)
@@ -1129,6 +1174,12 @@ class AppRuntimeService:
         sql_smoke_probe = self._sql_smoke_probe(name, revision)
         probes.append(sql_smoke_probe)
         overall_status = self.prober._downgrade(overall_status, sql_smoke_probe)
+        semantic_models_probe = self.prober._semantic_models_probe(
+            sql_smoke_probe,
+            built_definitions=self.diagnostics_service.semantic_lock(name, revision.revision_number),
+        )
+        probes.append(semantic_models_probe)
+        overall_status = self.prober._downgrade(overall_status, semantic_models_probe)
 
         # Phase 3: when running in isolated mode, surface the worker process state alongside
         # the existing HTTP probes. In in_process mode the probe records "not_applicable" so
@@ -1174,9 +1225,7 @@ class AppRuntimeService:
         mount_path = self._preflight_mount_path(name, revision_number)
         existing_errors = self.diagnostics_service.list_errors(name, limit=0)["errors"]
         existing_error_ids = {
-            record["id"]
-            for record in existing_errors
-            if isinstance(record, dict) and isinstance(record.get("id"), str)
+            record["id"] for record in existing_errors if isinstance(record, dict) and isinstance(record.get("id"), str)
         }
         probes = [
             {
@@ -1218,12 +1267,30 @@ class AppRuntimeService:
             # or no queries/*.sql files, so this doesn't affect non-Exasol apps.
             sql_smoke_probe = self._sql_smoke_probe(name, revision)
             probes.append(sql_smoke_probe)
+            smoke_details = sql_smoke_probe.get("details", {})
+            # What the revision's queries depend on: Semantic SQL fields with their definition
+            # hashes, plus files that bypass the model (frozen compiler output, raw table reads).
+            # For fused models, also how they were fused and how their reconciled attributes were
+            # answered, so the healthcheck can say what moved since.
+            fusion_entries = [
+                {
+                    "lane": "fusion",
+                    "model": model["model"],
+                    "fusion_layout": model["fusion_layout"],
+                    "fusion_health": model["fusion_health"],
+                }
+                for model in smoke_details.get("semantic_models") or []
+                if model.get("fusion_layout")
+            ]
+            lock_entries = [
+                *(smoke_details.get("definitions") or []),
+                *(smoke_details.get("semantic_bypasses") or []),
+                *fusion_entries,
+            ]
+            if lock_entries:
+                self.diagnostics_service.record_semantic_lock(name, revision.revision_number, lock_entries)
             overall_status = (
-                "passed"
-                if all(
-                    probe["status"] in ("passed", "not_applicable") for probe in probes
-                )
-                else "failed"
+                "passed" if all(probe["status"] in ("passed", "not_applicable") for probe in probes) else "failed"
             )
             if sql_smoke_probe["status"] == "failed":
                 # Surface a top-level error_payload so app_validate / app_deploy_draft
@@ -1233,8 +1300,7 @@ class AppRuntimeService:
                 error_payload = {
                     "category": "artifact_preflight_failed",
                     "summary": (
-                        f"SQL smoke-test failed for {failed_file}: "
-                        f"{details.get('latest_error') or 'unknown error'}"
+                        f"SQL smoke-test failed for {failed_file}: {details.get('latest_error') or 'unknown error'}"
                     ),
                     "details": details,
                 }
@@ -1427,9 +1493,7 @@ class AppRuntimeService:
         artifact_comparison = self._artifact_comparison_report(
             name,
             traceback=(
-                error_for_comparison.get("parsed_traceback")
-                if isinstance(error_for_comparison, dict)
-                else None
+                error_for_comparison.get("parsed_traceback") if isinstance(error_for_comparison, dict) else None
             ),
             error_record=error_for_comparison if isinstance(error_for_comparison, dict) else None,
         )
@@ -1503,19 +1567,13 @@ class AppRuntimeService:
                     traceback=inspected,
                     error_record=latest_error,
                 )
-                recovery_category = (
-                    "artifact_mismatch"
-                    if comparison["hints"]
-                    else inspected["category"]
-                )
+                recovery_category = "artifact_mismatch" if comparison["hints"] else inspected["category"]
                 return {
                     "app": self._serialize_app_row(self._require_app(name)),
                     "traceback": inspected,
                     "artifact_comparison": comparison,
                     "artifact_guidance": comparison["hints"],
-                    "suggested_recovery_steps": self.diagnostics_service.suggested_recovery_steps(
-                        recovery_category
-                    ),
+                    "suggested_recovery_steps": self.diagnostics_service.suggested_recovery_steps(recovery_category),
                 }
             else:
                 raise DashServerError(
@@ -1536,9 +1594,7 @@ class AppRuntimeService:
             "traceback": inspected,
             "artifact_comparison": comparison,
             "artifact_guidance": comparison["hints"],
-            "suggested_recovery_steps": self.diagnostics_service.suggested_recovery_steps(
-                recovery_category
-            ),
+            "suggested_recovery_steps": self.diagnostics_service.suggested_recovery_steps(recovery_category),
         }
 
     def start_preview(self, name: str, revision_number: int) -> dict[str, Any]:
@@ -1568,13 +1624,12 @@ class AppRuntimeService:
             )
             return self._serialize_status(app.name)
 
-    def promote_revision(
-        self, name: str, revision_number: int, *, require_healthy: bool = False
-    ) -> dict[str, Any]:
+    def promote_revision(self, name: str, revision_number: int, *, require_healthy: bool = False) -> dict[str, Any]:
         with self._locked_app_operation(name, "app_promote_revision", source="runtime"):
             app = self._require_app(name)
             revision = self._require_revision(name, revision_number)
-            if require_healthy and self._revision_has_recorded_failure(name, revision_number):
+            has_recorded_failure = self._revision_has_recorded_failure(name, revision_number)
+            if require_healthy and has_recorded_failure:
                 # PS26-BUG-006: by default (require_healthy=False, unchanged from
                 # before this existed) promotion is unconditional - a revision whose
                 # own preview healthcheck reported degraded promotes silently. This
@@ -1626,7 +1681,14 @@ class AppRuntimeService:
                 revision_number=revision.revision_number,
                 data={"route": app.route},
             )
-            return self._serialize_status(app.name)
+            promoted = self._serialize_status(app.name)
+            if has_recorded_failure:
+                promoted["warnings"] = [
+                    f"Revision {revision.revision_number} has a recorded build-preflight or data-layer failure; "
+                    "it is now live anyway. Check app_get_diagnostics, or pass require_healthy: true to refuse "
+                    "such promotions."
+                ]
+            return promoted
 
     def rollback(self, name: str) -> dict[str, Any]:
         with self._locked_app_operation(name, "app_rollback", source="runtime"):
@@ -1763,9 +1825,7 @@ class AppRuntimeService:
         return {
             "app": self._serialize_app_row(app),
             "current_revision": self._revision_metadata(current_revision),
-            "preview_revision": (
-                self._revision_metadata(preview_revision) if preview_revision is not None else None
-            ),
+            "preview_revision": (self._revision_metadata(preview_revision) if preview_revision is not None else None),
             "rollback_revision": (
                 self._revision_metadata(rollback_revision) if rollback_revision is not None else None
             ),
@@ -1841,9 +1901,7 @@ class AppRuntimeService:
         raw_outputs = raw_consumption.get("outputs") if isinstance(raw_consumption, dict) else []
         output_count = len(raw_outputs) if isinstance(raw_outputs, list) else 0
         live_published = bool(app_row["published"])
-        live_visible = live_published and (
-            live_decision is None or bool(live_decision.allowed)
-        )
+        live_visible = live_published and (live_decision is None or bool(live_decision.allowed))
         live = {
             "path": app.route if live_visible else None,
             "enabled": app.enabled,
@@ -1854,9 +1912,7 @@ class AppRuntimeService:
             "access": live_decision.to_dict() if live_decision is not None else None,
         }
         preview_available = bool(app_row["preview_path"] and app_row["preview_mounted"])
-        preview_visible = preview_available and (
-            preview_decision is None or bool(preview_decision.allowed)
-        )
+        preview_visible = preview_available and (preview_decision is None or bool(preview_decision.allowed))
         preview = {
             "path": app_row["preview_path"],
             "available": preview_available,
@@ -1892,9 +1948,7 @@ class AppRuntimeService:
             "consumption": {
                 "path": f"/manage/apps/{app.name}/consumption",
                 "output_count": output_count,
-                "visible": output_count > 0 and (
-                    export_decision is None or bool(export_decision.allowed)
-                ),
+                "visible": output_count > 0 and (export_decision is None or bool(export_decision.allowed)),
                 "access": export_decision.to_dict() if export_decision is not None else None,
             },
         }
@@ -2124,9 +2178,7 @@ class AppRuntimeService:
                 "draft_vs_latest_build": self._file_state(
                     draft_files.get(focused_path), latest_built_files.get(focused_path)
                 ),
-                "draft_vs_live": self._file_state(
-                    draft_files.get(focused_path), live_files.get(focused_path)
-                ),
+                "draft_vs_live": self._file_state(draft_files.get(focused_path), live_files.get(focused_path)),
                 "live_vs_latest_build": self._file_state(
                     live_files.get(focused_path), latest_built_files.get(focused_path)
                 ),
@@ -2150,13 +2202,9 @@ class AppRuntimeService:
             "latest_built_revision": self._revision_metadata(latest_built_revision),
             "live_revision": self._revision_metadata(current_revision),
             "draft_vs_latest_build_has_changes": any(
-                entry.get("status") != "unchanged"
-                for entry in draft_vs_latest_build["files"]
+                entry.get("status") != "unchanged" for entry in draft_vs_latest_build["files"]
             ),
-            "draft_vs_live_has_changes": any(
-                entry.get("status") != "unchanged"
-                for entry in draft_vs_live["files"]
-            ),
+            "draft_vs_live_has_changes": any(entry.get("status") != "unchanged" for entry in draft_vs_live["files"]),
             "hints": hints,
         }
 
@@ -2241,17 +2289,11 @@ class AppRuntimeService:
         path = focused_file["path"]
         hints: list[str] = []
         if focused_file["draft_vs_latest_build"] == "different":
-            hints.append(
-                f"The draft now contains newer content for {path} than the latest built artifact."
-            )
+            hints.append(f"The draft now contains newer content for {path} than the latest built artifact.")
         elif focused_file["draft_vs_latest_build"] == "missing_left":
-            hints.append(
-                f"The latest built artifact still contains {path}, but the current draft does not."
-            )
+            hints.append(f"The latest built artifact still contains {path}, but the current draft does not.")
         elif focused_file["draft_vs_latest_build"] == "missing_right":
-            hints.append(
-                f"The current draft contains {path}, but the latest built artifact does not."
-            )
+            hints.append(f"The current draft contains {path}, but the latest built artifact does not.")
 
         if (
             current_revision.revision_number != latest_built_revision.revision_number
@@ -2260,20 +2302,13 @@ class AppRuntimeService:
             hints.append(
                 f"The live revision and latest built artifact differ for {path}; verify which revision the traceback came from before patching."
             )
-        if (
-            focused_file["source_context"] == "current_live_revision"
-            and focused_file["draft_vs_live"] == "different"
-        ):
-            hints.append(
-                f"The traceback points at the live revision, but the draft has already diverged for {path}."
-            )
+        if focused_file["source_context"] == "current_live_revision" and focused_file["draft_vs_live"] == "different":
+            hints.append(f"The traceback points at the live revision, but the draft has already diverged for {path}.")
         if (
             focused_file["source_context"] == "latest_built_artifact"
             and focused_file["draft_vs_latest_build"] == "different"
         ):
-            hints.append(
-                f"The traceback points at the latest built artifact, not the current draft, for {path}."
-            )
+            hints.append(f"The traceback points at the latest built artifact, not the current draft, for {path}.")
         return hints
 
     def _require_revision(self, name: str, revision_number: int) -> AppRevision:
@@ -2311,7 +2346,9 @@ class AppRuntimeService:
                 details={"app": app_name, "validation": validation},
             )
 
-        manifest = validate_manifest_payload(json.loads(self.workspace_service.read_file(app_name, APP_MANIFEST_FILENAME)))
+        manifest = validate_manifest_payload(
+            json.loads(self.workspace_service.read_file(app_name, APP_MANIFEST_FILENAME))
+        )
         artifact_path, source_hash, dependency_lock_hash = self._write_workspace_artifact(app_name, 1)
         git_revision = self._materialize_git_revision(
             app_name,
@@ -2593,9 +2630,7 @@ class AppRuntimeService:
         *,
         commit_message: str,
     ) -> None:
-        self.reconciler._write_preview_desired_state_for_revision(
-            app_name, revision, commit_message=commit_message
-        )
+        self.reconciler._write_preview_desired_state_for_revision(app_name, revision, commit_message=commit_message)
 
     def _reconcile_app_desired_state(
         self,
@@ -2719,19 +2754,11 @@ class AppRuntimeService:
     def _data_layer_probe(self, app_name: str, *, revision_number: int | None) -> dict[str, Any]:
         return self.prober._data_layer_probe(app_name, revision_number=revision_number)
 
-    def _worker_http_probe(
-        self, *, mount_path: str, revision_number: int | None
-    ) -> dict[str, Any]:
-        return self.prober._worker_http_probe(
-            mount_path=mount_path, revision_number=revision_number
-        )
+    def _worker_http_probe(self, *, mount_path: str, revision_number: int | None) -> dict[str, Any]:
+        return self.prober._worker_http_probe(mount_path=mount_path, revision_number=revision_number)
 
-    def _worker_alive_probe(
-        self, *, mount_path: str, revision_number: int | None
-    ) -> dict[str, Any]:
-        return self.prober._worker_alive_probe(
-            mount_path=mount_path, revision_number=revision_number
-        )
+    def _worker_alive_probe(self, *, mount_path: str, revision_number: int | None) -> dict[str, Any]:
+        return self.prober._worker_alive_probe(mount_path=mount_path, revision_number=revision_number)
 
     def _preflight_mount_path(self, app_name: str, revision_number: int) -> str:
         return f"/__dash-server/preflight/{app_name}/{revision_number}/{uuid.uuid4().hex}"
@@ -2750,9 +2777,7 @@ class AppRuntimeService:
             if isinstance(details, dict):
                 traceback_text = details.get("traceback_text")
                 if isinstance(traceback_text, str) and traceback_text.strip():
-                    return self.diagnostics_service.inspect_traceback(traceback_text)["traceback"][
-                        "category"
-                    ]
+                    return self.diagnostics_service.inspect_traceback(traceback_text)["traceback"]["category"]
             category = error.get("category")
             if isinstance(category, str) and category:
                 return category

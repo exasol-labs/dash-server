@@ -937,6 +937,10 @@ Health checks in `AppRuntimeService` probe mounted live and preview routes and v
 Dependency placement has two modes:
 
 - `shared` uses `DependencyInstaller` and the server interpreter. This is the local-development default.
+  An install may only add packages: a requirement that excludes the installed version of a package
+  in the server's environment fails the install (`conflicts`), and every install runs with the
+  environment's installed versions as constraints, so a new package's own dependencies can't change
+  them either.
 - `per_app` uses `DependencyEnvironmentService` to create content-addressed environments from app requirements, reuse identical environments, maintain a wheel cache, and garbage-collect unused environments. This is required in hosted mode unless the unsafe-development override is enabled.
 
 Dependency isolation and runtime isolation are orthogonal. A per-app environment can be used for

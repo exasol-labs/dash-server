@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -75,10 +77,73 @@ def query_rows(
         params=params,
     )
     if result.get("status") != "ok":
-        error_text = result.get("error", "Unknown Exasol error")
+        error_text = str(result.get("error", "Unknown Exasol error"))
         _record_data_layer_error(server, metadata, sql_relative_path, error_text)
-        return [{"_error": error_text}]
+        return [{"_error": viewer_error_message(error_text)}]
+    _record_data_layer_success(server, metadata, sql_relative_path)
     return _records_from_result(result)
+
+
+# pyexasol renders errors as a block of `key => value` lines. Only the `message` line is
+# meant for people; the rest (dsn, user, session_id, query) is connection detail.
+_PYEXASOL_MESSAGE_RE = re.compile(r"^\s*message\s*=>\s*(.*?)(?=^\s*\w+\s*=>|^\)|\Z)", re.MULTILINE | re.DOTALL)
+_SESSION_SUFFIX_RE = re.compile(r"\s*\(Session: \d+\)")
+
+
+def error_reference(error_text: str) -> str:
+    """Short id tying a viewer-facing message to its full diagnostics record."""
+
+    return hashlib.sha1(error_text.strip().encode("utf-8", errors="replace")).hexdigest()[:8]
+
+
+def describe_query_error(exc: Exception) -> str:
+    """The text of an error from running a query file, explaining pyexasol formatting failures.
+
+    pyexasol formats query text before sending it, reading every ``{...}`` as a parameter
+    placeholder. Literal braces (JSON in an ``EXECUTE SCRIPT`` argument, say) then fail with a
+    bare ``KeyError: '"model"'`` that names neither the cause nor the fix.
+    """
+
+    if isinstance(exc, (KeyError, IndexError, ValueError)) and _raised_while_formatting(exc):
+        return (
+            f"The SQL text could not be formatted ({type(exc).__name__}: {exc}). pyexasol reads {{...}} in "
+            "query text as a parameter placeholder: write literal braces as {{ and }} (for example JSON in an "
+            "EXECUTE SCRIPT argument), or pass a value for the placeholder. See dash://exasol/help/sql-placeholders."
+        )
+    return str(exc)
+
+
+def _raised_while_formatting(exc: Exception) -> bool:
+    """True when ``exc`` came out of ``str.format``-style formatting (pyexasol's ExaFormatter)."""
+
+    traceback = exc.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_name in {"format", "vformat", "_vformat", "get_value", "get_field"}:
+            return True
+        traceback = traceback.tb_next
+    # str.format's C implementation leaves no Python frame for a malformed format string.
+    return isinstance(exc, ValueError) and "format string" in str(exc)
+
+
+def database_message(error_text: str) -> str:
+    """The database's own message from a pyexasol error, or ``""`` for any other error text."""
+
+    match = _PYEXASOL_MESSAGE_RE.search(error_text)
+    return _SESSION_SUFFIX_RE.sub("", match.group(1)).strip() if match else ""
+
+
+def viewer_error_message(error_text: str) -> str:
+    """The part of a data-layer error that is safe to show a dashboard viewer.
+
+    Keeps the database's own message (an Exasol or Semantic Views error, which is what
+    tells someone what went wrong) and drops the DSN, user, session id and SQL text. The
+    full error goes to `dash://apps/{name}/errors`; the reference finds it there.
+    """
+
+    message = database_message(error_text)
+    if not message:
+        message = "The data source could not answer this query."
+    return f"{message} (error ref {error_reference(error_text)})"
 
 
 def _record_data_layer_error(
@@ -114,6 +179,25 @@ def _record_data_layer_error(
             sql_file=sql_relative_path,
             profile_name=profile_name if isinstance(profile_name, str) else "",
             error_text=str(error_text),
+            revision_number=revision_number if isinstance(revision_number, int) else None,
+        )
+    except Exception:
+        # Diagnostics is best-effort; never let it kill a Dash callback.
+        return
+
+
+def _record_data_layer_success(server: Flask, metadata: dict[str, Any], sql_relative_path: str) -> None:
+    """Best-effort: let the `data_layer` probe know this SQL file works again."""
+
+    try:
+        diagnostics = server.extensions.get("diagnostics_service") if server is not None else None
+        app_name = metadata.get("name") if isinstance(metadata, dict) else None
+        if diagnostics is None or not isinstance(app_name, str) or not app_name:
+            return
+        revision_number = metadata.get("revision_number")
+        diagnostics.record_data_layer_success(
+            app_name,
+            sql_file=sql_relative_path,
             revision_number=revision_number if isinstance(revision_number, int) else None,
         )
     except Exception:

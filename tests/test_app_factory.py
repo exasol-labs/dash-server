@@ -13,6 +13,7 @@ import pytest
 from _helpers import base_test_config
 from dash_server.app_factory import create_app
 from dash_server.dash_apps.branding import apply_hosted_footer
+from dash_server.exceptions import DashServerError
 
 
 @pytest.mark.slow
@@ -1794,6 +1795,42 @@ def test_exasol_bootstrap_overwrite_applies_changed_settings(tmp_path, caplog):
             )
         )
     assert not [record for record in caplog.records if "exasol bootstrap" in record.getMessage()]
+
+
+def test_exasol_bootstrap_stores_session_init_sql(tmp_path):
+    app = create_app(
+        _exasol_bootstrap_config(
+            tmp_path,
+            EXASOL_BOOTSTRAP_SESSION_INIT_SQL=(
+                "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR; "
+                "OPEN SCHEMA SEMANTIC_SALES;"
+            ),
+        )
+    )
+
+    assert _stored_exasol_profile(app)["query_defaults"]["session_init_sql"] == [
+        "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR",
+        "OPEN SCHEMA SEMANTIC_SALES",
+    ]
+
+
+def test_exasol_bootstrap_reports_session_init_sql_drift(tmp_path, caplog):
+    create_app(_exasol_bootstrap_config(tmp_path))
+    caplog.clear()
+
+    with caplog.at_level("WARNING"):
+        create_app(_exasol_bootstrap_config(tmp_path, EXASOL_BOOTSTRAP_SESSION_INIT_SQL="OPEN SCHEMA MART"))
+
+    warnings = [record.getMessage() for record in caplog.records if "exasol bootstrap" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "session_init_sql: stored=[], env=['OPEN SCHEMA MART']" in warnings[0]
+
+
+def test_exasol_bootstrap_rejects_invalid_session_init_sql(tmp_path):
+    with pytest.raises(
+        DashServerError, match="DASH_SERVER_EXASOL_SESSION_INIT_SQL is invalid: statement 1 must be a session statement"
+    ):
+        create_app(_exasol_bootstrap_config(tmp_path, EXASOL_BOOTSTRAP_SESSION_INIT_SQL="DELETE FROM MART.ORDERS"))
 
 
 def test_exasol_bootstrap_is_silent_and_commit_free_when_profile_matches(tmp_path, caplog):

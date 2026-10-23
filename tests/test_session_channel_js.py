@@ -448,9 +448,7 @@ def test_ctx_set_props_goes_through_the_supported_clientside_api() -> None:
     assert report["result"]["ok"] is True
     # The channel also uses set_props on its own Interval for adaptive pacing, so filter
     # to the component under test rather than asserting on the whole call list.
-    component_calls = [
-        call for call in report["set_props_calls"] if not call["id"].startswith("__dash-server")
-    ]
+    component_calls = [call for call in report["set_props_calls"] if not call["id"].startswith("__dash-server")]
     assert component_calls == [{"id": "region-filter", "props": {"value": ["APAC"]}}]
 
 
@@ -458,9 +456,7 @@ def test_the_channel_repaces_its_own_interval_from_the_server() -> None:
     """Adaptive polling: the server's interval is pushed onto the dcc.Interval."""
 
     report = _run("1")
-    pacing_calls = [
-        call for call in report["set_props_calls"] if call["id"].startswith("__dash-server")
-    ]
+    pacing_calls = [call for call in report["set_props_calls"] if call["id"].startswith("__dash-server")]
     assert {"id": "__dash-server-session-interval", "props": {"interval": 250}} in pacing_calls
 
 

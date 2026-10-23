@@ -1,0 +1,78 @@
+{
+  "resource": "dash://exasol/help/semantic-layer",
+  "summary": "Build Exasol dashboards on the governed semantic layer (Exasol Semantic Views) when the database has one, so each number is the certified definition and multi-grain or multi-source data is combined correctly.",
+  "why": "Metric SQL written by hand over raw tables can disagree with the certified definition (a different status filter, a different cost formula) or double-count when an order-level amount is summed over order lines. Validation, SQL smoke and the healthcheck all pass in that case, because the SQL is valid: only the number is wrong.",
+  "check_first": [
+    "exasol_profile_validate lists the published semantic models the profile can see (semantic_layer.models), and whether each one's preprocessor is active in the profile's sessions.",
+    "Before writing any metric SQL, look for published semantic models: SELECT MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION, AGENT_READINESS FROM SEMANTIC_AGENT.MODELS_FOR_AGENT WHERE MODEL_STATUS = 'PUBLISHED'. If the view doesn't exist, the database has no semantic layer; write SQL as usual.",
+    "If a published model covers the question, query its published views (SEMANTIC_<MODEL>.<OBJECT>) instead of the tables behind them. SEMANTIC_<MODEL>.SEMANTIC_DISCOVERY and SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT describe what the model offers.",
+    "Find fields in SEMANTIC_AGENT.FIELDS_FOR_AGENT and valid metric/dimension pairs in SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT. A pair that isn't listed is not valid (usually a grain fan-out).",
+    "If the model lacks a metric the user asked for, say so. Don't silently hand-write it next to certified ones; if you must derive a number, label it as not certified in the dashboard."
+  ],
+  "profile_setup": {
+    "summary": "Semantic SQL needs the model's SQL preprocessor active in every session. Declare it once on the profile; dash-server runs it on every connection it opens (dashboards, SQL smoke, exports).",
+    "session_init_sql": [
+      "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+    ],
+    "setup_statements": "Either statement activates the preprocessor and either works in session_init_sql: ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR (names the preprocessor), or EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL() (the form SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT names). MODELS_FOR_AGENT.PREPROCESSOR_QUALIFIED_NAME says which preprocessor a model needs.",
+    "steps": [
+      "exasol_profile_create_local with session_init_sql. To add it to an existing profile, pass just name, overwrite: true and session_init_sql; the profile's other settings are kept.",
+      "exasol_profile_validate and confirm session_init.status == \"applied\"."
+    ],
+    "grants": "A profile user other than SYS needs the model granted (EXECUTE SCRIPT SEMANTIC_ADMIN.GRANT_MODEL_ROLE('<model>', '<role of the user>')) plus SELECT on the model's physical source tables. Broad privileges such as SELECT ANY TABLE are not enough: with them, the preprocessor can be set but semantic queries are refused."
+  },
+  "scaffolding": "app_scaffold_from_schema with schema_name set to a model's published schema (and table_name to an object) generates a dashboard for it: certified metrics, a trend over a time dimension and a breakdown by a category dimension, using only valid combinations. Its queries select unaliased columns; app.py reads labels, formats and certification from FIELDS_FOR_AGENT at runtime (queries/business/fields.sql) and shows the model version and last finished validation (queries/business/provenance.sql). Without schema_name it prefers a usable published model over raw tables; schema_blueprint.semantic_candidates lists the models.",
+  "writing_queries": [
+    "Select dimensions and metrics directly and group by the dimensions: SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region. A metric is already aggregated; don't wrap it in SUM() or AVG().",
+    "One statement per queries/*.sql file, as for any dashboard SQL. Put LIMIT in the SQL when you need a bounded result.",
+    "Result columns are named as SQL names them: upper-case unless aliased (TOTAL_REVENUE). Read rows by those names.",
+    "Values are typed: DECIMAL metrics arrive as int or decimal.Decimal; numbers with more than 15 significant digits stay strings.",
+    "Live Semantic SQL in queries/*.sql is the lane dash-server hosts. Semantic Views' per-request compile lane (EXECUTE SCRIPT SEMANTIC_ADMIN.COMPILE_REQUEST_JSON on every request) isn't supported: a query file runs as written, so the compiled SQL would need a second, server-side step. Don't save compiled SQL in queries/*.sql either (see never)."
+  ],
+  "never": [
+    "Never paste the GENERATED_SQL of SEMANTIC_ADMIN.COMPILE_SQL or COMPILE_REQUEST_JSON into queries/*.sql. It freezes today's definition: a certified metric fix never reaches the dashboard, a fused model's coverage and authority stop moving with the data. app_run_healthcheck's semantic_models probe fails on such files (details.frozen_files). Query the published view live.",
+    "Never put session setup (ALTER SESSION, EXECUTE SCRIPT ...ENABLE_SEMANTIC_SQL()) in queries/*.sql. It belongs in the profile's session_init_sql; a query file's session change is discarded so it can't leak into other apps."
+  ],
+  "presentation": {
+    "summary": "Take labels, descriptions, formats and certification from the model instead of hard-coding them, so a renamed or corrected metric keeps its certified label.",
+    "query": "SELECT SQL_COLUMN_NAME, DISPLAY_NAME, DESCRIPTION, FORMAT_HINT, UNIT_HINT, IS_CERTIFIED FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT WHERE MODEL_NAME = '<model>' AND OBJECT_NAME = '<object>'",
+    "notes": [
+      "Match result columns on SQL_COLUMN_NAME.",
+      "A percentage value is a fraction: 0.25 means 25%.",
+      "A currency value names its currency in UNIT_HINT."
+    ]
+  },
+  "provenance": [
+    "Show the model's validation state next to its numbers. Readiness (VALID, WARNING, INVALID, PRECONDITION) is MODELS_FOR_AGENT.AGENT_READINESS; VALIDATION_STATUS is the validation run's own OK, WARNING or ERROR. Take it from the newest finished run (SEMANTIC_SOURCE.VALIDATION_RUNS with STATUS <> 'RUNNING'): some Semantic Views checks leave a run unfinished, and MODELS_FOR_AGENT then reports VALID. The semantic scaffold's queries/business/provenance.sql does this; the issues are in SEMANTIC_SOURCE.VALIDATION_RESULTS.",
+    "For fused fields (FIELDS_FOR_AGENT.SOURCE_COUNT > 1 or FUSION_STRATEGY other than NONE), tell the viewer the number combines several sources.",
+    "For a fused model, show viewers what its numbers rest on: each partition's coverage window (SEMANTIC_AGENT.FUSION_FOR_AGENT, COVERAGE_PREDICATE where FUSION_ASPECT = 'PARTITION'), and for each reconciled attribute how many keys come from the first source, are filled from another, or are unresolved (EXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH('<model>'): read-only, so a query file may call it and SQL smoke runs it). Unresolved keys land in a NULL group.",
+    "Don't poll SEMANTIC_ADMIN.CHECK_PARTITION_COVERAGE from a dashboard on Semantic Views 0.5.0: every call leaves an unfinished validation run behind. SQL smoke skips query files that call it."
+  ],
+  "checks": [
+    "SQL smoke (app_build preflight, app_run_healthcheck) runs Semantic SQL exactly as the dashboard will, so an unknown field, an invalid combination or a dropped metric fails the check instead of waiting for a viewer.",
+    "A query file that reads a published model on a profile without the preprocessor fails SQL smoke with the session_init_sql line to add.",
+    "app_run_healthcheck's semantic_models probe reports each model the app reads, through its published schema or its source tables. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, or when a query file is saved compiled SQL (details.frozen_files). Each model that isn't VALID carries the rule codes and messages behind its status (issues). Readiness comes from the newest finished validation run, so a run left unfinished doesn't read as VALID. Hand-written SQL over a model's source tables is listed under details.raw_governed_reads without failing.",
+    "SQL smoke warns (sql_smoke details.warnings) when a query file reads a table that backs a published model, naming the published schema to use instead.",
+    "app_validate warns when a query file looks like saved COMPILE_SQL / COMPILE_REQUEST_JSON output.",
+    "Each build records the definition hash of every metric and dimension the app's Semantic SQL uses. app_run_healthcheck's semantic_models probe then lists fields whose definition changed since the revision was built (details.changed_since_build, each with change: definition, renamed with renamed_to, missing, or not_compiled): the dashboard already shows the new definition, so check that each panel's label and meaning still match.",
+    "dash://exasol/semantic-usage lists which live dashboards use which model fields: impact analysis before changing or dropping a metric. Its bypasses section lists dashboards that a metric change never reaches: saved compiled SQL (lane frozen) and SQL over the model's source tables (lane raw).",
+    "For a fused model, the semantic_models probe reports partitions and reconciled-attribute health (details.fusion), and what changed since the revision was built (details.fusion_changed_since_build): a moved partition boundary, or more keys filled or unresolved. Those change the numbers without changing any definition, so they're for review and don't fail the probe. A definition hash that moved together with the fusion layout is marked fusion_layout_changed."
+  ],
+  "prototyping": [
+    "The fastest reliable check of a semantic query is the dashboard's own: put it in queries/*.sql, deploy a preview, and run app_run_healthcheck.",
+    "The external Exasol MCP server can run Semantic SQL after set_exasol_preprocessor(SEMANTIC_ADMIN, SEMANTIC_PREPROCESSOR), if its user has the model grant.",
+    "The preprocessor is a session setting, and exasol-mcp-server 2.2.0 pools sessions: run Semantic SQL calls one at a time, never in parallel, since a concurrent call can land on a session without it. Any failed query also resets its session: after an error, check list_exasol_preprocessors and set the preprocessor again.",
+    "A semantic query failing with 'not a valid GROUP BY expression' (or SEMANTIC_SURFACE_001) means its session didn't have the preprocessor, not that the query is wrong: set it again and rerun.",
+    "row_limit works for semantic queries on Semantic Views 0.5.0 and later."
+  ],
+  "without_a_semantic_layer": [
+    "Aggregate a measure at its own grain before joining it to finer rows. An amount stored once per order (freight, shipping, order discount) summed over a join to order lines counts it once per line. Pre-aggregate the lines, or aggregate the order-level amount separately and join the results.",
+    "Spot-check a new metric against an independent total before shipping it."
+  ],
+  "reference": "Exasol Semantic Views documents the semantic side of this in docs/hosted-apps.md (repository exasol-labs/exasol-semantic-views): session setup, lanes, governed presentation, provenance, grants, and breaking-change history.",
+  "related_resources": [
+    "dash://exasol/help/connection-modes",
+    "dash://exasol/help/agent-workflow",
+    "dash://exasol/help/sql-placeholders"
+  ]
+}

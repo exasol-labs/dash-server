@@ -68,6 +68,7 @@ export DASH_SERVER_EXASOL_SECRETS_ROOT='/path/to/exasol-secrets'   # default: <i
 | `DASH_SERVER_EXASOL_DESCRIPTION` | `Local Exasol profile <name>.` | Human-readable description. |
 | `DASH_SERVER_EXASOL_STATEMENT_TIMEOUT_SECONDS` | `30` | Per-statement timeout. |
 | `DASH_SERVER_EXASOL_ROW_LIMIT` | `50000` | Maximum rows returned per query. |
+| `DASH_SERVER_EXASOL_SESSION_INIT_SQL` | unset | `;`-separated session statements run on every new connection; see [Session setup statements](#session-setup-statements). |
 | `DASH_SERVER_EXASOL_SECRETS_ROOT` | `<instance>/exasol-secrets` | Where secrets passed as `secret_value` are stored. |
 | `DASH_SERVER_EXASOL_OVERWRITE` | `false` | Rewrite an existing profile when it differs from these settings (see below). |
 
@@ -79,7 +80,8 @@ the `DASH_SERVER_EXASOL_*` settings, startup logs a warning listing each differi
 apply the settings, either:
 
 - set `DASH_SERVER_EXASOL_OVERWRITE=true` and restart, or
-- call `exasol_profile_create_local` with the new values and `overwrite=true`.
+- call `exasol_profile_create_local` with `overwrite=true` and the changed values; settings you
+  leave out, including the secret, keep their current values.
 
 That avoids two manual steps:
 
@@ -185,6 +187,7 @@ Optional fields:
 - `tls_verify`
 - `statement_timeout_seconds`
 - `row_limit`
+- `session_init_sql` (see [Session setup statements](#session-setup-statements))
 
 ### About `tls_verify`
 
@@ -225,6 +228,90 @@ and `exasol_profile_create_local` rejects it too, with an explanation. IPv6 lite
 supported in DSNs.
 
 Connecting to a self-signed Exasol with `tls_verify: true` fails with `[SSL: CERTIFICATE_VERIFY_FAILED]`. Setting it to `false` does not disable TLS — the websocket is still encrypted.
+
+### Session setup statements
+
+Some Exasol features are switched on per session rather than per query. `session_init_sql` lists
+statements that run on **every** connection the profile opens, before it is used: cached
+dashboard connections, SQL smoke checks during builds, exports, and `exasol_profile_validate`.
+It works like a BI tool's "initial SQL".
+
+The main use is [Exasol Semantic Views](https://github.com/exasol-labs/exasol-semantic-views):
+Semantic SQL against a published model only works once the session has its preprocessor
+activated. The `dash://exasol/help/semantic-layer` resource has the full recipe for dashboards on
+a semantic model: finding published models, query style, grants for a non-SYS profile user,
+governed labels from `FIELDS_FOR_AGENT`, and why compiled SQL must never be saved into
+`queries/*.sql`.
+
+```json
+"session_init_sql": [
+  "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+]
+```
+
+or, for the startup bootstrap:
+
+```bash
+export DASH_SERVER_EXASOL_SESSION_INIT_SQL='ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR'
+```
+
+Rules:
+
+- One statement per entry, at most 10. Only `ALTER SESSION`, `EXECUTE SCRIPT`, and
+  `OPEN SCHEMA` are accepted, since the statements run on every connection.
+- If a statement fails, the connection is closed and the query (or build check) fails with
+  `exasol_session_init_failed`, naming the statement. `exasol_profile_validate` reports the
+  outcome under `session_init` (`not_configured`, `applied`, or `failed`).
+- Changing a profile's settings (for example with `exasol_profile_create_local` and
+  `overwrite: true`) replaces cached connections on their next use.
+- Don't put session setup in a hosted app's `queries/*.sql`. A statement without a result set
+  returns no rows, and dash-server then discards the connection so one app's session change
+  can't leak into other apps sharing the profile.
+
+With the preprocessor active, the SQL smoke check (during builds and in `app_run_healthcheck`)
+validates Semantic SQL exactly as it runs, so a dropped metric fails the next healthcheck
+instead of waiting for a viewer. (A query Semantic Views refuses only inside the check's nested
+`WHERE 1=0` probe, such as a renamed metric's old name in an ungrouped select, is checked through
+its `COMPILE_SQL` output instead and passes with a warning.) A query file that reads a published semantic model
+on a profile *without* the preprocessor fails the smoke check with the `session_init_sql` line
+to add. `app_run_healthcheck` also reports each model the app reads in a `semantic_models`
+probe: it fails when a model is `INVALID`, `PRECONDITION`, or `NOT_PUBLISHED`, and lists models
+with validation warnings. Each model that isn't `VALID` carries the rule codes and messages behind
+its status (`issues`). Readiness comes from the model's newest *finished* validation run, read
+from `SEMANTIC_SOURCE` (granted with `SEMANTIC_USER`), so a run left unfinished doesn't make an
+invalid model read as `VALID`. Without that access such a model is reported as `UNKNOWN`.
+
+The probe also covers query files that bypass the model:
+- **Saved compiled SQL** (`COMPILE_SQL` / `COMPILE_REQUEST_JSON` output) fails the probe
+  (`details.frozen_files`), which degrades the app's health: it keeps the definitions of the day
+  it was compiled.
+- **Hand-written SQL over a model's source tables** is listed under
+  `details.raw_governed_reads` without failing.
+
+`dash://exasol/semantic-usage` lists both kinds under `bypasses`, so a metric owner sees the
+dashboards a definition change won't reach.
+
+For a **fused** model (partitions, alternate sources, reconciled attributes), the probe reports
+the partitions' coverage windows and how each reconciled attribute is answered
+(`details.fusion`, from Semantic Views' read-only `CHECK_FUSION_HEALTH`). It also compares both
+with the build: a moved partition boundary, or more keys filled from another source or left
+unresolved, is listed under `details.fusion_changed_since_build`. These change the numbers
+without changing any definition, so they don't fail the probe; `app_run_healthcheck`'s text lists
+them for review. A definition hash that moved together with the fusion layout is marked
+`fusion_layout_changed`: a boundary move changes the hash of every field on the entity.
+
+A query file may call `EXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH(...)` to show those counts
+to viewers; SQL smoke runs it as written. SQL smoke skips other `EXECUTE SCRIPT` files, which may
+change data, including `CHECK_PARTITION_COVERAGE`: on Semantic Views 0.5.0 it records an
+unfinished validation run on every call, so don't poll it from a dashboard.
+
+## pyexasol Telemetry
+
+pyexasol 3 sends an anonymized usage event to Exasol on every connection. dash-server
+disables this by setting `EXASOL_TELEMETRY_DISABLE=1` before it loads pyexasol, in every
+process that opens a connection. If the variable is already set, dash-server leaves it
+alone. pyexasol treats any value as "disabled", so telemetry cannot be turned back on through
+this variable.
 
 ## Which Credential Modes Are Supported
 
@@ -573,6 +660,11 @@ wrappers) **never raise on data-layer failure**. They always return:
 - on failure: a single-row envelope `[{"_error": "<message>"}]` (or the dict
   `{"_error": "..."}` from `query_one`).
 
+The message is written for viewers: the database's own error message plus an
+`(error ref …)` suffix. The DSN, database user, session id and SQL text are
+left out; the full error is recorded on `dash://apps/{name}/errors`, where
+`details.error_ref` matches the reference.
+
 This shape is intentional — Dash callbacks shouldn't surface raw 500s for
 upstream-data failures; they should render a friendly error panel. But the
 shape also means **`row["AGENT_ID"]` will `KeyError` on the error envelope** if
@@ -590,6 +682,24 @@ def render_agents(_):
         return render_error_panel(rows[0]["_error"])
     return [html.Tr([html.Td(r["AGENT_ID"]), html.Td(r["LATENCY_MS"])]) for r in rows]
 ```
+
+Row values are Python-typed:
+
+| Exasol column | Python value |
+|---|---|
+| `DECIMAL(p,0)` | `int` |
+| `DECIMAL(p,s)` | `decimal.Decimal` |
+| `DATE` | `datetime.date` |
+| `TIMESTAMP`, `TIMESTAMP WITH LOCAL TIME ZONE` | `datetime.datetime` (naive, in the session time zone) |
+| `DOUBLE` | `float` |
+| `BOOLEAN` | `bool` |
+| `VARCHAR`, `CHAR`, `INTERVAL`, `GEOMETRY`, `HASHTYPE` | `str` |
+
+Numbers with more than 15 significant digits stay `str`, because a browser stores numbers as
+doubles and would round them on screen. Values in a non-ISO session date format also stay `str`.
+Dash and plotly serialize `Decimal` and dates natively, so rows can go straight into figures and
+tables. Format them with `strftime()` / format specs rather than string slicing, and convert a
+`Decimal` with `float()` before mixing it into float arithmetic.
 
 The same envelope is what the `_record_data_layer_error` recorder fires on, so
 treating it explicitly is what lights up `dash://apps/{name}/errors`, the

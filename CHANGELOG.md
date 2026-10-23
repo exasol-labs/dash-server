@@ -7,6 +7,202 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
+dash-server 0.2.0 builds dashboards on governed metrics: Exasol Semantic Views models can be used
+from hosted dashboards, and the checks follow the model, catching changes to the definitions and
+data a dashboard depends on. It also moves to pyexasol 3 and returns typed query values.
+
+### Upgrade notes
+- **Typed query values.** `query_rows`, `query_one`, `query_scalar` and the generated `load_*`
+  wrappers return `DECIMAL` as `int` or `decimal.Decimal`, `DATE` as `datetime.date`, and
+  `TIMESTAMP` as `datetime.datetime`, instead of mostly strings. App code that treats them as
+  strings, such as `row["DAY"][:7]` or `date.fromisoformat(row["DAY"])`, must be updated.
+- **A failing first revision isn't started.** When a new app's first revision fails artifact
+  preflight, the app is left stopped instead of serving viewers. Fix the draft and run
+  `app_deploy_draft`, which builds, checks, and starts it.
+- **Viewer-facing error text changed.** The `_error` envelope holds the database's message plus an
+  `(error ref …)` suffix, without connection details or SQL; the full error is on
+  `dash://apps/{name}/errors`.
+- **Shared dependency installs only add packages.** An app requirement that excludes a version the
+  server's environment already has now fails validation with `conflicts`, instead of changing the
+  server's packages.
+- **`exasol_profile_create_local` requires only `name` in its schema.** Creating a profile still
+  needs the connection settings and a secret; a rewrite with `overwrite: true` keeps what it
+  leaves out.
+- pyexasol 3 is required (`>=3.0.1,<4.0`), with its usage telemetry turned off.
+
+### Added
+- Exasol profiles can declare session setup statements, `session_init_sql`: run on every new
+  connection the profile opens (dashboards, SQL smoke, exports, and `exasol_profile_validate`),
+  like a BI tool's "initial SQL". This makes Exasol Semantic Views usable from hosted dashboards:
+  set `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR` and
+  Semantic SQL works in `queries/*.sql`. Set it through `exasol_profile_create_local` or the
+  `DASH_SERVER_EXASOL_SESSION_INIT_SQL` bootstrap variable. Only `ALTER SESSION`,
+  `EXECUTE SCRIPT`, and `OPEN SCHEMA` are accepted. A failing statement closes the connection
+  and reports `exasol_session_init_failed`; `exasol_profile_validate` reports the outcome under
+  `session_init`. See `docs/exasol.md`.
+- `exasol_profile_validate` reports the published Exasol Semantic Views models the profile can
+  see (`semantic_layer`), including whether each model's preprocessor is active in the profile's
+  sessions. Its text names the models, and its next step says to build on them, or first to add
+  the `session_init_sql` they need.
+- `app_run_healthcheck` has a `semantic_models` probe for the Exasol Semantic Views models an
+  app's queries read, through their published schemas or their source tables:
+  - It fails when a model is `INVALID`, `PRECONDITION`, or `NOT_PUBLISHED`, and lists models with
+    validation warnings. Each model that isn't `VALID` carries the rule codes and messages behind
+    its status (`issues`).
+  - Readiness comes from the model's newest *finished* validation run, so a run left unfinished
+    (Semantic Views 0.5.0's `CHECK_PARTITION_COVERAGE` leaves one on every call) doesn't make an
+    invalid model read as `VALID`. Without read access to `SEMANTIC_SOURCE`, such a model is
+    reported as `UNKNOWN`.
+  - Saved compiled Semantic SQL (`COMPILE_SQL` / `COMPILE_REQUEST_JSON` output) fails the probe
+    (`frozen_files`), so the app reports `degraded` instead of `healthy`: such SQL keeps the
+    definitions of the day it was compiled. Hand-written SQL over a model's source tables is
+    listed under `raw_governed_reads`.
+  - Builds record the definition hash of every metric and dimension a query file uses (from the
+    `COMPILE_SQL` plan). The probe lists what changed since the revision was built
+    (`changed_since_build`): `definition`, `renamed` (with `renamed_to`, through the model's
+    synonyms), `missing`, or `not_compiled`. The dashboard already shows the new definitions, so
+    these are for review and don't fail the probe.
+  - For fused models, it reports partition coverage and how each reconciled attribute is answered
+    (`fusion`, from the read-only `CHECK_FUSION_HEALTH`), and what changed since the build
+    (`fusion_changed_since_build`): a moved partition boundary, or more keys filled or unresolved.
+    A definition hash that moved with the fusion layout is marked `fusion_layout_changed`.
+- `dash://exasol/semantic-usage`: which live dashboards use which model fields, with the
+  definition hash each was built against, and which bypass the model (`bypasses`). Impact analysis
+  before changing or dropping a metric.
+- `app_scaffold_from_schema` scaffolds a dashboard on a published semantic model: pass the
+  model's published schema as `schema_name` (and an object as `table_name`). Its Semantic SQL
+  selects certified metrics, a trend over a time dimension, and a breakdown by a category
+  dimension, all from valid metric/dimension combinations. The generated app reads labels,
+  formats (`FORMAT_HINT`, `UNIT_HINT`), and certification from the model at runtime, so changes
+  made there reach the dashboard, and shows a provenance strip: model version, last finished
+  validation, and how many metrics are certified (pattern `semantic-model`, without the Exasol
+  system tabs). Without `schema_name`, the scaffold prefers a usable published model over raw
+  tables.
+- `dash://exasol/help/semantic-layer`: agent guidance for dashboards on a Semantic Views model.
+  It covers checking for a published model before writing metric SQL, profile session setup (both
+  `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT` and `ENABLE_SEMANTIC_SQL()`) and grants, query
+  style, never saving compiled SQL, governed labels and formats, provenance and what to show for
+  a fused model, what the checks catch, and prototyping through the Exasol MCP server (one call at
+  a time; what `not a valid GROUP BY expression` means there). It also says the per-request
+  compile lane isn't supported. A `create_exasol_dashboard_on_semantic_model` workflow leads
+  `dash://meta/workflows`.
+- SQL smoke (build preflight and `app_run_healthcheck`) warns when a query file reads a table that
+  backs a published semantic model, naming the published schema to query instead (`sql_smoke`
+  probe, `details.warnings`), and `app_validate` warns when a query file looks like saved compiled
+  Semantic SQL. Neither fails the check.
+- SQL smoke runs query files that call `SEMANTIC_ADMIN.CHECK_FUSION_HEALTH` as written, and skips
+  other `EXECUTE SCRIPT` files with the reason instead of failing them inside its `WHERE 1=0`
+  wrapper.
+- `app_run_healthcheck`'s text states the health status and failed probes, and lists
+  semantic-model findings that pass but need review.
+- `app_promote_revision` adds a `warnings` entry when the revision has a recorded build-preflight
+  or data-layer failure (`require_healthy: true` still refuses it).
+
+### Changed
+- **Breaking for hosted apps:** dashboard queries (`query_rows`, `query_one`, `query_scalar`
+  and the generated `load_*` wrappers) now return `DECIMAL` values as `int` or
+  `decimal.Decimal`, `DATE` as `datetime.date`, and `TIMESTAMP` as `datetime.datetime`.
+  Before, pyexasol delivered most of these as strings, so charts and arithmetic needed manual
+  conversion. Numbers with more than 15 significant digits stay strings so the browser doesn't
+  round them, including 16–18 digit `DECIMAL(p,0)` values that used to arrive as `int`. The
+  generated scaffolds already work with typed values, and the agent guidance documents them.
+- An app whose first revision fails artifact preflight (from `app_create`,
+  `app_create_from_files`, `app_create_exasol_dashboard`, or `app_scaffold_from_schema`) is no
+  longer started: there is no earlier revision to fall back on, so the failing one would serve
+  viewers. The `artifact_preflight_failed` error says so; fix the draft and run
+  `app_deploy_draft`, which builds, checks, and starts the app. A preview `app_deploy_draft`
+  whose preflight failed says so in its result text, and preflight errors name the failing check.
+- Data-layer errors shown in dashboards (the `_error` envelope that `render_error_panel`
+  displays) carry only the database's own message plus an `(error ref …)` suffix. The DSN,
+  database user, session id and SQL text no longer reach viewers; the full error stays on
+  `dash://apps/{name}/errors`, whose `details.error_ref` matches the reference.
+- The SQL smoke check understands Exasol Semantic Views. A query file that reads a published
+  semantic model on a profile whose sessions don't activate the model's preprocessor fails with
+  the `session_init_sql` line to add; before, the `WHERE 1=0` probe could pass such a query and
+  it failed for the first viewer. A query Semantic Views refuses only inside that nested probe
+  (a renamed metric's old name in an ungrouped select, in 0.5.0) is checked through its compiled
+  SQL instead and passes with a warning.
+- `exasol_profile_create_local` with `overwrite: true` on an existing profile keeps every setting
+  the call leaves out, including the secret: `{name, overwrite: true, session_init_sql}` adds
+  session setup without restating the connection. A new DSN gets its own TLS default unless
+  `tls_verify` is given. Creating a profile still needs the connection settings and a secret.
+- Agent guidance routes semantic-first. The profile tools, `dash://meta/workflows`, and
+  `dash://exasol/help/connection-modes` suggest `app_create_from_files` and point to the
+  semantic-layer guidance when `exasol_profile_validate` lists a published model, instead of
+  `app_create_exasol_dashboard`. `dash://exasol/help/agent-workflow` starts with "check for a
+  governed semantic model first", and `dashboard-patterns` and `docs/getting-started.md` say the
+  prebuilt patterns don't read a semantic model. `exasol_profile_validate`'s `name` is described
+  as the profile name.
+- The Exasol skill (`skills/exasol_dash_skill.md`) has a semantic-layer section, and its creation
+  path advice now matches `dash://exasol/help/dashboard-patterns`: `app_create_from_files` is the
+  default once the dashboard is designed. It used to rank it last.
+- `dash://exasol/help/sql-placeholders` says to write literal braces as `{{ }}` and warns about
+  summing an order-level amount over order lines. A query that fails on an unescaped brace now
+  says so instead of reporting a bare `KeyError`.
+- `app_validate`'s "does not declare LIMIT or obvious aggregation" warning no longer fires for
+  Semantic SQL against a `SEMANTIC_*` schema (its metrics aggregate implicitly), and "Prefer one
+  statement per Exasol SQL file" ignores semicolons inside comments and string literals.
+- `app_scaffold_from_schema` no longer treats every `SEMANTIC_*` schema as platform-internal. Only
+  Semantic Views' own schemas (`SEMANTIC_ADMIN`, `SEMANTIC_AGENT`, `SEMANTIC_CATALOG`,
+  `SEMANTIC_SOURCE`, `SYS_SEMANTIC`) are skipped. Published model schemas are scaffolded through the
+  semantic path, and a user schema that merely starts with `SEMANTIC_` is ordinary data again.
+- A `data_layer` healthcheck error stops counting once its SQL file runs successfully again in
+  the same revision, so a repaired data source no longer needs `app_acknowledge_data_layer_errors`.
+  A repeat of the same error after a success is recorded even within the 60-second
+  deduplication window.
+- A query file whose statement returns no result set (such as `ALTER SESSION`) now returns no
+  rows instead of failing with "Attempt to fetch from statement without result set". The
+  cached connection is still discarded afterwards, so a session change can't leak into other
+  apps sharing the profile.
+- A cached Exasol connection is replaced when its profile's settings change (for example a
+  rewrite with `overwrite: true`). Before, a busy thread kept using a connection opened from the
+  old DSN, user, or session setup until it went idle.
+- Dependencies updated: pyexasol 3.0.1 (the upper bound is raised from `<3.0` to `<4.0`; 3.0.1 fixes
+  parsing of `INTERVAL DAY TO SECOND` values below 9-digit day precision, exasol/pyexasol#441),
+  cryptography 50.0.2, Werkzeug 3.1.9, pydantic 2.14.1, setuptools 84.2.1, ruff 0.17.1, and
+  mypy 2.4.0, plus transitive updates. pyexasol 3's breaking changes are in its DBAPI module
+  (type conversion defaults, removal of `pyexasol.db2`). dash-server uses `pyexasol.connect`,
+  whose results are unchanged. Scaffolded Exasol apps declare the server's own ranges in
+  `requirements.txt` (`dash>=4.3,<5.0`, `pyexasol>=3.0.1,<4.0`), and a test keeps them in step.
+- pyexasol 3 sends anonymized usage telemetry to Exasol on every connection. dash-server turns
+  this off by setting `EXASOL_TELEMETRY_DISABLE=1` before it loads pyexasol, unless the
+  variable is already set.
+- CI gates on mypy and `ruff format --check` (before, both only reported), as it already did on
+  `ruff check`, and runs the whole test suite, including the slow tests that start real apps and
+  worker processes. The codebase is formatted with `ruff format`; golden fixtures are excluded.
+  CI installs from `uv.lock` with `uv sync --locked`, which pins mypy and ruff to the locked
+  versions and fails the build if the lock has drifted from `pyproject.toml`.
+
+### Fixed
+- With shared dependencies (the default), an app's `requirements.txt` could change the versions
+  of packages in the server's own environment, including dash-server's dependencies, which broke
+  the server for every app. Installs now only add packages: a requirement that excludes an
+  installed version fails with `conflicts` naming it, and installs run with every installed version
+  pinned as a constraint.
+- XLSX exports now write `DECIMAL`, `DATE`, and `TIMESTAMP` columns as number and date cells.
+  Before, pyexasol delivered those values as strings, so they landed in the workbook as text
+  that couldn't be summed or sorted, despite what the docs said. The XLSX export connection
+  now uses a typed `fetch_mapper` built on pyexasol 3's `pyexasol.data_types`. CSV exports
+  are unchanged. Numbers with more than 15 significant digits are now written
+  as text, so Excel no longer rounds them (this includes `DECIMAL(16..18,0)` values that were
+  written as numbers before). Dates before 1900 and `INTERVAL` values are also written as text.
+- Isolated-mode app workers ignored `SIGTERM`. The worker's handler called `httpd.shutdown()` on
+  the thread running `serve_forever()`, which deadlocks, so only the manager's `SIGKILL` fallback
+  stopped them. Workers forked from the forkserver baseline also inherited the baseline's signal
+  handlers and listening socket: on `SIGTERM` they unlinked the baseline's socket file.
+- The forkserver baseline outlived its server: nothing stopped it when the server process ended,
+  and it was never adopted by the next one. It now exits when its parent process does.
+- Reading Exasol scaffold templates no longer passes two segments to `joinpath`. On Python
+  3.10 this fails for packages that are not installed as plain files on disk (for example
+  zip imports).
+- `mypy` passes cleanly. It previously reported 129 errors, mostly from the MCP server mixins
+  calling helpers defined on their siblings. `types-openpyxl` is added to the dev extras.
+- The test suite left worker and baseline processes running after every run of the
+  isolated-runtime tests. Tests now stop every worker manager they create.
+- Share links and invitations no longer use `datetime.utcnow()`, which Python 3.12 deprecates.
+
 ## [0.1.1] - 2026-09-28
 
 ### Added
@@ -135,6 +331,7 @@ database questions into live, query-backed dashboards through MCP. This release 
 - Agent-facing skills for building Exasol-backed Dash dashboards and using PyExasol
   directly, under [skills/](skills/).
 
-[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/exasol-labs/dash-server/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/exasol-labs/dash-server/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/exasol-labs/dash-server/releases/tag/v0.1.0

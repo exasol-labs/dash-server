@@ -48,9 +48,7 @@ class Config:
     SESSION_COOKIE_SAMESITE: str | None = os.environ.get("DASH_SERVER_SESSION_COOKIE_SAMESITE", "Lax")
     DASH_SERVER_MODE: str = os.environ.get("DASH_SERVER_MODE", "local")
     DASH_SERVER_AUTH_ENABLED: bool | None = (
-        _env_bool("DASH_SERVER_AUTH_ENABLED", False)
-        if os.environ.get("DASH_SERVER_AUTH_ENABLED") is not None
-        else None
+        _env_bool("DASH_SERVER_AUTH_ENABLED", False) if os.environ.get("DASH_SERVER_AUTH_ENABLED") is not None else None
     )
     DASH_SERVER_AUTH_PROVIDER: str | None = os.environ.get("DASH_SERVER_AUTH_PROVIDER")
     DASH_SERVER_PUBLIC_BASE_URL: str | None = os.environ.get("DASH_SERVER_PUBLIC_BASE_URL")
@@ -67,9 +65,7 @@ class Config:
     DASH_SERVER_OIDC_CLIENT_ID: str | None = os.environ.get("DASH_SERVER_OIDC_CLIENT_ID")
     DASH_SERVER_OIDC_CLIENT_SECRET_REF: str | None = os.environ.get("DASH_SERVER_OIDC_CLIENT_SECRET_REF")
     DASH_SERVER_OIDC_REDIRECT_URI: str | None = os.environ.get("DASH_SERVER_OIDC_REDIRECT_URI")
-    DASH_SERVER_OIDC_AUTHORIZATION_ENDPOINT: str | None = os.environ.get(
-        "DASH_SERVER_OIDC_AUTHORIZATION_ENDPOINT"
-    )
+    DASH_SERVER_OIDC_AUTHORIZATION_ENDPOINT: str | None = os.environ.get("DASH_SERVER_OIDC_AUTHORIZATION_ENDPOINT")
     DASH_SERVER_OIDC_SCOPES: str = os.environ.get("DASH_SERVER_OIDC_SCOPES", "openid email profile")
     DASH_SERVER_OIDC_GROUPS_CLAIM: str = os.environ.get("DASH_SERVER_OIDC_GROUPS_CLAIM", "groups")
     DASH_SERVER_OIDC_ORG_CLAIM: str | None = os.environ.get("DASH_SERVER_OIDC_ORG_CLAIM")
@@ -106,9 +102,7 @@ class Config:
     DASH_SERVER_EMAIL_SMTP_PORT: int = int(os.environ.get("DASH_SERVER_EMAIL_SMTP_PORT", "587"))
     DASH_SERVER_EMAIL_SMTP_USERNAME: str | None = os.environ.get("DASH_SERVER_EMAIL_SMTP_USERNAME")
     DASH_SERVER_EMAIL_SMTP_PASSWORD: str | None = os.environ.get("DASH_SERVER_EMAIL_SMTP_PASSWORD")
-    DASH_SERVER_EMAIL_SMTP_PASSWORD_ENV_VAR: str | None = os.environ.get(
-        "DASH_SERVER_EMAIL_SMTP_PASSWORD_ENV_VAR"
-    )
+    DASH_SERVER_EMAIL_SMTP_PASSWORD_ENV_VAR: str | None = os.environ.get("DASH_SERVER_EMAIL_SMTP_PASSWORD_ENV_VAR")
     DASH_SERVER_EMAIL_SMTP_ALLOW_NO_AUTH: bool = _env_bool(
         "DASH_SERVER_EMAIL_SMTP_ALLOW_NO_AUTH",
         False,
@@ -119,9 +113,7 @@ class Config:
         else None
     )
     DASH_SERVER_EMAIL_SMTP_USE_SSL: bool = _env_bool("DASH_SERVER_EMAIL_SMTP_USE_SSL", False)
-    DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS: int = int(
-        os.environ.get("DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS", "15")
-    )
+    DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS: int = int(os.environ.get("DASH_SERVER_EMAIL_SMTP_TIMEOUT_SECONDS", "15"))
     DASH_SERVER_EMAIL_SES_REGION: str | None = os.environ.get("DASH_SERVER_EMAIL_SES_REGION")
     DASH_SERVER_CONSUMPTION_ENABLED: bool = _env_bool(
         "DASH_SERVER_CONSUMPTION_ENABLED",
@@ -139,9 +131,7 @@ class Config:
         ).split(",")
         if item.strip()
     )
-    DASH_SERVER_CONSUMPTION_MAX_ROWS: int = int(
-        os.environ.get("DASH_SERVER_CONSUMPTION_MAX_ROWS", "100000")
-    )
+    DASH_SERVER_CONSUMPTION_MAX_ROWS: int = int(os.environ.get("DASH_SERVER_CONSUMPTION_MAX_ROWS", "100000"))
     DASH_SERVER_CONSUMPTION_MAX_BYTES: int = int(
         os.environ.get("DASH_SERVER_CONSUMPTION_MAX_BYTES", str(50 * 1024 * 1024))
     )
@@ -160,9 +150,7 @@ class Config:
     DASH_SERVER_CONSUMPTION_MAX_CONCURRENT_JOBS: int = int(
         os.environ.get("DASH_SERVER_CONSUMPTION_MAX_CONCURRENT_JOBS", "2")
     )
-    DASH_SERVER_CONSUMPTION_MAX_ATTEMPTS: int = int(
-        os.environ.get("DASH_SERVER_CONSUMPTION_MAX_ATTEMPTS", "2")
-    )
+    DASH_SERVER_CONSUMPTION_MAX_ATTEMPTS: int = int(os.environ.get("DASH_SERVER_CONSUMPTION_MAX_ATTEMPTS", "2"))
     DASH_SERVER_CONSUMPTION_JOB_RETENTION_SECONDS: int = int(
         os.environ.get("DASH_SERVER_CONSUMPTION_JOB_RETENTION_SECONDS", str(7 * 86400))
     )
@@ -175,9 +163,7 @@ class Config:
     DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_APP: int = int(
         os.environ.get("DASH_SERVER_CONSUMPTION_MAX_ACTIVE_JOBS_PER_APP", "20")
     )
-    DASH_SERVER_CONSUMPTION_PARAMETER_KEY: str | None = os.environ.get(
-        "DASH_SERVER_CONSUMPTION_PARAMETER_KEY"
-    )
+    DASH_SERVER_CONSUMPTION_PARAMETER_KEY: str | None = os.environ.get("DASH_SERVER_CONSUMPTION_PARAMETER_KEY")
     DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED: bool = _env_bool(
         "DASH_SERVER_CONSUMPTION_PUBLIC_EXPORTS_ENABLED",
         False,
@@ -186,9 +172,7 @@ class Config:
     # `DASH_SERVER_INSTANCE_PATH`, or test_config["INSTANCE_PATH"]), every
     # un-overridden `*_ROOT` below derives from it via `Config.default_*`.
     # Falls back to `<project>/instance` when None.
-    INSTANCE_PATH: str | None = os.environ.get("DASH_SERVER_INSTANCE_PATH") or os.environ.get(
-        "FLASK_INSTANCE_PATH"
-    )
+    INSTANCE_PATH: str | None = os.environ.get("DASH_SERVER_INSTANCE_PATH") or os.environ.get("FLASK_INSTANCE_PATH")
     # Per-subroot overrides. Each falls back to its `default_*` helper anchored
     # under INSTANCE_PATH. Env-var names mirror the config keys.
     REGISTRY_DB_PATH: str | None = os.environ.get("DASH_SERVER_REGISTRY_DB_PATH")
@@ -219,9 +203,10 @@ class Config:
     # Rewrite an existing bootstrap profile when it differs from the env settings. Off by
     # default so a profile an agent changed over MCP isn't reverted on every restart.
     EXASOL_BOOTSTRAP_OVERWRITE: bool = _env_bool("DASH_SERVER_EXASOL_OVERWRITE", False)
-    EXASOL_BOOTSTRAP_ROW_LIMIT: int = int(
-        os.environ.get("DASH_SERVER_EXASOL_ROW_LIMIT", "50000")
-    )
+    EXASOL_BOOTSTRAP_ROW_LIMIT: int = int(os.environ.get("DASH_SERVER_EXASOL_ROW_LIMIT", "50000"))
+    # `;`-separated session statements run on every new connection (e.g. the Semantic Views
+    # preprocessor); stored as the profile's `query_defaults.session_init_sql`.
+    EXASOL_BOOTSTRAP_SESSION_INIT_SQL: str | None = os.environ.get("DASH_SERVER_EXASOL_SESSION_INIT_SQL")
     AUTO_INSTALL_DEPENDENCIES = True
     PYTHON_EXECUTABLE = sys.executable
     DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 120
@@ -230,38 +215,24 @@ class Config:
     APP_DEPENDENCY_ISOLATION: str = os.environ.get(
         "DASH_SERVER_APP_DEPENDENCY_ISOLATION", "shared"
     )  # "shared" | "per_app"
-    APP_RUNTIME_MODE: str = os.environ.get(
-        "DASH_SERVER_APP_RUNTIME_MODE", "in_process"
-    )  # "in_process" | "isolated"
+    APP_RUNTIME_MODE: str = os.environ.get("DASH_SERVER_APP_RUNTIME_MODE", "in_process")  # "in_process" | "isolated"
     APP_ENVIRONMENTS_ROOT: str | None = os.environ.get("DASH_SERVER_APP_ENVIRONMENTS_ROOT")
     APP_WHEEL_CACHE_ROOT: str | None = os.environ.get("DASH_SERVER_APP_WHEEL_CACHE_ROOT")
     APP_PYCACHE_ROOT: str | None = os.environ.get("DASH_SERVER_APP_PYCACHE_ROOT")
-    APP_ENVIRONMENTS_DISK_CAP_GB: float = float(
-        os.environ.get("DASH_SERVER_APP_ENVIRONMENTS_DISK_CAP_GB", "5.0")
-    )
-    APP_WHEEL_CACHE_DISK_CAP_GB: float = float(
-        os.environ.get("DASH_SERVER_APP_WHEEL_CACHE_DISK_CAP_GB", "2.0")
-    )
-    APP_ENV_GC_RETENTION_DAYS: int = int(
-        os.environ.get("DASH_SERVER_APP_ENV_GC_RETENTION_DAYS", "7")
-    )
+    APP_ENVIRONMENTS_DISK_CAP_GB: float = float(os.environ.get("DASH_SERVER_APP_ENVIRONMENTS_DISK_CAP_GB", "5.0"))
+    APP_WHEEL_CACHE_DISK_CAP_GB: float = float(os.environ.get("DASH_SERVER_APP_WHEEL_CACHE_DISK_CAP_GB", "2.0"))
+    APP_ENV_GC_RETENTION_DAYS: int = int(os.environ.get("DASH_SERVER_APP_ENV_GC_RETENTION_DAYS", "7"))
     # Phase 5: background GC drivers (off by default so existing operators see no
     # behavior change unless they opt in).
     APP_ENV_GC_ENABLED: bool = _env_bool("DASH_SERVER_APP_ENV_GC_ENABLED", False)
-    APP_WHEEL_CACHE_GC_ENABLED: bool = _env_bool(
-        "DASH_SERVER_APP_WHEEL_CACHE_GC_ENABLED", False
-    )
-    APP_ENV_GC_INTERVAL_SECONDS: int = int(
-        os.environ.get("DASH_SERVER_APP_ENV_GC_INTERVAL_SECONDS", "300")
-    )
+    APP_WHEEL_CACHE_GC_ENABLED: bool = _env_bool("DASH_SERVER_APP_WHEEL_CACHE_GC_ENABLED", False)
+    APP_ENV_GC_INTERVAL_SECONDS: int = int(os.environ.get("DASH_SERVER_APP_ENV_GC_INTERVAL_SECONDS", "300"))
     APP_WHEEL_CACHE_GC_INTERVAL_SECONDS: int = int(
         os.environ.get("DASH_SERVER_APP_WHEEL_CACHE_GC_INTERVAL_SECONDS", "600")
     )
     APP_WORKER_HOST: str = os.environ.get("DASH_SERVER_APP_WORKER_HOST", "127.0.0.1")
     APP_WORKER_PORT_RANGE: str | None = os.environ.get("DASH_SERVER_APP_WORKER_PORT_RANGE")
-    APP_WORKER_PREWARM_POOL_SIZE: int = int(
-        os.environ.get("DASH_SERVER_APP_WORKER_PREWARM_POOL_SIZE", "1")
-    )
+    APP_WORKER_PREWARM_POOL_SIZE: int = int(os.environ.get("DASH_SERVER_APP_WORKER_PREWARM_POOL_SIZE", "1"))
     APP_WORKER_PREWARM_PACKAGES: tuple[str, ...] = tuple(
         item.strip()
         for item in os.environ.get(
@@ -270,18 +241,12 @@ class Config:
         ).split(",")
         if item.strip()
     )
-    APP_WORKER_START_TIMEOUT_SECONDS: int = int(
-        os.environ.get("DASH_SERVER_APP_WORKER_START_TIMEOUT_SECONDS", "30")
-    )
-    APP_WORKER_IDLE_STOP_SECONDS: int = int(
-        os.environ.get("DASH_SERVER_APP_WORKER_IDLE_STOP_SECONDS", "600")
-    )
+    APP_WORKER_START_TIMEOUT_SECONDS: int = int(os.environ.get("DASH_SERVER_APP_WORKER_START_TIMEOUT_SECONDS", "30"))
+    APP_WORKER_IDLE_STOP_SECONDS: int = int(os.environ.get("DASH_SERVER_APP_WORKER_IDLE_STOP_SECONDS", "600"))
     APP_WORKER_MAX_RESTARTS_PER_5_MINUTES: int = int(
         os.environ.get("DASH_SERVER_APP_WORKER_MAX_RESTARTS_PER_5_MINUTES", "5")
     )
-    DASH_SERVER_ALLOW_UNSAFE_INPROCESS: bool = _env_bool(
-        "DASH_SERVER_ALLOW_UNSAFE_INPROCESS", False
-    )
+    DASH_SERVER_ALLOW_UNSAFE_INPROCESS: bool = _env_bool("DASH_SERVER_ALLOW_UNSAFE_INPROCESS", False)
 
     # --- Browser session channel (see plans/live-dashboard-introspection-plan.md) ---
     # Local-mode only. `SESSION_CHANNEL_ENABLED` defaults to True but is *ignored*
@@ -289,27 +254,17 @@ class Config:
     # channel is unauthenticated by design, so `app_factory` resolves the effective
     # value and records why it disabled itself.
     SESSION_CHANNEL_ENABLED: bool = _env_bool("DASH_SERVER_SESSION_CHANNEL_ENABLED", True)
-    SESSION_CHANNEL_ALLOW_NON_LOOPBACK: bool = _env_bool(
-        "DASH_SERVER_SESSION_CHANNEL_ALLOW_NON_LOOPBACK", False
-    )
-    SESSION_CHANNEL_POLL_INTERVAL_MS: int = int(
-        os.environ.get("DASH_SERVER_SESSION_CHANNEL_POLL_INTERVAL_MS", "2000")
-    )
+    SESSION_CHANNEL_ALLOW_NON_LOOPBACK: bool = _env_bool("DASH_SERVER_SESSION_CHANNEL_ALLOW_NON_LOOPBACK", False)
+    SESSION_CHANNEL_POLL_INTERVAL_MS: int = int(os.environ.get("DASH_SERVER_SESSION_CHANNEL_POLL_INTERVAL_MS", "2000"))
     SESSION_CHANNEL_ACTIVE_POLL_INTERVAL_MS: int = int(
         os.environ.get("DASH_SERVER_SESSION_CHANNEL_ACTIVE_POLL_INTERVAL_MS", "250")
     )
-    SESSION_CHANNEL_STALE_AFTER_MS: int = int(
-        os.environ.get("DASH_SERVER_SESSION_CHANNEL_STALE_AFTER_MS", "6000")
-    )
-    SESSION_CHANNEL_MAX_SESSIONS: int = int(
-        os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_SESSIONS", "20")
-    )
+    SESSION_CHANNEL_STALE_AFTER_MS: int = int(os.environ.get("DASH_SERVER_SESSION_CHANNEL_STALE_AFTER_MS", "6000"))
+    SESSION_CHANNEL_MAX_SESSIONS: int = int(os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_SESSIONS", "20"))
     SESSION_CHANNEL_COMMAND_TIMEOUT_SECONDS: int = int(
         os.environ.get("DASH_SERVER_SESSION_CHANNEL_COMMAND_TIMEOUT_SECONDS", "10")
     )
-    SESSION_CHANNEL_MAX_CODE_BYTES: int = int(
-        os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_CODE_BYTES", "16384")
-    )
+    SESSION_CHANNEL_MAX_CODE_BYTES: int = int(os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_CODE_BYTES", "16384"))
     SESSION_CHANNEL_MAX_RESULT_BYTES: int = int(
         os.environ.get("DASH_SERVER_SESSION_CHANNEL_MAX_RESULT_BYTES", str(256 * 1024))
     )

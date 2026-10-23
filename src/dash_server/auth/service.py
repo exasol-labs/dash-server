@@ -40,9 +40,7 @@ class IdentityService:
         self.oidc_groups_claim = str(config.get("DASH_SERVER_OIDC_GROUPS_CLAIM"))
         self.oidc_org_claim = config.get("DASH_SERVER_OIDC_ORG_CLAIM")
         self.oidc_accept_test_tokens = coerce_bool(config.get("DASH_SERVER_OIDC_ACCEPT_TEST_TOKENS"))
-        self.trusted_proxy_headers_enabled = coerce_bool(
-            config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED")
-        )
+        self.trusted_proxy_headers_enabled = coerce_bool(config.get("DASH_SERVER_TRUSTED_PROXY_HEADERS_ENABLED"))
         self.trusted_proxy_allowed_cidrs = tuple(
             str(item).strip()
             for item in (config.get("DASH_SERVER_TRUSTED_PROXY_ALLOWED_CIDRS") or ())
@@ -55,9 +53,7 @@ class IdentityService:
         if isinstance(raw_bootstrap_admins, str):
             raw_bootstrap_admins = raw_bootstrap_admins.split(",")
         self.bootstrap_admin_principal_ids = frozenset(
-            str(item).strip()
-            for item in raw_bootstrap_admins
-            if str(item).strip()
+            str(item).strip() for item in raw_bootstrap_admins if str(item).strip()
         )
 
     def context_for_request(self) -> AuthContext:
@@ -182,11 +178,7 @@ class IdentityService:
             return Principal.anonymous()
         email = request.headers.get(self.trusted_proxy_email_header)
         groups_header = request.headers.get(self.trusted_proxy_groups_header, "")
-        groups = tuple(
-            item.strip()
-            for item in groups_header.split(",")
-            if item.strip()
-        )
+        groups = tuple(item.strip() for item in groups_header.split(",") if item.strip())
         return Principal.authenticated_user(
             issuer="trusted_proxy",
             subject=subject,

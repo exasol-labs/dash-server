@@ -147,9 +147,7 @@ class RuntimeMounter:
             if not environment_id:
                 requirements = self._read_requirements_from_artifact(artifact_path)
                 try:
-                    env_id_computed = self.svc.dependency_environment_service.compute_environment_id(
-                        requirements
-                    )
+                    env_id_computed = self.svc.dependency_environment_service.compute_environment_id(requirements)
                     env_record = self.svc.dependency_environment_service.lookup(env_id_computed)
                 except Exception:
                     env_record = None
@@ -183,8 +181,7 @@ class RuntimeMounter:
             raise DashServerError(
                 category="runtime_mount_error",
                 summary=(
-                    f"Failed to start isolated worker for {revision.app_name} "
-                    f"revision {revision.revision_number}."
+                    f"Failed to start isolated worker for {revision.app_name} revision {revision.revision_number}."
                 ),
                 details={
                     "app": revision.app_name,
@@ -207,9 +204,7 @@ class RuntimeMounter:
         if not path.exists():
             return []
         return [
-            line.strip()
-            for line in path.read_text().splitlines()
-            if line.strip() and not line.strip().startswith("#")
+            line.strip() for line in path.read_text().splitlines() if line.strip() and not line.strip().startswith("#")
         ]
 
     def _create_revision_wsgi_app(self, revision: AppRevision, mount_path: str) -> Flask:
@@ -221,9 +216,7 @@ class RuntimeMounter:
                 revision_number=revision.revision_number,
             )
         else:
-            manifest, dashboard = validate_bundle(
-                {"manifest": revision.manifest, "dashboard": revision.bundle}
-            )
+            manifest, dashboard = validate_bundle({"manifest": revision.manifest, "dashboard": revision.bundle})
             from dash_server.dash_apps.factory import build_dash_wsgi_app
 
             wsgi_app = build_dash_wsgi_app(
@@ -277,9 +270,7 @@ class RuntimeMounter:
                 )
                 return
 
-            category = self.svc.diagnostics_service.inspect_traceback(traceback_text)["traceback"][
-                "category"
-            ]
+            category = self.svc.diagnostics_service.inspect_traceback(traceback_text)["traceback"]["category"]
             summary = f"Unhandled runtime exception while serving {path}."
             self.svc.diagnostics_service.record_error(
                 app_name,
@@ -335,9 +326,7 @@ class RuntimeMounter:
         manifest_payload = json.loads((artifact_dir / APP_MANIFEST_FILENAME).read_text())
         manifest = validate_manifest_payload(manifest_payload)
         module_name = f"dash_server_artifact_{manifest.name}_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(
-            module_name, artifact_dir / APP_ENTRYPOINT_FILENAME
-        )
+        spec = importlib.util.spec_from_file_location(module_name, artifact_dir / APP_ENTRYPOINT_FILENAME)
         assert spec is not None and spec.loader is not None
         with isolated_dash_callback_globals(), isolated_local_imports(artifact_dir):
             module = importlib.util.module_from_spec(spec)
@@ -381,9 +370,7 @@ class RuntimeMounter:
                         mount_path=mount_path,
                         revision_number=revision_number,
                         app_name=manifest.name,
-                        has_consumption_outputs=bool(
-                            (manifest.consumption or {}).get("outputs")
-                        ),
+                        has_consumption_outputs=bool((manifest.consumption or {}).get("outputs")),
                         wrap=True,
                         session_channel=self.svc.session_channel_enabled,
                     )

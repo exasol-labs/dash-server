@@ -881,9 +881,7 @@ class AppWorkerManager:
 
         if self.diagnostics_service is None:
             return
-        self.diagnostics_service.emit_event(
-            app_name, "worker.events", event, message, level=level, **data
-        )
+        self.diagnostics_service.emit_event(app_name, "worker.events", event, message, level=level, **data)
 
     def _record_is_alive(self, record: WorkerRecord) -> bool:
         return record is not None and record.handle is not None and record.handle.is_alive()
@@ -1085,9 +1083,7 @@ class AppWorkerManager:
         # short system temp dir instead of `workers_root`.
         import tempfile
 
-        socket_path = str(
-            Path(tempfile.gettempdir()) / f"dssrv-baseline-{uuid.uuid4().hex[:12]}.sock"
-        )
+        socket_path = str(Path(tempfile.gettempdir()) / f"dssrv-baseline-{uuid.uuid4().hex[:12]}.sock")
         prewarm_csv = ",".join(self.prewarm_packages)
         cmd = [
             python_executable,
@@ -1174,9 +1170,7 @@ class AppWorkerManager:
         if self._idle_sweep_thread is not None and self._idle_sweep_thread.is_alive():
             return
         self._idle_sweep_stop.clear()
-        self._idle_sweep_thread = threading.Thread(
-            target=self._idle_sweep_loop, daemon=True
-        )
+        self._idle_sweep_thread = threading.Thread(target=self._idle_sweep_loop, daemon=True)
         self._idle_sweep_thread.start()
 
     def stop_idle_sweep(self) -> None:
@@ -1211,8 +1205,6 @@ class AppWorkerManager:
             if self.stop(record.mount_path, idle=True):
                 stopped.append(record.mount_path)
         return stopped
-
-
 
 
 def _send_sigterm_then_kill(pid: int, *, timeout_seconds: float = 10.0) -> None:

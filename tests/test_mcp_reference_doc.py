@@ -53,12 +53,10 @@ def test_mcp_reference_doc_is_in_sync_with_registry() -> None:
     committed_resources = _extract_between(committed, _RESOURCES_BEGIN, _RESOURCES_END)
 
     assert committed_tools == fresh_tools, (
-        "docs/mcp-reference.md tool list is stale. Run "
-        "`python scripts/generate_mcp_reference.py` and commit."
+        "docs/mcp-reference.md tool list is stale. Run `python scripts/generate_mcp_reference.py` and commit."
     )
     assert committed_resources == fresh_resources, (
-        "docs/mcp-reference.md resource list is stale. Run "
-        "`python scripts/generate_mcp_reference.py` and commit."
+        "docs/mcp-reference.md resource list is stale. Run `python scripts/generate_mcp_reference.py` and commit."
     )
 
 

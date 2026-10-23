@@ -69,6 +69,7 @@ CATEGORY_CODES: dict[str, tuple[int, int]] = {
     "exasol_runtime_error": (-32012, 500),
     "exasol_schema_scaffold_error": (-32012, 400),
     "exasol_secret_error": (-32011, 400),
+    "exasol_session_init_failed": (-32012, 502),
     "exposure_validation_error": (-32602, 400),
     "gitops_reconcile_error": (-32010, 400),
     "invalid_resource_uri": (-32602, 400),

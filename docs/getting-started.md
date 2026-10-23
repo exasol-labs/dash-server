@@ -160,6 +160,12 @@ curl -s http://127.0.0.1:5100/mcp \
 
 Once the profile exists, the agent can go straight to dashboard creation with `profile_name: "analytics-prod"`.
 
+If the database has Exasol Semantic Views, build on its governed metrics instead of writing them
+by hand: `exasol_profile_validate` lists the published models the profile can see, and the
+profile needs the model's preprocessor in `DASH_SERVER_EXASOL_SESSION_INIT_SQL` (or
+`session_init_sql`). See [exasol.md](exasol.md) and the `dash://exasol/help/semantic-layer`
+resource.
+
 ### 6. List hosted apps
 
 ```bash

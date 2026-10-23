@@ -4,14 +4,23 @@ from __future__ import annotations
 
 from typing import Any
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.dash_apps.factory import (
     app_create_example_bundle,
     app_create_from_files_example,
 )
 
 
-class SchemasMixin:
+class SchemasMixin(MCPServerHost):
     """The ``_*_schema()`` builders referenced by ``ToolSpec.input_schema``."""
+
+    def _profile_name_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Exasol profile name."}},
+            "required": ["name"],
+            "additionalProperties": False,
+        }
 
     def _name_schema(self) -> dict[str, Any]:
         return {
@@ -26,7 +35,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _job_id_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -40,7 +48,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _exasol_profile_create_local_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -53,12 +60,12 @@ class SchemasMixin:
                 "backend": {
                     "type": "string",
                     "enum": ["onprem", "saas"],
-                    "description": "Backend type. onprem supports password/access/refresh token; saas supports saas_pat.",
+                    "description": "Backend type. onprem supports password/access/refresh token; saas supports saas_pat. Required to create a profile.",
                 },
                 "credential_mode": {
                     "type": "string",
                     "enum": ["password", "access_token", "refresh_token", "saas_pat"],
-                    "description": "Credential mode for the bound secret.",
+                    "description": "Credential mode for the bound secret. Required to create a profile.",
                 },
                 "dsn": {
                     "type": "string",
@@ -66,12 +73,12 @@ class SchemasMixin:
                         "pyexasol DSN: host[/FINGERPRINT][:port], comma-separated for multiple hosts "
                         "(e.g. localhost:8563). For a remote self-signed server, pin its certificate "
                         "with the SHA-256 fingerprint before the port (db.example.com/ABC123…:8563); "
-                        "the pin then replaces CA verification."
+                        "the pin then replaces CA verification. Required to create a profile."
                     ),
                 },
                 "user": {
                     "type": "string",
-                    "description": "Database username for the profile.",
+                    "description": "Database username for the profile. Required to create a profile.",
                 },
                 "description": {
                     "type": "string",
@@ -87,26 +94,44 @@ class SchemasMixin:
                 },
                 "secret_value": {
                     "type": "string",
-                    "description": "Secret to persist in the local secret store. Provide exactly one of secret_value or secret_env_var.",
+                    "description": "Secret to persist in the local secret store. Provide exactly one of secret_value or secret_env_var to create a profile; leave both out with overwrite: true to keep the current secret.",
                 },
                 "secret_env_var": {
                     "type": "string",
-                "description": "Environment variable containing the secret. Provide exactly one of secret_value or secret_env_var.",
+                    "description": "Environment variable containing the secret. Provide exactly one of secret_value or secret_env_var to create a profile; leave both out with overwrite: true to keep the current secret.",
                 },
                 "statement_timeout_seconds": {"type": "integer", "minimum": 1},
                 "row_limit": {"type": "integer", "minimum": 1},
+                "session_init_sql": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 10,
+                    "description": (
+                        "Session statements run on every new connection this profile opens "
+                        "(dashboards, SQL smoke, exports, validation), like a BI tool's initial SQL. "
+                        "One statement per entry; only ALTER SESSION, EXECUTE SCRIPT, and OPEN SCHEMA "
+                        "are accepted. Use it for session-level features such as Exasol Semantic "
+                        'Views: ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = '
+                        'SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"].'
+                    ),
+                },
                 "overwrite": {
                     "type": "boolean",
                     "description": (
                         "When false (default), the call fails with `exasol_profile_already_exists` "
-                        "if a profile with this name is already on disk. Pass `true` to rewrite "
-                        "the metadata (the response will set `was_already_present: true`). This "
-                        "matches the persona-1 expectation that the same name isn't silently clobbered."
+                        "if a profile with this name is already on disk. Pass `true` to rewrite it "
+                        "(the response sets `was_already_present: true`): settings you leave out keep "
+                        "their current values, including the secret, so `{name, overwrite: true, "
+                        "session_init_sql}` adds session setup. A new DSN gets its own TLS default "
+                        "unless you pass tls_verify. Creating a profile needs backend, "
+                        "credential_mode, dsn, user, and secret_value or secret_env_var."
                     ),
                     "default": False,
                 },
             },
-            "required": ["name", "backend", "credential_mode", "dsn", "user"],
+            # backend, credential_mode, dsn, user and a secret are required to create a profile;
+            # with overwrite: true on an existing one, anything left out keeps its value.
+            "required": ["name"],
             "additionalProperties": False,
             "examples": [
                 {
@@ -120,7 +145,6 @@ class SchemasMixin:
                 }
             ],
         }
-
 
     def _app_create_exasol_dashboard_schema(self) -> dict[str, Any]:
         return {
@@ -161,10 +185,14 @@ class SchemasMixin:
             "required": ["name", "profile_name"],
             "additionalProperties": False,
             "examples": [
-                {"name": "sales-overview", "profile_name": "analytics-prod", "pattern": "analytics-hub", "start_immediately": True}
+                {
+                    "name": "sales-overview",
+                    "profile_name": "analytics-prod",
+                    "pattern": "analytics-hub",
+                    "start_immediately": True,
+                }
             ],
         }
-
 
     def _app_scaffold_from_schema_schema(self) -> dict[str, Any]:
         return {
@@ -186,11 +214,11 @@ class SchemasMixin:
                 },
                 "schema_name": {
                     "type": "string",
-                    "description": "Optional schema to prioritize during introspection. When omitted, the tool picks from visible non-system schemas.",
+                    "description": "Optional schema to prioritize during introspection. A published Exasol Semantic Views schema (e.g. SEMANTIC_SALES) scaffolds Semantic SQL over that model. When omitted, the tool prefers a usable published semantic model and otherwise picks from visible non-system schemas; schema_blueprint.semantic_candidates lists the models.",
                 },
                 "table_name": {
                     "type": "string",
-                    "description": "Optional specific table inside schema_name to base the scaffold on. When omitted, the highest-scoring table in the schema is picked automatically. schema_blueprint.table_candidates lists alternatives.",
+                    "description": "Optional specific table inside schema_name to base the scaffold on (for a semantic model, an object such as SALES). When omitted, the highest-scoring table in the schema is picked automatically (for a semantic model, the object with the most certified metrics). schema_blueprint.table_candidates lists alternatives.",
                 },
                 "title": {"type": "string", "description": "Optional dashboard title."},
                 "route": {"type": "string", "description": "Optional route. Defaults to /apps/{name}."},
@@ -212,7 +240,6 @@ class SchemasMixin:
                 }
             ],
         }
-
 
     def _app_create_schema(self) -> dict[str, Any]:
         return {
@@ -242,8 +269,14 @@ class SchemasMixin:
                     "type": "object",
                     "description": "Optional registered-output contract for governed consumption.",
                 },
-                "headline": {"type": "string", "description": "Optional starter dashboard headline for shorthand creation."},
-                "summary": {"type": "string", "description": "Optional starter dashboard summary for shorthand creation."},
+                "headline": {
+                    "type": "string",
+                    "description": "Optional starter dashboard headline for shorthand creation.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Optional starter dashboard summary for shorthand creation.",
+                },
                 "metrics": {
                     "type": "array",
                     "description": "Optional starter metric cards for shorthand creation.",
@@ -273,10 +306,9 @@ class SchemasMixin:
                 {
                     "name": "markets-dashboard",
                     "start_immediately": True,
-                }
+                },
             ],
         }
-
 
     def _app_create_from_files_schema(self) -> dict[str, Any]:
         return {
@@ -308,7 +340,7 @@ class SchemasMixin:
                     "type": "object",
                     "description": (
                         "Optional data-source bindings. For an Exasol-bound app use "
-                        "`{\"primary\": {\"kind\": \"exasol\", \"profile\": \"<profile-name>\"}}`. "
+                        '`{"primary": {"kind": "exasol", "profile": "<profile-name>"}}`. '
                         "Required when the app queries Exasol through dash_server_exasol: without a "
                         "binding, validation fails and the app is not created. Set it here or in a "
                         "supplied dash-app.json; an argument fills a field dash-app.json leaves out, "
@@ -332,8 +364,14 @@ class SchemasMixin:
                     "type": "object",
                     "description": "Optional registered-output contract for governed consumption.",
                 },
-                "headline": {"type": "string", "description": "Optional starter dashboard headline used for generated metadata defaults."},
-                "summary": {"type": "string", "description": "Optional starter dashboard summary used for generated metadata defaults."},
+                "headline": {
+                    "type": "string",
+                    "description": "Optional starter dashboard headline used for generated metadata defaults.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Optional starter dashboard summary used for generated metadata defaults.",
+                },
                 "metrics": {
                     "type": "array",
                     "description": "Optional starter metric cards used for generated metadata defaults.",
@@ -371,7 +409,6 @@ class SchemasMixin:
             "examples": [app_create_from_files_example()],
         }
 
-
     def _bundle_schema(self) -> dict[str, Any]:
         manifest_props = self._manifest_schema()["properties"]
         dashboard_props = self._dashboard_schema()["properties"]
@@ -396,7 +433,6 @@ class SchemasMixin:
             "additionalProperties": False,
             "examples": [app_create_example_bundle()],
         }
-
 
     def _manifest_schema(self) -> dict[str, Any]:
         return {
@@ -438,7 +474,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _dashboard_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -463,7 +498,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _revision_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -474,7 +508,6 @@ class SchemasMixin:
             "required": ["name", "revision_number"],
             "additionalProperties": False,
         }
-
 
     def _app_promote_revision_schema(self) -> dict[str, Any]:
         return {
@@ -495,7 +528,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _app_diff_draft_vs_artifact_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -509,7 +541,6 @@ class SchemasMixin:
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_build_schema(self) -> dict[str, Any]:
         return {
@@ -532,7 +563,6 @@ class SchemasMixin:
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_deploy_draft_schema(self) -> dict[str, Any]:
         return {
@@ -560,7 +590,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _app_healthcheck_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -576,7 +605,6 @@ class SchemasMixin:
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_share_grant_schema(self) -> dict[str, Any]:
         return {
@@ -609,7 +637,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _app_share_revoke_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -625,7 +652,6 @@ class SchemasMixin:
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_share_set_link_scope_schema(self) -> dict[str, Any]:
         return {
@@ -653,7 +679,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _app_share_explain_access_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -672,7 +697,6 @@ class SchemasMixin:
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_share_create_one_time_link_schema(self) -> dict[str, Any]:
         return {
@@ -707,18 +731,19 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _app_share_revoke_one_time_link_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Hosted app name."},
-                "link_id": {"type": "integer", "description": "One-time link id returned by app_share_create_one_time_link."},
+                "link_id": {
+                    "type": "integer",
+                    "description": "One-time link id returned by app_share_create_one_time_link.",
+                },
             },
             "required": ["name", "link_id"],
             "additionalProperties": False,
         }
-
 
     def _app_invite_external_user_schema(self) -> dict[str, Any]:
         return {
@@ -753,7 +778,6 @@ class SchemasMixin:
             "additionalProperties": False,
         }
 
-
     def _app_revoke_external_invitation_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -767,7 +791,6 @@ class SchemasMixin:
             "required": ["name", "invitation_id"],
             "additionalProperties": False,
         }
-
 
     def _app_tail_logs_schema(self) -> dict[str, Any]:
         return {
@@ -784,7 +807,6 @@ class SchemasMixin:
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_session_eval_js_schema(self) -> dict[str, Any]:
         return {
@@ -817,7 +839,6 @@ class SchemasMixin:
             "required": ["name", "code"],
             "additionalProperties": False,
         }
-
 
     def _app_sessions_list_schema(self) -> dict[str, Any]:
         return {

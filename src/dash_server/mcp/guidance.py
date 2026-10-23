@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from dash_server.mcp._host import MCPServerHost
 from dash_server.exceptions import DashServerError
 from dash_server.mcp.tool_specs import TOOL_SPECS_BY_NAME
 
@@ -30,8 +31,41 @@ def _dedupe_preserving_order(items: list[str]) -> list[str]:
     return result
 
 
+def _semantic_layer_guidance(semantic_layer: Any) -> dict[str, Any] | None:
+    """Next step for a valid profile whose database has published semantic models."""
 
-class GuidanceMixin:
+    if not isinstance(semantic_layer, dict):
+        return None
+    models = [model for model in semantic_layer.get("models") or [] if isinstance(model, dict)]
+    if not models:
+        return None
+    names = ", ".join(f"{model.get('model')} ({model.get('published_schema')})" for model in models)
+    related = ["dash://exasol/help/semantic-layer", "dash://exasol/help/agent-workflow"]
+    inactive = [model for model in models if not model.get("preprocessor_active")]
+    if inactive:
+        statement = f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {inactive[0].get('preprocessor')}"
+        return {
+            "next_step": (
+                f"Published semantic models are available: {names}. This profile's sessions don't activate "
+                "their preprocessor, so Semantic SQL against them would fail. Add it to the profile: "
+                f'exasol_profile_create_local with name, overwrite: true and session_init_sql ["{statement}"] '
+                "(other settings are kept), validate again, then build metrics on the published views instead of the raw tables behind them. "
+                "Read dash://exasol/help/semantic-layer first."
+            ),
+            "suggested_tools": ["exasol_profile_create_local", "exasol_profile_validate"],
+            "related_resources": related,
+        }
+    return {
+        "next_step": (
+            f"Published semantic models are available: {names}. Build metrics on their published views "
+            "instead of the raw tables behind them. Read dash://exasol/help/semantic-layer first."
+        ),
+        "suggested_tools": ["app_create_from_files", "app_scaffold_from_schema"],
+        "related_resources": related,
+    }
+
+
+class GuidanceMixin(MCPServerHost):
     """Builds the ``guidance`` block attached to every tool result."""
 
     def _append_guidance_to_text(
@@ -50,11 +84,8 @@ class GuidanceMixin:
             lines.append(f"Suggested tools: {', '.join(str(tool) for tool in suggested_tools)}")
         related_resources = guidance.get("related_resources")
         if isinstance(related_resources, list) and related_resources:
-            lines.append(
-                f"Related resources: {', '.join(str(resource) for resource in related_resources)}"
-            )
+            lines.append(f"Related resources: {', '.join(str(resource) for resource in related_resources)}")
         return "\n".join(lines)
-
 
     def _attach_guidance(
         self,
@@ -79,7 +110,6 @@ class GuidanceMixin:
         enriched["guidance"] = guidance
         return enriched
 
-
     def _guidance_for_tool(
         self,
         tool_name: str,
@@ -90,6 +120,11 @@ class GuidanceMixin:
     ) -> dict[str, Any]:
         if is_error:
             return self._error_guidance(tool_name, exc)
+
+        if tool_name == "exasol_profile_validate" and payload.get("is_valid"):
+            semantic_guidance = _semantic_layer_guidance(payload.get("semantic_layer"))
+            if semantic_guidance is not None:
+                return semantic_guidance
 
         validation = payload.get("validation")
         if tool_name == "app_validate" and isinstance(validation, dict):
@@ -118,10 +153,7 @@ class GuidanceMixin:
                     "related_resources": ["dash://meta/workflows", "dash://meta/app-authoring-guide"],
                 }
             cross_module_symbols = validation.get("cross_module_symbols")
-            if (
-                isinstance(cross_module_symbols, dict)
-                and cross_module_symbols.get("status") == "failed"
-            ):
+            if isinstance(cross_module_symbols, dict) and cross_module_symbols.get("status") == "failed":
                 return {
                     "next_step": "Patch the missing local symbol or import path, then validate the draft again.",
                     "suggested_tools": ["app_patch_file", "app_put_files", "app_validate"],
@@ -168,9 +200,7 @@ class GuidanceMixin:
             return {
                 "next_step": "Read the referenced schema/help resource and retry with the documented input shape.",
                 "suggested_tools": ["apps_list", "app_validate", "exasol_profile_validate"],
-                "related_resources": _dedupe_preserving_order(
-                    [help_resource, "dash://meta/workflows"]
-                ),
+                "related_resources": _dedupe_preserving_order([help_resource, "dash://meta/workflows"]),
             }
         if category == "workspace_validation_error":
             return {
@@ -187,7 +217,12 @@ class GuidanceMixin:
         if category == "artifact_preflight_failed":
             return {
                 "next_step": "Inspect the failed preflight probes and traceback, patch the draft, then rebuild before any live promotion.",
-                "suggested_tools": ["app_collect_diagnostics", "app_inspect_traceback", "app_patch_file", "app_diff_draft_vs_artifact"],
+                "suggested_tools": [
+                    "app_collect_diagnostics",
+                    "app_inspect_traceback",
+                    "app_patch_file",
+                    "app_diff_draft_vs_artifact",
+                ],
                 "related_resources": ["dash://meta/app-authoring-guide", "dash://meta/workflows"],
             }
         if category == "session_channel_session_gone":
@@ -211,8 +246,7 @@ class GuidanceMixin:
         if category in {"session_channel_timeout", "session_channel_busy"}:
             return {
                 "next_step": (
-                    "Confirm the tab is still polling, then retry with a smaller command or a "
-                    "longer timeout_seconds."
+                    "Confirm the tab is still polling, then retry with a smaller command or a longer timeout_seconds."
                 ),
                 "suggested_tools": ["app_sessions_list", "app_session_eval_js"],
                 "related_resources": ["dash://meta/session-channel-guide"],
@@ -227,11 +261,15 @@ class GuidanceMixin:
             return {
                 "next_step": "Inspect the Exasol profile metadata and connection help, fix the profile or secret reference, then retry.",
                 "suggested_tools": ["exasol_profiles_list", "exasol_profile_create_local", "exasol_profile_validate"],
-                "related_resources": ["dash://exasol/profiles", "dash://exasol/help/connection-modes", "dash://exasol/help/dashboard-patterns", "dash://exasol/help/agent-workflow"],
+                "related_resources": [
+                    "dash://exasol/profiles",
+                    "dash://exasol/help/connection-modes",
+                    "dash://exasol/help/dashboard-patterns",
+                    "dash://exasol/help/agent-workflow",
+                ],
             }
         return {
             "next_step": "Inspect the returned error details and recent diagnostics before retrying.",
             "suggested_tools": ["app_collect_diagnostics", "app_tail_logs"],
             "related_resources": ["dash://meta/workflows"],
         }
-

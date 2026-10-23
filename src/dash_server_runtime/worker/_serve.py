@@ -29,6 +29,7 @@ from .protocol import (
 
 def serve(args: argparse.Namespace) -> int:
     import signal
+    import threading
     from wsgiref.simple_server import WSGIRequestHandler
 
     try:
@@ -60,9 +61,7 @@ def serve(args: argparse.Namespace) -> int:
 
     # Wire up Exasol / diagnostics from the GitOps profiles + secret env vars passed at spawn.
     # Both bootstrap helpers degrade gracefully when ``dash_server`` is absent from the env.
-    exasol_service, exasol_error = build_exasol_service_for_worker(
-        args.gitops_repo_path, args.exasol_secrets_root
-    )
+    exasol_service, exasol_error = build_exasol_service_for_worker(args.gitops_repo_path, args.exasol_secrets_root)
     if exasol_service is not None:
         server.extensions["exasol_dashboard_service"] = exasol_service
     elif exasol_error is not None:
@@ -71,16 +70,12 @@ def serve(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-    diagnostics_service, diagnostics_error = build_diagnostics_service_for_worker(
-        args.diagnostics_root
-    )
+    diagnostics_service, diagnostics_error = build_diagnostics_service_for_worker(args.diagnostics_root)
     if diagnostics_service is not None:
         server.extensions["diagnostics_service"] = diagnostics_service
     elif diagnostics_error is not None:
         print(
-            json.dumps(
-                {KEY_EVENT: EVENT_WARNING, "phase": "diagnostics_bootstrap", "error": diagnostics_error}
-            ),
+            json.dumps({KEY_EVENT: EVENT_WARNING, "phase": "diagnostics_bootstrap", "error": diagnostics_error}),
             flush=True,
         )
 
@@ -201,7 +196,10 @@ def serve(args: argparse.Namespace) -> int:
     bound_host, bound_port = httpd.server_address[:2]
 
     def _terminate(_signum, _frame):
-        httpd.shutdown()
+        # The handler runs on the main thread, which is inside serve_forever(); calling
+        # shutdown() here would wait for serve_forever() to return and deadlock, leaving
+        # the worker immune to SIGTERM. Shut down from another thread instead.
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     try:
         signal.signal(signal.SIGTERM, _terminate)
@@ -253,10 +251,7 @@ def _make_http_server(
             return make_server(listen_host, candidate, wsgi_app, handler_class=handler_class)
         except OSError as exc:
             last_error = exc
-    raise OSError(
-        f"no free worker port in configured range {start}-{end}"
-        + (f": {last_error}" if last_error else "")
-    )
+    raise OSError(f"no free worker port in configured range {start}-{end}" + (f": {last_error}" if last_error else ""))
 
 
 def _parse_port_range(value: str | None) -> tuple[int, int] | None:

@@ -10,8 +10,10 @@ from dash_server.gitops import GitRepoService
 
 from .connection_manager import ExasolConnectionManager
 from .dsn import default_tls_verify, dsn_parse_error
+from .fetch_mappers import dashboard_fetch_mapper
 from .models import ExasolProfile, ExasolSecretRef
 from .profiles import ExasolProfileStore
+from .runtime import describe_query_error
 from .scaffold import (
     EXASOL_DASHBOARD_PATTERNS,
     build_exasol_dashboard_bundle,
@@ -19,9 +21,21 @@ from .scaffold import (
     exasol_agent_workflow_help,
     exasol_connection_modes_help,
     exasol_dashboard_patterns_help,
+    exasol_semantic_layer_help,
     exasol_sql_placeholders_help,
 )
 from .secrets import ExasolSecretStore
+from .semantic_models import (
+    FINISHED_RUNS_COLUMNS,
+    FINISHED_RUNS_QUERY,
+    MODELS_COLUMNS,
+    MODELS_QUERY,
+    SemanticModelRef,
+    apply_finished_runs,
+    has_unfinished_validation,
+    models_from_rows,
+)
+from .session_init import normalize_session_init_sql
 
 _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
@@ -32,8 +46,20 @@ _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 # because its name happened to match a keyword-shaped scorer, and every one of its
 # `table_candidates` was drawn from the same two schemas - the real target never
 # appeared as a candidate at all. See `_is_platform_internal_schema` below.
-_PLATFORM_INTERNAL_SCHEMA_PREFIXES = ("SEMANTIC_", "JVS_", "JSON_VIEW")
-_PLATFORM_INTERNAL_SCHEMA_NAMES = {"SYS_SEMANTIC"}
+# Only Semantic Views' own schemas are internal: a model's published schema (SEMANTIC_SALES)
+# is the governed business surface, scaffolded through the semantic path instead.
+_PLATFORM_INTERNAL_SCHEMA_PREFIXES = ("JVS_", "JSON_VIEW")
+_PLATFORM_INTERNAL_SCHEMA_NAMES = {
+    "SYS_SEMANTIC",
+    "SEMANTIC_ADMIN",
+    "SEMANTIC_AGENT",
+    "SEMANTIC_CATALOG",
+    "SEMANTIC_SOURCE",
+}
+
+# Semantic Views AGENT_READINESS values whose models scaffolding may build on.
+_USABLE_SEMANTIC_READINESS = {"VALID", "WARNING"}
+_TEMPORAL_DATA_TYPE_PREFIXES = ("DATE", "TIMESTAMP")
 
 # PS26-BUG-009: column names that look numeric but are geo-coordinates, not measures -
 # `app_scaffold_from_schema` picked `LAT` as a table's "primary measure" and generated
@@ -52,21 +78,68 @@ _KEY_COLUMN_RE = re.compile(r"(?:^|_)(?:ID|SK|PK|FK)$|KEY$")
 # when summed - rank last. Ties keep the table's column order.
 _MONEY_MEASURE_TOKENS = frozenset(
     {
-        "REVENUE", "SALES", "AMOUNT", "AMT", "COST", "COSTS", "PROFIT", "MARGIN", "SPEND",
-        "INCOME", "EXPENSE", "EXPENSES", "TURNOVER", "BOOKINGS",
+        "REVENUE",
+        "SALES",
+        "AMOUNT",
+        "AMT",
+        "COST",
+        "COSTS",
+        "PROFIT",
+        "MARGIN",
+        "SPEND",
+        "INCOME",
+        "EXPENSE",
+        "EXPENSES",
+        "TURNOVER",
+        "BOOKINGS",
     }
 )
 _ADDITIVE_MEASURE_TOKENS = frozenset(
     {
-        "NET", "GROSS", "TOTAL", "VALUE", "QUANTITY", "QTY", "UNITS", "VOLUME", "WEIGHT",
-        "KG", "KM", "MILES", "CO2", "EMISSION", "EMISSIONS", "ENERGY", "KWH", "HOURS",
+        "NET",
+        "GROSS",
+        "TOTAL",
+        "VALUE",
+        "QUANTITY",
+        "QTY",
+        "UNITS",
+        "VOLUME",
+        "WEIGHT",
+        "KG",
+        "KM",
+        "MILES",
+        "CO2",
+        "EMISSION",
+        "EMISSIONS",
+        "ENERGY",
+        "KWH",
+        "HOURS",
     }
 )
 _NON_ADDITIVE_MEASURE_TOKENS = frozenset(
     {
-        "SCORE", "RATE", "RATIO", "PCT", "PERCENT", "SHARE", "AVG", "MEAN", "MEDIAN", "RANK",
-        "INDEX", "PER", "AGE", "YEAR", "MONTH", "LEVEL", "BAND", "GRADE", "PRICE",
-        "LATENCY", "TEMPERATURE", "TEMP",
+        "SCORE",
+        "RATE",
+        "RATIO",
+        "PCT",
+        "PERCENT",
+        "SHARE",
+        "AVG",
+        "MEAN",
+        "MEDIAN",
+        "RANK",
+        "INDEX",
+        "PER",
+        "AGE",
+        "YEAR",
+        "MONTH",
+        "LEVEL",
+        "BAND",
+        "GRADE",
+        "PRICE",
+        "LATENCY",
+        "TEMPERATURE",
+        "TEMP",
     }
 )
 
@@ -125,6 +198,9 @@ class ExasolDashboardService:
     def sql_placeholders_help(self) -> dict[str, Any]:
         return exasol_sql_placeholders_help()
 
+    def semantic_layer_help(self) -> dict[str, Any]:
+        return exasol_semantic_layer_help()
+
     def create_local_profile(
         self,
         *,
@@ -139,6 +215,8 @@ class ExasolDashboardService:
         secret_env_var: str | None = None,
         statement_timeout_seconds: int | None = None,
         row_limit: int | None = None,
+        session_init_sql: list[str] | None = None,
+        existing_secret_ref: ExasolSecretRef | None = None,
     ) -> dict[str, Any]:
         self._validate_app_name(name, field_name="name")
         self._validate_backend_mode(backend, credential_mode)
@@ -149,13 +227,21 @@ class ExasolDashboardService:
             raise self._field_error("dsn", dsn_error)
         if not user:
             raise self._field_error("user", "must be a non-empty string.")
-        if bool(secret_value) == bool(secret_env_var):
+        if session_init_sql is not None:
+            try:
+                session_init_sql = normalize_session_init_sql(session_init_sql)
+            except ValueError as exc:
+                raise self._field_error("session_init_sql", str(exc)) from exc
+        if (secret_value and secret_env_var) or not (secret_value or secret_env_var or existing_secret_ref):
             raise DashServerError(
                 category="exasol_profile_validation_error",
                 summary="Provide exactly one of secret_value or secret_env_var.",
                 details={"field": "secret_value"},
             )
-        if secret_value:
+        if not (secret_value or secret_env_var):
+            assert existing_secret_ref is not None
+            secret_ref = existing_secret_ref
+        elif secret_value:
             secret_ref = self.secret_store.store_local_secret(name, secret_value)
         else:
             assert secret_env_var is not None
@@ -172,6 +258,7 @@ class ExasolDashboardService:
             secret_ref=secret_ref,
             statement_timeout_seconds=statement_timeout_seconds,
             row_limit=row_limit,
+            session_init_sql=session_init_sql,
         )
         stored = self.profile_store.save_profile(profile)
         return {
@@ -181,6 +268,38 @@ class ExasolDashboardService:
                 "key": stored.secret_ref.key,
             },
         }
+
+    def update_local_profile(self, *, name: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Rewrite an existing profile, keeping every setting ``changes`` doesn't give.
+
+        The stored secret reference is kept unless a new secret is given. ``tls_verify`` is
+        kept only while the DSN stays the same: a new DSN gets its own default unless the
+        call sets it, so a localhost exemption doesn't carry over to a remote host.
+        """
+
+        current = self.profile_store.get_profile(name)
+        defaults = current.query_defaults or {}
+
+        def pick(key: str, fallback: Any) -> Any:
+            return changes[key] if changes.get(key) is not None else fallback
+
+        dsn = pick("dsn", current.dsn)
+        new_secret = bool(changes.get("secret_value") or changes.get("secret_env_var"))
+        return self.create_local_profile(
+            name=name,
+            backend=pick("backend", current.backend),
+            credential_mode=pick("credential_mode", current.credential_mode),
+            dsn=dsn,
+            user=pick("user", current.user),
+            description=pick("description", current.description),
+            tls_verify=pick("tls_verify", current.tls_verify if dsn == current.dsn else None),
+            secret_value=changes.get("secret_value"),
+            secret_env_var=changes.get("secret_env_var"),
+            existing_secret_ref=None if new_secret else current.secret_ref,
+            statement_timeout_seconds=pick("statement_timeout_seconds", defaults.get("statement_timeout_seconds")),
+            row_limit=pick("row_limit", defaults.get("row_limit")),
+            session_init_sql=pick("session_init_sql", defaults.get("session_init_sql")),
+        )
 
     def local_profile_differences(
         self,
@@ -195,6 +314,7 @@ class ExasolDashboardService:
         secret_env_var: str,
         statement_timeout_seconds: int | None = None,
         row_limit: int | None = None,
+        session_init_sql: list[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Compare the stored profile with what ``create_local_profile`` would write.
 
@@ -215,6 +335,7 @@ class ExasolDashboardService:
             secret_ref=self.secret_store.env_secret_ref(secret_env_var),
             statement_timeout_seconds=statement_timeout_seconds,
             row_limit=row_limit,
+            session_init_sql=session_init_sql,
         )
 
         def comparable(profile: ExasolProfile) -> dict[str, Any]:
@@ -229,6 +350,7 @@ class ExasolDashboardService:
                 "secret_ref": f"{profile.secret_ref.provider}:{profile.secret_ref.key}",
                 "statement_timeout_seconds": query_defaults.get("statement_timeout_seconds"),
                 "row_limit": query_defaults.get("row_limit"),
+                "session_init_sql": query_defaults.get("session_init_sql") or [],
             }
 
         stored_fields, requested_fields = comparable(stored), comparable(requested)
@@ -251,7 +373,14 @@ class ExasolDashboardService:
         secret_ref: ExasolSecretRef,
         statement_timeout_seconds: int | None,
         row_limit: int | None,
+        session_init_sql: list[str] | None = None,
     ) -> ExasolProfile:
+        query_defaults: dict[str, Any] = {
+            "statement_timeout_seconds": statement_timeout_seconds or 30,
+            "row_limit": row_limit or 50000,
+        }
+        if session_init_sql:
+            query_defaults["session_init_sql"] = list(session_init_sql)
         return ExasolProfile(
             name=name,
             backend=backend,
@@ -262,10 +391,7 @@ class ExasolDashboardService:
             description=description or f"Local Exasol profile {name}.",
             tls_verify=default_tls_verify(dsn) if tls_verify is None else tls_verify,
             secret_ref=secret_ref,
-            query_defaults={
-                "statement_timeout_seconds": statement_timeout_seconds or 30,
-                "row_limit": row_limit or 50000,
-            },
+            query_defaults=query_defaults,
         )
 
     def validate_profile(self, name: str) -> dict[str, Any]:
@@ -314,21 +440,207 @@ class ExasolDashboardService:
     ) -> dict[str, Any]:
         self._validate_app_name(app_name, field_name="name")
         profile = self.profile_store.get_profile(profile_name)
-        blueprint = self._discover_schema_blueprint(
-            profile.name, schema_name=schema_name, table_name=table_name
+        models = self._published_semantic_models(profile.name)
+        by_schema = {ref.published_schema.upper(): ref for ref in models}
+        usable = [ref for ref in models if ref.readiness in _USABLE_SEMANTIC_READINESS]
+        if schema_name and schema_name.upper() in by_schema:
+            blueprint = self._discover_semantic_blueprint(
+                profile.name, [by_schema[schema_name.upper()]], object_name=table_name, candidates=models
+            )
+        elif schema_name is None and table_name is None and usable:
+            # A governed model beats a raw table the scorer happens to like.
+            blueprint = self._discover_semantic_blueprint(profile.name, usable, candidates=models)
+        else:
+            blueprint = self._discover_schema_blueprint(
+                profile.name,
+                schema_name=schema_name,
+                table_name=table_name,
+                excluded_schemas=set(by_schema),
+            )
+        source = (
+            f"semantic model {blueprint['model']} ({blueprint['schema_name']}.{blueprint['table_name']})"
+            if blueprint.get("kind") == "semantic"
+            else f"{blueprint['schema_name']}.{blueprint['table_name']}"
         )
         return build_schema_scaffold_bundle(
             app_name=app_name,
             title=title or f"{self._humanize_name(app_name)} Analytics",
             route=route or f"/apps/{app_name}",
             description=description
-            or (
-                f"Schema-tailored Exasol analytics app for {blueprint['schema_name']}.{blueprint['table_name']} "
-                f"backed by profile {profile.name}."
-            ),
+            or f"Schema-tailored Exasol analytics app for {source} backed by profile {profile.name}.",
             profile_name=profile.name,
             blueprint=blueprint,
         )
+
+    def _published_semantic_models(self, profile_name: str) -> list[SemanticModelRef]:
+        """Published Semantic Views models the profile can see; empty when none or not installed."""
+
+        result = self.execute_profile_query(profile_name, MODELS_QUERY)
+        if result.get("status") != "ok" or result.get("columns") != MODELS_COLUMNS:
+            return []
+        models = models_from_rows(result.get("rows") or [])
+        if not has_unfinished_validation(models):
+            return models
+        finished = self.execute_profile_query(profile_name, FINISHED_RUNS_QUERY)
+        ok = finished.get("status") == "ok" and finished.get("columns") == FINISHED_RUNS_COLUMNS
+        return apply_finished_runs(models, (finished.get("rows") or []) if ok else None)
+
+    def _discover_semantic_blueprint(
+        self,
+        profile_name: str,
+        models: list[SemanticModelRef],
+        *,
+        object_name: str | None = None,
+        candidates: list[SemanticModelRef],
+    ) -> dict[str, Any]:
+        """Pick a published model object and the fields its scaffold queries use.
+
+        With several models, takes the one with the most certified metrics. Every
+        metric/dimension pair a generated query uses is a valid combination in the model.
+        """
+
+        names = {f"m{index}": ref.model for index, ref in enumerate(models)}
+        name_list = ", ".join(f"{{{key}!s}}" for key in names)
+        fields_result = self.execute_profile_query(
+            profile_name,
+            "SELECT MODEL_NAME, OBJECT_NAME, PUBLISHED_OBJECT_NAME, FIELD_KIND, FIELD_NAME, SQL_COLUMN_NAME,\n"
+            "       ORDINAL_POSITION, DATA_TYPE, DISPLAY_NAME, FORMAT_HINT, IS_CERTIFIED\n"
+            "FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT\n"
+            f"WHERE MODEL_NAME IN ({name_list}) AND FIELD_KIND IN ('METRIC', 'DIMENSION')\n"
+            "ORDER BY MODEL_NAME, OBJECT_NAME, ORDINAL_POSITION\n",
+            params=names,
+        )
+        if fields_result.get("status") != "ok":
+            raise DashServerError(
+                category="exasol_schema_scaffold_error",
+                summary="Reading the semantic model's fields failed for the selected Exasol profile.",
+                details={"profile": profile_name, "query_result": fields_result},
+            )
+        objects: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in self._records_from_result(fields_result):
+            key = (str(row["MODEL_NAME"]), str(row["OBJECT_NAME"]))
+            entry = objects.setdefault(
+                key, {"published_object_name": str(row["PUBLISHED_OBJECT_NAME"]), "metrics": [], "dimensions": []}
+            )
+            field = {
+                "name": str(row["FIELD_NAME"]),
+                "column": str(row["SQL_COLUMN_NAME"]),
+                "label": str(row.get("DISPLAY_NAME") or row["FIELD_NAME"]),
+                "format": row.get("FORMAT_HINT"),
+                "certified": bool(row.get("IS_CERTIFIED")),
+                "temporal": str(row.get("DATA_TYPE") or "").upper().startswith(_TEMPORAL_DATA_TYPE_PREFIXES),
+            }
+            entry["metrics" if row["FIELD_KIND"] == "METRIC" else "dimensions"].append(field)
+        for entry in objects.values():
+            # Certified metrics first; the sort is stable, so model order breaks ties.
+            entry["metrics"].sort(key=lambda field: not field["certified"])
+        with_metrics = {key: entry for key, entry in objects.items() if entry["metrics"]}
+
+        if object_name is not None:
+            wanted = object_name.upper()
+            matches = [
+                key
+                for key, entry in with_metrics.items()
+                if wanted in (key[1].upper(), entry["published_object_name"].upper())
+            ]
+            if not matches:
+                raise DashServerError(
+                    category="exasol_schema_scaffold_error",
+                    summary=f"Semantic object {object_name} has no metrics in model {models[0].model}.",
+                    details={
+                        "profile": profile_name,
+                        "model": models[0].model,
+                        "table_name": object_name,
+                        "available_objects": sorted(entry["published_object_name"] for entry in with_metrics.values()),
+                    },
+                )
+            chosen = matches[0]
+        elif with_metrics:
+            chosen = max(
+                sorted(with_metrics),
+                key=lambda key: (
+                    sum(field["certified"] for field in with_metrics[key]["metrics"]),
+                    len(with_metrics[key]["metrics"]),
+                ),
+            )
+        else:
+            raise DashServerError(
+                category="exasol_schema_scaffold_error",
+                summary="The semantic model has no metrics to scaffold.",
+                details={"profile": profile_name, "models": [ref.model for ref in models]},
+            )
+        model = next(ref for ref in models if ref.model == chosen[0])
+        entry = with_metrics[chosen]
+        valid = self._valid_semantic_combinations(profile_name, model.model, chosen[1])
+
+        metrics = entry["metrics"]
+        primary = metrics[0]
+
+        def dimension(*, temporal: bool) -> dict[str, Any] | None:
+            return next(
+                (
+                    field
+                    for field in entry["dimensions"]
+                    if field["temporal"] is temporal and (primary["name"], field["name"]) in valid
+                ),
+                None,
+            )
+
+        time_dimension = dimension(temporal=True)
+        category_dimension = dimension(temporal=False)
+        detail_dimension = category_dimension or time_dimension
+        detail_metrics = (
+            [field for field in metrics if (field["name"], detail_dimension["name"]) in valid][:4]
+            if detail_dimension is not None
+            else []
+        )
+        object_label = entry["published_object_name"]
+        return {
+            "kind": "semantic",
+            "model": model.model,
+            "model_readiness": model.readiness,
+            "preprocessor": model.preprocessor,
+            "schema_name": model.published_schema,
+            "table_name": object_label,
+            "summary_metrics": metrics[:4],
+            "primary_metric": primary,
+            "time_dimension": time_dimension,
+            "category_dimension": category_dimension,
+            "detail_dimension": detail_dimension,
+            "detail_metrics": detail_metrics,
+            "business_caption": (
+                f"Governed metrics from semantic model {model.model} ({model.published_schema}.{object_label}). "
+                "Definitions and labels come from the model; change them there, not in this app's SQL."
+            ),
+            "summary_heading": f"{object_label} KPI Snapshot",
+            "chart_heading": (
+                f"{primary['label']} by {time_dimension['label']}"
+                if time_dimension
+                else f"{primary['label']} by {category_dimension['label']}"
+                if category_dimension
+                else primary["label"]
+            ),
+            "table_heading": (
+                f"{primary['label']} by {detail_dimension['label']}" if detail_dimension else f"{object_label} Detail"
+            ),
+            "semantic_candidates": [
+                {"model": ref.model, "published_schema": ref.published_schema, "readiness": ref.readiness}
+                for ref in candidates
+            ],
+        }
+
+    def _valid_semantic_combinations(self, profile_name: str, model: str, object_name: str) -> set[tuple[str, str]]:
+        """(metric, dimension) pairs the model declares valid for one object."""
+
+        result = self.execute_profile_query(
+            profile_name,
+            "SELECT METRIC_NAME, DIMENSION_NAME FROM SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT\n"
+            "WHERE MODEL_NAME = {model!s} AND OBJECT_NAME = {object_name!s} AND IS_VALID\n",
+            params={"model": model, "object_name": object_name},
+        )
+        if result.get("status") != "ok":
+            return set()
+        return {(str(row["METRIC_NAME"]), str(row["DIMENSION_NAME"])) for row in self._records_from_result(result)}
 
     def execute_profile_query(
         self,
@@ -354,7 +666,10 @@ class ExasolDashboardService:
                 # downstream code expects covers connection-level failures too. (BUG-006.)
                 connection = self.connection_manager.connect(profile)
                 statement = connection.execute(sql_text, params or {})
+                if getattr(statement, "result_type", None) == "rowCount":
+                    return self._no_result_set(profile, statement)
                 visible_rows, truncated = self._fetch_bounded_rows(statement, row_limit)
+                visible_rows = self._typed_rows(statement, visible_rows)
                 columns = self._extract_columns(statement)
                 # Close only the statement; the connection stays cached. Closing
                 # promptly here also matters more than it used to (PS26-BUG-004):
@@ -393,7 +708,7 @@ class ExasolDashboardService:
                 return {
                     "status": "error",
                     "profile": profile.name,
-                    "error": str(exc),
+                    "error": describe_query_error(exc),
                     "summary": f"Exasol query failed for profile {profile.name}.",
                 }
         # Unreachable — the loop returns on success or after the second attempt's
@@ -403,6 +718,33 @@ class ExasolDashboardService:
             "profile": profile.name,
             "error": "exceeded retry budget",
             "summary": f"Exasol query failed for profile {profile.name}.",
+        }
+
+    def _no_result_set(self, profile: ExasolProfile, statement: Any) -> dict[str, Any]:
+        """Result for a statement without a result set (ALTER SESSION, DML, EXECUTE SCRIPT ...).
+
+        Fetching would raise, so this answers with no rows instead. The cached connection is
+        then discarded: it is shared by every app on this profile and thread, and a session
+        change made by one app's query file must not leak into another's queries. Session
+        setup belongs in the profile's `session_init_sql`, which runs on every connection.
+        """
+
+        rowcount = getattr(statement, "rowcount", None)
+        affected_rows = rowcount() if callable(rowcount) else 0
+        self.connection_manager.invalidate(profile.name)
+        return {
+            "status": "ok",
+            "profile": profile.name,
+            "columns": [],
+            "rows": [],
+            "row_count": 0,
+            "affected_rows": affected_rows,
+            "truncated": False,
+            "summary": (
+                f"Statement ran on Exasol profile {profile.name} and returned no result set. "
+                "Session changes made by a query file do not persist; declare session setup in "
+                "the profile's session_init_sql instead."
+            ),
         }
 
     def _serialize_profile(self, profile: ExasolProfile) -> dict[str, Any]:
@@ -452,7 +794,9 @@ class ExasolDashboardService:
         *,
         schema_name: str | None = None,
         table_name: str | None = None,
+        excluded_schemas: set[str] | None = None,
     ) -> dict[str, Any]:
+        excluded = {schema.upper() for schema in excluded_schemas or set()}
         params = {"schema_name": schema_name} if schema_name else {}
         sql_text = (
             "SELECT COLUMN_SCHEMA,\n"
@@ -465,10 +809,7 @@ class ExasolDashboardService:
         if schema_name:
             sql_text += "WHERE COLUMN_SCHEMA = {schema_name!s}\n"
         else:
-            sql_text += (
-                "WHERE COLUMN_SCHEMA NOT LIKE 'EXA_%'\n"
-                "  AND COLUMN_SCHEMA NOT IN ('SYS')\n"
-            )
+            sql_text += "WHERE COLUMN_SCHEMA NOT LIKE 'EXA_%'\n  AND COLUMN_SCHEMA NOT IN ('SYS')\n"
         sql_text += "ORDER BY COLUMN_SCHEMA, COLUMN_TABLE, COLUMN_ORDINAL_POSITION\n"
 
         result = self.execute_profile_query(profile_name, sql_text, params=params)
@@ -497,7 +838,9 @@ class ExasolDashboardService:
             # caller who explicitly names `schema_name` clearly wants that schema on
             # purpose, and excluding it here would wipe out every one of its rows
             # before the explicit-schema path ever sees them.
-            if schema_name is None and _is_platform_internal_schema(resolved_schema):
+            if schema_name is None and (
+                _is_platform_internal_schema(resolved_schema) or resolved_schema.upper() in excluded
+            ):
                 continue
             grouped.setdefault((resolved_schema, resolved_table), []).append(row)
         if not grouped:
@@ -538,9 +881,7 @@ class ExasolDashboardService:
             if override is None:
                 raise DashServerError(
                     category="exasol_schema_scaffold_error",
-                    summary=(
-                        f"Table {table_name} was not found in the introspected schema."
-                    ),
+                    summary=(f"Table {table_name} was not found in the introspected schema."),
                     details={
                         "profile": profile_name,
                         "schema_name": schema_name,
@@ -767,6 +1108,27 @@ class ExasolDashboardService:
         else:
             rows = self._fetch_rows(statement)
         return rows[:row_limit], len(rows) > row_limit
+
+    def _typed_rows(self, statement: Any, rows: list[list[Any]]) -> list[list[Any]]:
+        """Convert DECIMAL/DATE/TIMESTAMP values to Python numbers and dates.
+
+        The cached dashboard connection has no pyexasol `fetch_mapper` (a mapper is a
+        per-connection option), so the conversion runs here, driven by the statement's
+        column metadata. Rows pass through unchanged when that metadata isn't available
+        (lightweight test doubles).
+        """
+
+        columns = getattr(statement, "columns", None)
+        try:
+            column_types = list(columns().values()) if callable(columns) else None
+        except Exception:
+            column_types = None
+        if not column_types or not all(isinstance(data_type, dict) for data_type in column_types):
+            return rows
+        return [
+            [dashboard_fetch_mapper(value, data_type) for value, data_type in zip(row, column_types, strict=False)]
+            for row in rows
+        ]
 
     def _fetch_rows(self, statement: Any) -> list[list[Any]]:
         # `statement` is `Any` rather than `ExaStatementLike` because tests and the

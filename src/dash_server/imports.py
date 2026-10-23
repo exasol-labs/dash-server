@@ -40,11 +40,7 @@ def isolated_local_imports(root: Path) -> Iterator[None]:
 
     resolved_root = root.resolve()
     module_names = local_module_names(resolved_root)
-    original_modules = {
-        name: sys.modules[name]
-        for name in module_names
-        if name in sys.modules
-    }
+    original_modules = {name: sys.modules[name] for name in module_names if name in sys.modules}
     for name in module_names:
         sys.modules.pop(name, None)
     sys.path.insert(0, str(resolved_root))

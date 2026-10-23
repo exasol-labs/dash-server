@@ -75,6 +75,80 @@ _SCHEMA_BLUEPRINTS = {
         "measure_columns": [],
         "relationship_hints": [],
     },
+    # Semantic Views model: Semantic SQL over governed metrics, no raw aggregation.
+    "semantic_sales": {
+        "kind": "semantic",
+        "model": "sales",
+        "model_readiness": "VALID",
+        "preprocessor": "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR",
+        "schema_name": "SEMANTIC_SALES",
+        "table_name": "SALES",
+        "summary_metrics": [
+            {
+                "name": "total_revenue",
+                "column": "TOTAL_REVENUE",
+                "label": "Total Revenue",
+                "format": "currency",
+                "certified": True,
+                "temporal": False,
+            },
+            {
+                "name": "gross_margin_pct",
+                "column": "GROSS_MARGIN_PCT",
+                "label": "Gross Margin %",
+                "format": "percentage",
+                "certified": True,
+                "temporal": False,
+            },
+        ],
+        "primary_metric": {
+            "name": "total_revenue",
+            "column": "TOTAL_REVENUE",
+            "label": "Total Revenue",
+            "format": "currency",
+            "certified": True,
+            "temporal": False,
+        },
+        "time_dimension": {
+            "name": "order_month",
+            "column": "ORDER_MONTH",
+            "label": "Order Month",
+            "format": "month",
+            "certified": True,
+            "temporal": True,
+        },
+        "category_dimension": {
+            "name": "customer_region",
+            "column": "CUSTOMER_REGION",
+            "label": "Customer Region",
+            "format": None,
+            "certified": True,
+            "temporal": False,
+        },
+        "detail_dimension": {
+            "name": "customer_region",
+            "column": "CUSTOMER_REGION",
+            "label": "Customer Region",
+            "format": None,
+            "certified": True,
+            "temporal": False,
+        },
+        "detail_metrics": [
+            {
+                "name": "total_revenue",
+                "column": "TOTAL_REVENUE",
+                "label": "Total Revenue",
+                "format": "currency",
+                "certified": True,
+                "temporal": False,
+            },
+        ],
+        "business_caption": "Governed metrics from semantic model sales (SEMANTIC_SALES.SALES).",
+        "summary_heading": "SALES KPI Snapshot",
+        "chart_heading": "Total Revenue by Order Month",
+        "table_heading": "Total Revenue by Customer Region",
+        "semantic_candidates": [],
+    },
 }
 
 
@@ -118,6 +192,7 @@ def _generate_outputs() -> dict[str, str]:
         "help/sql_placeholders.json": scaffold.exasol_sql_placeholders_help(),
         "help/dashboard_patterns.json": scaffold.exasol_dashboard_patterns_help(),
         "help/agent_workflow.json": scaffold.exasol_agent_workflow_help(),
+        "help/semantic_layer.json": scaffold.exasol_semantic_layer_help(),
     }
     for path, payload in help_payloads.items():
         outputs[path] = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
@@ -154,11 +229,7 @@ def test_scaffold_output_is_byte_identical_to_golden(rel_path: str) -> None:
 def test_golden_set_has_no_orphans() -> None:
     """Every golden fixture on disk must correspond to a produced output."""
 
-    on_disk = {
-        str(path.relative_to(GOLDEN_ROOT))
-        for path in GOLDEN_ROOT.rglob("*")
-        if path.is_file()
-    }
+    on_disk = {str(path.relative_to(GOLDEN_ROOT)) for path in GOLDEN_ROOT.rglob("*") if path.is_file()}
     produced = set(_OUTPUTS)
     orphans = on_disk - produced
     assert not orphans, f"Golden fixtures with no matching output: {sorted(orphans)}"

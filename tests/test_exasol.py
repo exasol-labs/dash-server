@@ -361,9 +361,7 @@ def test_app_create_exasol_dashboard_creates_live_querying_app(app, client) -> N
 @pytest.mark.slow
 def test_exasol_authoring_guidance_and_validation_block_embedded_credentials(client) -> None:
     authoring_guide = _resource_json(client, "dash://meta/app-authoring-guide", request_id=30)
-    assert any(
-        "Do not embed database credentials" in rule for rule in authoring_guide["required_rules"]
-    )
+    assert any("Do not embed database credentials" in rule for rule in authoring_guide["required_rules"])
     assert any("pyexasol.connect" in rule for rule in authoring_guide["required_rules"])
 
     create_response = _call_mcp(
@@ -498,7 +496,7 @@ def test_exasol_patterns_help_and_kpi_trend_scaffold(app, client) -> None:
     )
     assert requirements_response.status_code == 200
     requirements_text = requirements_response.get_json()["result"]["structuredContent"]["content"]
-    assert "pyexasol>=2.2.2,<3.0" in requirements_text
+    assert "pyexasol>=3.0.1,<4.0" in requirements_text
     assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
@@ -578,7 +576,7 @@ def test_app_scaffold_from_schema_generates_schema_specific_bundle(app, client) 
     )
     assert requirements_response.status_code == 200
     requirements_text = requirements_response.get_json()["result"]["structuredContent"]["content"]
-    assert "pyexasol>=2.2.2,<3.0" in requirements_text
+    assert "pyexasol>=3.0.1,<4.0" in requirements_text
     assert "pyexasol>=1.0,<2.0" not in requirements_text
 
 
@@ -671,9 +669,7 @@ def test_ps26_bug008_blind_auto_pick_ignores_platform_internal_schemas(app, clie
     assert blueprint["schema_name"] != "SEMANTIC_AGENT"
     assert blueprint["schema_name"] == "SENSORS"
     assert blueprint["table_name"] == "READINGS"
-    assert all(
-        candidate["schema_name"] != "SEMANTIC_AGENT" for candidate in blueprint["table_candidates"]
-    )
+    assert all(candidate["schema_name"] != "SEMANTIC_AGENT" for candidate in blueprint["table_candidates"])
 
 
 @pytest.mark.slow
@@ -1036,6 +1032,25 @@ def test_bug001_tls_verify_false_keeps_encryption_on_and_disables_cert_check(tmp
     assert kwargs["websocket_sslopt"] == {"cert_reqs": ssl.CERT_NONE}
 
 
+def test_default_connector_loader_disables_pyexasol_telemetry(tmp_path, monkeypatch) -> None:
+    """pyexasol 3 reports each connect() to Exasol telemetry unless EXASOL_TELEMETRY_DISABLE is set."""
+    import os
+
+    monkeypatch.delenv("EXASOL_TELEMETRY_DISABLE", raising=False)
+    cm = ExasolConnectionManager(ExasolSecretStore(str(tmp_path)))
+    cm._default_connector_loader()
+    assert os.environ.get("EXASOL_TELEMETRY_DISABLE") == "1"
+
+
+def test_default_connector_loader_keeps_operator_telemetry_setting(tmp_path, monkeypatch) -> None:
+    import os
+
+    monkeypatch.setenv("EXASOL_TELEMETRY_DISABLE", "yes")
+    cm = ExasolConnectionManager(ExasolSecretStore(str(tmp_path)))
+    cm._default_connector_loader()
+    assert os.environ["EXASOL_TELEMETRY_DISABLE"] == "yes"
+
+
 def test_bug001_tls_verify_true_requires_cert(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EXA_PASSWORD", "test")
     fake = _ConnectKwargsCapture()
@@ -1068,9 +1083,7 @@ def test_bug001_self_signed_cert_error_gets_friendly_hint() -> None:
     assert "tls_verify=false" in classified["hint"]
 
 
-def test_ps26_bug001_cached_connect_passes_profile_statement_timeout_to_pyexasol(
-    tmp_path, monkeypatch
-) -> None:
+def test_ps26_bug001_cached_connect_passes_profile_statement_timeout_to_pyexasol(tmp_path, monkeypatch) -> None:
     """PS26-BUG-001 regression: `query_defaults.statement_timeout_seconds` used to be
     stored and displayed but never reached `pyexasol.connect(...)` for the runtime/
     callback path (`ExasolConnectionManager.connect`) — only one-shot uncached probe
@@ -1253,9 +1266,7 @@ class _FetchManyStatement:
         return self._rows[:size]
 
     def fetchall(self) -> list[list[Any]]:
-        raise AssertionError(
-            "fetchall() must not be called when fetchmany() is available (PS26-BUG-004)"
-        )
+        raise AssertionError("fetchall() must not be called when fetchmany() is available (PS26-BUG-004)")
 
     def close(self) -> None:
         return None
@@ -1562,11 +1573,7 @@ def _create_parameterized_sql_app(client, *, name: str, include_smoke_params: bo
         },
         {
             "path": "queries/agent_latency.sql",
-            "content": (
-                "SELECT AGENT_ID, MISSING_LATENCY_MS\n"
-                "FROM AGENT_EVENTS\n"
-                "WHERE AGENT_ID = {agent_id!s}\n"
-            ),
+            "content": ("SELECT AGENT_ID, MISSING_LATENCY_MS\nFROM AGENT_EVENTS\nWHERE AGENT_ID = {agent_id!s}\n"),
         },
         {"path": "requirements.txt", "content": "dash>=4.0,<5.0\npyexasol>=2.2.2,<3.0\n"},
     ]
@@ -1661,8 +1668,9 @@ def test_parameterized_sql_smoke_params_exercise_query_and_catch_bad_column(app,
     assert probe["details"]["first_failed_file"] == "queries/agent_latency.sql"
     assert "MISSING_LATENCY_MS" in probe["details"]["latest_error"]
     executions = [execution for connection in fake_module.connections for execution in connection.executions]
-    assert executions
-    assert executions[0][1] == {"agent_id": "agent-001"}
+    smoke_executions = [execution for execution in executions if "MISSING_LATENCY_MS" in execution[0]]
+    assert smoke_executions
+    assert smoke_executions[0][1] == {"agent_id": "agent-001"}
 
 
 def _sql_smoke_app_files(*, name: str, bad_column: bool) -> list[dict[str, Any]]:
@@ -1671,9 +1679,7 @@ def _sql_smoke_app_files(*, name: str, bad_column: bool) -> list[dict[str, Any]]
         "title": name.replace("-", " ").title(),
         "route": f"/apps/{name}",
         "template": "exasol-analytics",
-        "data_sources": {
-            "primary": {"kind": "exasol", "profile": "analytics-prod", "auth_mode": "local_direct"}
-        },
+        "data_sources": {"primary": {"kind": "exasol", "profile": "analytics-prod", "auth_mode": "local_direct"}},
     }
     column = "MISSING_LATENCY_MS" if bad_column else "LATENCY_MS"
     return [
@@ -1730,7 +1736,10 @@ def test_ps26_bug011_last_known_good_revision_skips_a_broken_rollback_target(app
             request_id=request_id,
         )
         return _call_mcp(
-            client, "tools/call", {"name": "app_build", "arguments": {"name": "last-known-good"}}, request_id=request_id + 1
+            client,
+            "tools/call",
+            {"name": "app_build", "arguments": {"name": "last-known-good"}},
+            request_id=request_id + 1,
         )
 
     # r1: good SQL, created via app_create_from_files (start_immediately=False, so
@@ -1838,16 +1847,43 @@ def test_ps26_bug005_app_create_from_files_runs_preflight_on_the_first_revision(
     assert probe["status"] == "failed"
     assert "MISSING_LATENCY_MS" in probe["details"]["latest_error"]
 
-    # The app still exists (creation isn't blocked outright, matching app_build's
-    # "revision exists, but preflight failed" contract) - a healthcheck independently
-    # confirms the same failure, so the two surfaces agree.
+    # The app and its revision exist (creation isn't blocked outright, matching
+    # app_build's "revision exists, but preflight failed" contract), but a first
+    # revision that failed preflight has nothing to fall back on, so it isn't started.
+    assert "so the app was not started" in structured["error"]["summary"]
+    assert structured["app"]["status"] == "stopped"
+    assert structured["app"]["published"] is False
+    assert client.get("/apps/preflight-on-create").status_code == 503  # stopped: not serving
     health = _call_mcp(
         client,
         "tools/call",
         {"name": "app_run_healthcheck", "arguments": {"name": "preflight-on-create"}},
         request_id=992,
     ).get_json()["result"]["structuredContent"]
-    assert health["health"]["status"] == "degraded"
+    assert health["health"]["status"] == "stopped"
+
+    # Fixing the query and deploying builds, checks, and starts the app.
+    _call_mcp(
+        client,
+        "tools/call",
+        {
+            "name": "app_put_files",
+            "arguments": {
+                "name": "preflight-on-create",
+                "files": _sql_smoke_app_files(name="preflight-on-create", bad_column=False),
+            },
+        },
+        request_id=993,
+    )
+    deployed = _call_mcp(
+        client,
+        "tools/call",
+        {"name": "app_deploy_draft", "arguments": {"name": "preflight-on-create"}},
+        request_id=994,
+    ).get_json()["result"]
+    assert deployed["isError"] is False, deployed["content"][0]["text"]
+    assert deployed["structuredContent"]["app"]["status"] == "running"
+    assert client.get("/apps/preflight-on-create").status_code == 200
 
 
 @pytest.mark.slow
@@ -2157,9 +2193,7 @@ def test_profile_create_rejects_dsn_pyexasol_cannot_parse(client) -> None:
 
 
 def test_unparseable_dsn_error_from_older_profiles_gets_friendly_hint() -> None:
-    classified = _classify_connection_error(
-        "Could not parse connection string part [db.example.com:8563/ABCD]"
-    )
+    classified = _classify_connection_error("Could not parse connection string part [db.example.com:8563/ABCD]")
     assert classified is not None
     assert classified["kind"] == "dsn_invalid"
     assert "host[/FINGERPRINT][:port]" in classified["hint"]
@@ -2289,3 +2323,49 @@ def test_bug29_key_column_names(column_name: str, is_key: bool) -> None:
     from dash_server.exasol.service import _is_key_column_name
 
     assert _is_key_column_name(column_name) is is_key
+
+
+def test_semantic_layer_guidance_is_discoverable(client) -> None:
+    listed = _call_mcp(client, "resources/list", {}, request_id=1).get_json()["result"]["resources"]
+    assert "dash://exasol/help/semantic-layer" in {resource["uri"] for resource in listed}
+
+    guide = _resource_json(client, "dash://exasol/help/semantic-layer", request_id=2)
+    assert any("MODELS_FOR_AGENT" in step for step in guide["check_first"])
+    assert guide["profile_setup"]["session_init_sql"] == [
+        "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+    ]
+    assert any("GENERATED_SQL" in rule for rule in guide["never"])
+
+    agent_help = _resource_json(client, "dash://exasol/help/agent-workflow", request_id=3)
+    assert "dash://exasol/help/semantic-layer" in agent_help["recommended_workflow"][0]
+
+    workflows = _resource_json(client, "dash://meta/workflows", request_id=4)
+    names = {workflow["name"] for workflow in workflows["workflows"]}
+    assert "create_exasol_dashboard_on_semantic_model" in names
+
+
+def test_scaffold_requirements_match_the_server() -> None:
+    """Scaffolded apps must ask for the dash and pyexasol the server runs with.
+
+    With shared dependencies, an app's requirements are installed into the server's own
+    environment, so a stale range (pyexasol<3 after the server moved to 3) either fails the
+    install or changes the server's packages.
+    """
+
+    from importlib import metadata
+
+    from packaging.requirements import Requirement
+
+    from dash_server.exasol.scaffold import EXASOL_SCAFFOLD_REQUIREMENTS
+
+    server = {
+        requirement.name.lower(): requirement.specifier
+        for requirement in map(Requirement, metadata.requires("dash-server") or [])
+        if requirement.marker is None
+    }
+    scaffold = {
+        requirement.name.lower(): requirement.specifier
+        for requirement in map(Requirement, EXASOL_SCAFFOLD_REQUIREMENTS.split())
+    }
+    for name in ("dash", "pyexasol"):
+        assert scaffold[name] == server[name], name

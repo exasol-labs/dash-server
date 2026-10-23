@@ -8,6 +8,7 @@ import hashlib
 from flask import Blueprint, Response, current_app, jsonify, redirect, render_template
 
 from dash_server.auth import Principal, current_auth_context
+from dash_server.timestamps import utc_now_naive
 
 
 def create_public_blueprint() -> Blueprint:
@@ -24,10 +25,7 @@ def create_public_blueprint() -> Blueprint:
             authorization_service=current_app.extensions["authorization_service"],
         )
         consumption_policy = current_app.extensions["consumption_service"].policy
-        if (
-            not auth_context.principal.is_authenticated
-            and not consumption_policy.public_exports_enabled
-        ):
+        if not auth_context.principal.is_authenticated and not consumption_policy.public_exports_enabled:
             for app_entry in catalog["apps"]:
                 app_entry["consumption"]["visible"] = False
         return render_template("dashboard_catalog.html", catalog=catalog)
@@ -65,7 +63,8 @@ def create_public_blueprint() -> Blueprint:
             email=link.recipient_email,
         )
         existing_grants = [
-            grant for grant in registry.list_acl_entries(link.app_name)
+            grant
+            for grant in registry.list_acl_entries(link.app_name)
             if grant.principal_type == "link" and grant.principal_id == principal.principal_id
         ]
         if not existing_grants:
@@ -158,9 +157,7 @@ def create_public_blueprint() -> Blueprint:
         # A disabled app is unpublished on purpose; keep it indistinguishable from a missing one.
         if app is not None and app.enabled:
             authorization_service = current_app.extensions["authorization_service"]
-            decision = authorization_service.authorize_app(
-                current_auth_context(), app, "dashboard.view_live"
-            )
+            decision = authorization_service.authorize_app(current_auth_context(), app, "dashboard.view_live")
             if not decision.allowed:
                 # Same denial a mounted app returns, so mount state is not observable.
                 status, headers, body = authorization_service.denial_wsgi_response(decision)
@@ -201,7 +198,7 @@ def create_public_blueprint() -> Blueprint:
 
 def _is_expired(expires_at: str) -> bool:
     try:
-        return datetime.fromisoformat(expires_at) <= datetime.utcnow()
+        return datetime.fromisoformat(expires_at) <= utc_now_naive()
     except ValueError:
         return False
 

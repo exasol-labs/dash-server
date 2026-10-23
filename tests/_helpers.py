@@ -8,6 +8,7 @@ sites migrate opportunistically.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -110,6 +111,26 @@ def wait_for(
             return value
         time.sleep(interval)
     raise AssertionError(f"Timed out after {timeout}s waiting for {message}")
+
+
+def wait_for_audit_events(db_path: str, job_id: str, expected: set[str], *, timeout: float = 5.0) -> set[str]:
+    """Wait until a consumption job's audit trail holds ``expected``; return all its event types.
+
+    A job reaches its terminal status before the worker records the matching audit event,
+    so reading the trail the moment the status flips can miss it.
+    """
+
+    def events() -> set[str]:
+        with sqlite3.connect(db_path) as connection:
+            return {
+                row[0]
+                for row in connection.execute(
+                    "SELECT event_type FROM consumption_audit_events WHERE job_id = ?", (job_id,)
+                ).fetchall()
+            }
+
+    wait_for(lambda: expected <= events(), timeout=timeout, message=f"audit events {sorted(expected)}")
+    return events()
 
 
 __all__ = [

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -27,6 +27,7 @@ import pytest
 from _helpers import hosted_test_config
 
 from dash_server.app_factory import create_app
+from dash_server.timestamps import utc_now_naive
 from dash_server.auth.authorization import AuthorizationService
 from dash_server.auth.models import AuthContext, Principal
 from dash_server.registry.models import AppManifest
@@ -180,9 +181,7 @@ def test_public_policy_matched_policy_is_plain_dict(tmp_path: Path) -> None:
     assert app is not None
 
     authz = AuthorizationService(registry, {"DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED": True})
-    decision = authz.authorize_app(
-        _hosted_context(Principal.anonymous()), app, "dashboard.view_live"
-    )
+    decision = authz.authorize_app(_hosted_context(Principal.anonymous()), app, "dashboard.view_live")
 
     assert decision.allowed is True
     assert decision.reason == "public_dashboard"
@@ -203,9 +202,9 @@ def test_share_link_redeem_flow(tmp_path: Path) -> None:
     raw_token = "characterization-token"
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     # Real share links store a naive UTC stamp (the MCP handler uses
-    # datetime.utcnow().isoformat()); mirror that so the redeem path behaves as
+    # utc_now_naive().isoformat()); mirror that so the redeem path behaves as
     # in production rather than tripping the separate tz-comparison edge case.
-    expires_at = (datetime.utcnow() + timedelta(hours=24)).replace(microsecond=0).isoformat()
+    expires_at = (utc_now_naive() + timedelta(hours=24)).replace(microsecond=0).isoformat()
     created_link = registry.create_share_link(
         "shared-demo",
         token_hash=token_hash,

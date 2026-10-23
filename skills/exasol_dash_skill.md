@@ -18,6 +18,7 @@ This file is prose and can drift. The MCP resources are generated from the runni
 | `dash://exasol/help/sql-placeholders` | the full placeholder table and failure modes |
 | `dash://exasol/help/dashboard-patterns` | which scaffold pattern emits real SQL vs demo stubs |
 | `dash://exasol/help/agent-workflow` | how to combine dash-server with a separate Exasol MCP server |
+| `dash://exasol/help/semantic-layer` | building on a governed Exasol Semantic Views model, when the database has one |
 | `dash://meta/session-channel-guide` | inspecting a live dashboard in the user's browser (local mode) |
 | `dash://meta/workflows` | the canonical create → validate → build → preview → promote sequence |
 
@@ -61,16 +62,41 @@ Do not use Dash callbacks to simulate a database engine.
 8. Return only the columns and rows the component actually needs.
 9. Prefer one good query per visual state over shipping a giant raw dataset to Python and slicing it there.
 
-## Start from a scaffold, not a blank file
+## Check for a semantic layer before writing metric SQL
 
-Hand-writing the four files is the slow path and gets the factory contract subtly wrong. Prefer, in this order:
+If the database has a governed semantic model (Exasol Semantic Views), build on it. Its metrics are the certified definitions, and it combines multi-grain and multi-source data correctly. Hand-written metric SQL over the raw tables can disagree with the certified number and still pass every check.
 
-1. **`app_scaffold_from_schema`** — introspects the catalog, picks analytically useful columns and date columns, and emits **catalog-backed SQL** bound to a real schema. This is the right default when the user has a schema in mind.
-2. **`app_create_exasol_dashboard`** with `pattern="analytics-hub"` — the default multi-tab scaffold (system health, query history, and a business placeholder ready for your SQL).
-3. **`app_create_exasol_dashboard`** with `pattern="overview"` or `"kpi-trend"` — **demo-only.** Their generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers. Use them to look at layout shape, never as a starting point for real data. Replace every query before showing the result to a user.
-4. `app_create_from_files` — only when the dashboard genuinely does not fit a pattern.
+```sql
+SELECT MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION
+FROM SEMANTIC_AGENT.MODELS_FOR_AGENT
+WHERE MODEL_STATUS = 'PUBLISHED';
+```
 
-Check `dash://exasol/help/dashboard-patterns` for the current pattern list and which ones emit real SQL; the `sql_kind` field on each pattern says `real` or `demo_placeholder`.
+`exasol_profile_validate` also lists them (`semantic_layer.models`). If a model covers the question:
+
+- Give the profile `session_init_sql = ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"]` (for an existing profile: `exasol_profile_create_local` with `name`, `overwrite: true` and `session_init_sql`; other settings are kept) and confirm `session_init.status == "applied"` with `exasol_profile_validate`. `EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL()`, the form `INSTRUCTIONS_FOR_AGENT` names, works too.
+- Query the published views from `queries/*.sql`: `SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region`. Metrics are already aggregated; don't wrap them in `SUM()`.
+- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes today's definition. `app_run_healthcheck` degrades on such files (`semantic_models` → `frozen_files`).
+- Take labels and formats from `SEMANTIC_AGENT.FIELDS_FOR_AGENT` instead of hard-coding them.
+- Live Semantic SQL in `queries/*.sql` is the lane dash-server hosts; Semantic Views' per-request compile lane (`COMPILE_REQUEST_JSON` on every request) isn't supported.
+- Prototyping through the Exasol MCP server: run Semantic SQL calls one at a time. A pooled session without the preprocessor fails with `not a valid GROUP BY expression`; set the preprocessor again and rerun.
+- For a starting point, `app_scaffold_from_schema` with `schema_name` set to the model's published schema generates a dashboard over its certified metrics. It reads labels, formats and certification from the model at runtime and shows the model's validation state; keep its query columns unaliased so they match `FIELDS_FOR_AGENT.SQL_COLUMN_NAME`.
+- After a build, `app_run_healthcheck` reports metric definitions that changed since that revision was built (`semantic_models` → `changed_since_build`), and `dash://exasol/semantic-usage` shows which dashboards use a given metric, plus the ones that bypass the model (`bypasses`).
+
+`dash://exasol/help/semantic-layer` has the full recipe, including grants for a non-SYS profile user and how SQL smoke and the `semantic_models` healthcheck probe treat semantic queries.
+
+Without a semantic layer, aggregate each measure at its own grain before joining: freight stored once per order, summed over a join to order lines, is counted once per line.
+
+## Choosing a creation path
+
+`dash://exasol/help/dashboard-patterns` (`choosing_a_creation_path`) is authoritative. In short:
+
+1. **`app_create_from_files`** with `template="exasol-analytics"` — the default once you know what you are building. It takes your `app.py` and `queries/*.sql` and injects `dash_server_exasol.py`, so skipping a scaffold costs nothing. This is also the path for dashboards on a semantic model.
+2. **`app_scaffold_from_schema`** — while you are still exploring an unfamiliar schema. It picks analytically useful columns and date columns and emits **catalog-backed SQL**; keep what it taught you and delete the rest.
+3. **`app_create_exasol_dashboard`** with `pattern="analytics-hub"` — a prebuilt multi-tab dashboard (system health, query history, and a business placeholder ready for your SQL).
+4. **`app_create_exasol_dashboard`** with `pattern="overview"` or `"kpi-trend"` — **demo-only.** Their generated `queries/*.sql` are `SELECT … FROM DUAL` stubs with hard-coded numbers. Use them to look at layout shape, never as a starting point for real data.
+
+The `sql_kind` field on each pattern in `dash://exasol/help/dashboard-patterns` says `real` or `demo_placeholder`.
 
 ## The data-layer return contract
 
@@ -103,10 +129,16 @@ if has_error(rows):
 
 Why the contract is shaped this way: a raising helper would turn one bad query into a Dash callback exception and a blank component, with the reason buried in server logs. The envelope keeps the callback path stable and puts the message where the user and the agent can both see it.
 
+The message is safe to show viewers: it is the database's own message (an Exasol or Semantic Views error such as `SEMANTIC_QUERY_029 ...`) followed by `(error ref 1a2b3c4d)`. Connection details (DSN, user, session id) and the SQL text are left out. The full error is on `dash://apps/{name}/errors`; its `details.error_ref` matches the reference.
+
+### Row values are typed
+
+Successful rows hold Python values, not strings. `DECIMAL` columns arrive as `int` or `decimal.Decimal`, `DATE` as `datetime.date`, and `TIMESTAMP` as `datetime.datetime`. `INTERVAL` values and numbers with more than 15 significant digits stay `str`, because the browser couldn't show those exactly. Pass values straight to plotly or Dash, and format them with `strftime()` or format specs (`f"{value:,.2f}"`). Never slice them as strings (`row["DAY"][:7]` raises `TypeError`). Convert with `float()` before mixing a `Decimal` into float arithmetic.
+
 Related platform behavior worth knowing:
 
 - Data-layer failures are recorded and surface as the `data_layer` probe in `app_run_healthcheck` and on `dash://apps/{name}/errors`.
-- After you fix SQL in place without promoting a new revision, call `app_acknowledge_data_layer_errors` to reset that probe. Otherwise the healthcheck keeps reporting the failure you already fixed.
+- An error stops counting once its SQL file runs successfully again in the same revision. To clear errors for files that won't run again soon (after fixing SQL in place, say), call `app_acknowledge_data_layer_errors`.
 
 ## Parameterizing SQL
 
@@ -526,7 +558,7 @@ Do not debug by adding `print()`, rebuilding, and promoting. That costs several 
 
 ### Server-side signals
 
-- `app_run_healthcheck` — route, layout, dependency, asset, and `data_layer` probes; in isolated mode also `worker_alive` and `worker_http`.
+- `app_run_healthcheck` — route, layout, dependency, asset, `data_layer`, `sql_smoke`, and `semantic_models` probes; in isolated mode also `worker_alive` and `worker_http`.
 - `app_collect_diagnostics` / `app_inspect_traceback` — captured errors with parsed tracebacks and attribution.
 - `app_tail_logs` — channels: `latest`, `build`, `runtime`, `health`, `worker`, `worker.events`, `session.commands`.
 - `dash://apps/{name}/errors` and `/callback-failures` — the failure ledgers, including the `_error` envelopes described above.

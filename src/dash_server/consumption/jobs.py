@@ -233,11 +233,14 @@ class ConsumptionJobRunner:
                 summary=f"Format {job.requested_format!r} has no registered dataset writer.",
                 details={"format": job.requested_format},
             )
+        revision = attempt.revision
+        assert revision is not None  # pinned by _resolve()
         stream = self._service.executor.stream(
-            attempt.revision,
+            revision,
             job.output,
             attempt.parameters,
             cancelled=lambda: self._store.is_cancel_requested(job_id),
+            fetch_mapper=export_format.fetch_mapper,
         )
         attempt.temporary_path = self._artifact_store.temporary_path(job_id)
         current_limits = self._service._effective_limits(job.output)

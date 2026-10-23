@@ -31,14 +31,7 @@ from dash_server.session_channel.queue import CommandBusyError, CommandQueue
 from dash_server.session_channel.registry import SessionRegistry
 from dash_server.session_channel.service import SessionChannelService
 
-_JS_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "dash_server"
-    / "dash_apps"
-    / "assets"
-    / "session_channel.js"
-)
+_JS_PATH = Path(__file__).resolve().parents[1] / "src" / "dash_server" / "dash_apps" / "assets" / "session_channel.js"
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +250,7 @@ def test_dispatch_refuses_a_session_belonging_to_another_app() -> None:
     """Answering about the wrong dashboard is worse than failing."""
 
     service = _service()
-    service.register(
-        {"session_id": "tab-1", "mount_path": "/apps/other", "revision_number": 1, "capabilities": {}}
-    )
+    service.register({"session_id": "tab-1", "mount_path": "/apps/other", "revision_number": 1, "capabilities": {}})
 
     with pytest.raises(DashServerError) as excinfo:
         service.dispatch(app_name="demo", code="ctx.page()", session_id="tab-1")
@@ -286,9 +277,7 @@ def test_poll_of_an_unknown_session_asks_the_page_to_re_register() -> None:
 
 def test_poll_interval_accelerates_while_a_command_is_outstanding() -> None:
     service = _service(poll_interval_ms=2000, active_poll_interval_ms=250)
-    service.register(
-        {"session_id": "tab-1", "mount_path": "/apps/demo", "revision_number": 1, "capabilities": {}}
-    )
+    service.register({"session_id": "tab-1", "mount_path": "/apps/demo", "revision_number": 1, "capabilities": {}})
     assert service.poll("tab-1")["poll_interval_ms"] == 2000
 
     service.queue.enqueue(session_id="tab-1", code="1", timeout_seconds=5, command_seq=1)

@@ -7,6 +7,8 @@ from pathlib import Path
 from collections.abc import Callable, Iterable
 from typing import Any, Protocol
 
+from dash_server.exasol.fetch_mappers import typed_fetch_mapper
+
 from .csv_format import write_csv
 from .xlsx_format import write_xlsx
 
@@ -34,6 +36,10 @@ class ExportFormat:
     content_type: str
     extension: str
     writer: ExportWriter
+    # pyexasol `fetch_mapper` for the export connection. None keeps Exasol's own text
+    # rendering (CSV must stay byte-for-byte what Exasol sends); XLSX needs real
+    # numbers and dates to write typed cells.
+    fetch_mapper: Callable[[Any, dict[str, Any]], Any] | None = None
 
 
 _DATASET_FORMATS: dict[str, ExportFormat] = {
@@ -48,6 +54,7 @@ _DATASET_FORMATS: dict[str, ExportFormat] = {
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         extension="xlsx",
         writer=write_xlsx,
+        fetch_mapper=typed_fetch_mapper,
     ),
 }
 

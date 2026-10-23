@@ -102,6 +102,4 @@ ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
 def roles_with_capability(capability: str) -> frozenset[str]:
     """Return the roles whose matrix entry carries ``capability``."""
 
-    return frozenset(
-        role for role, capabilities in ROLE_CAPABILITIES.items() if capability in capabilities
-    )
+    return frozenset(role for role, capabilities in ROLE_CAPABILITIES.items() if capability in capabilities)

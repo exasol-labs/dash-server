@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..timestamps import seconds_since
+from ..timestamps import parse_iso8601, seconds_since
 from ..timestamps import now_iso
 
 
@@ -26,6 +29,9 @@ class DiagnosticsService:
     def __init__(self, root: str) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        # (app, revision, sql_file) -> monotonic time of the last persisted success.
+        self._success_writes: dict[tuple[str, int | None, str], float] = {}
+        self._success_lock = threading.Lock()
 
     def append_log(
         self,
@@ -131,9 +137,7 @@ class DiagnosticsService:
         traceback_text: str | None = None,
         revision_number: int | None = None,
     ) -> dict[str, Any]:
-        parsed_traceback = (
-            self.inspect_traceback(traceback_text)["traceback"] if traceback_text else None
-        )
+        parsed_traceback = self.inspect_traceback(traceback_text)["traceback"] if traceback_text else None
         record = {
             "id": uuid.uuid4().hex,
             "timestamp": self._timestamp(),
@@ -202,10 +206,15 @@ class DiagnosticsService:
         last_emitted = cache.get(key)
         now_ts = self._timestamp()
         now_dt = datetime.now(timezone.utc)
-        if seconds_since(last_emitted, now_dt) < rate_limit_seconds:
+        if seconds_since(last_emitted, now_dt) < rate_limit_seconds and not self._succeeded_since(
+            app_name, sql_file=sql_file, revision_number=revision_number, since=last_emitted
+        ):
             return None
         cache[key] = now_ts
         self._write_json(cache_path, cache)
+        with self._success_lock:
+            # The next success for this file must be persisted, whatever the throttle says.
+            self._success_writes.pop((app_name, revision_number, sql_file), None)
         return self.record_error(
             app_name,
             source="data_layer",
@@ -216,9 +225,76 @@ class DiagnosticsService:
                 "profile": profile_name,
                 "error": error_text,
                 "fingerprint": fingerprint,
+                # The "error ref" viewers see (`exasol.runtime.error_reference`).
+                "error_ref": fingerprint[:8],
             },
             revision_number=revision_number,
         )
+
+    def record_data_layer_success(
+        self,
+        app_name: str,
+        *,
+        sql_file: str,
+        revision_number: int | None = None,
+        min_interval_seconds: float = 30.0,
+    ) -> None:
+        """Note that ``sql_file`` just ran successfully for this app revision.
+
+        The `data_layer` probe treats an error as resolved once the same file (and
+        revision) has succeeded after it, so a fixed data source stops reporting as broken
+        without a manual acknowledge. Writes are throttled per file, except that the first
+        success after an error is always persisted.
+        """
+
+        key = (app_name, revision_number, sql_file)
+        now = time.monotonic()
+        with self._success_lock:
+            last = self._success_writes.get(key)
+            if last is not None and now - last < min_interval_seconds:
+                return
+            self._success_writes[key] = now
+            path = self._app_dir(app_name) / "data_layer_successes.json"
+            successes = self._read_json(path) or {}
+            successes[_success_key(revision_number, sql_file)] = self._timestamp()
+            temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            temporary.write_text(json.dumps(successes, indent=2), encoding="utf-8")
+            os.replace(temporary, path)
+
+    def _succeeded_since(self, app_name: str, *, sql_file: str, revision_number: int | None, since: Any) -> bool:
+        """Whether ``sql_file`` succeeded after ``since``: a repeat error then is news, not noise."""
+
+        success_at = parse_iso8601(
+            self.data_layer_last_success(app_name, sql_file=sql_file, revision_number=revision_number)
+        )
+        since_at = parse_iso8601(since)
+        return success_at is not None and since_at is not None and success_at > since_at
+
+    def data_layer_last_success(self, app_name: str, *, sql_file: str, revision_number: int | None) -> str | None:
+        """Timestamp of the last recorded success of ``sql_file`` in this revision, if any."""
+
+        successes = self._read_json(self._app_dir(app_name) / "data_layer_successes.json") or {}
+        value = successes.get(_success_key(revision_number, sql_file))
+        return value if isinstance(value, str) else None
+
+    def record_semantic_lock(self, app_name: str, revision_number: int, definitions: list[dict[str, Any]]) -> None:
+        """Store what a revision's Semantic SQL depended on when it was built.
+
+        ``definitions`` holds one entry per query file: path, model, object, and the
+        definition hash of each metric and dimension it uses.
+        """
+
+        path = self._app_dir(app_name) / "semantic_locks" / f"r{revision_number:06d}.json"
+        self._write_json(
+            path, {"revision_number": revision_number, "recorded_at": self._timestamp(), "files": definitions}
+        )
+
+    def semantic_lock(self, app_name: str, revision_number: int) -> list[dict[str, Any]] | None:
+        """The definitions recorded when ``revision_number`` was built, or None."""
+
+        record = self._read_json(self._app_dir(app_name) / "semantic_locks" / f"r{revision_number:06d}.json")
+        files = record.get("files") if isinstance(record, dict) else None
+        return files if isinstance(files, list) else None
 
     def acknowledge_data_layer_errors(self, app_name: str) -> dict[str, Any]:
         """Mark every data-layer error recorded so far as acknowledged.
@@ -270,9 +346,7 @@ class DiagnosticsService:
     ) -> dict[str, Any] | None:
         records = self.list_errors(app_name, limit=0, source=source)["errors"]
         if revision_number is not None:
-            records = [
-                record for record in records if record.get("revision_number") == revision_number
-            ]
+            records = [record for record in records if record.get("revision_number") == revision_number]
         return records[-1] if records else None
 
     def inspect_traceback(self, traceback_text: str) -> dict[str, Any]:
@@ -469,3 +543,7 @@ class DiagnosticsService:
 
     def _timestamp(self) -> str:
         return now_iso()
+
+
+def _success_key(revision_number: int | None, sql_file: str) -> str:
+    return f"{revision_number}::{sql_file}"

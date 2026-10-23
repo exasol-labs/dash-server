@@ -20,6 +20,12 @@ Queries with pyexasol placeholders (``{name!s}``, ``{name!d}``, etc.) require
 per-query sample values in ``queries/sql_smoke.json``. Without sample values they
 fail preflight with an actionable message; with values they are executed through
 pyexasol's formatter so bad columns are caught before live promotion.
+
+Queries against an Exasol Semantic Views published model need the model's SQL
+preprocessor active in the session (normally via the profile's ``session_init_sql``).
+With it, the wrapped query is checked exactly as at runtime (unknown fields, invalid
+combinations). Without it, the ``WHERE 1=0`` wrapper can pass a query that fails for
+the first viewer, so such files fail here with the fix instead.
 """
 
 from __future__ import annotations
@@ -29,6 +35,21 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+
+from .runtime import database_message, describe_query_error
+from .semantic_models import (
+    SemanticModelRef,
+    governed_sources,
+    looks_like_compiled_semantic_sql,
+    normalize_identifier,
+    published_semantic_models,
+    referenced_governed_sources,
+    referenced_models,
+    session_preprocessor,
+    with_fusion,
+    with_synonyms,
+    with_validation_issues,
+)
 
 if TYPE_CHECKING:
     from .connection_manager import ExasolConnectionManager
@@ -46,6 +67,17 @@ class SqlSmokeFile:
     outcome: SmokeOutcome
     error_text: str | None = None
     skip_reason: str | None = None
+    # Names of the published semantic models the query reads.
+    semantic_models: tuple[str, ...] = ()
+    # Advice that doesn't fail the check, e.g. raw reads of a semantic model's source tables.
+    warnings: tuple[str, ...] = ()
+    # Published models whose source tables the query reads directly instead of through the
+    # model, and whether the query is saved compiler output (a frozen copy of the definitions).
+    governed_reads: tuple[str, ...] = ()
+    frozen_semantic_sql: bool = False
+    # For a Semantic SQL file that passed: the model, object, and definition hash of each
+    # metric and dimension it uses ({"model", "object", "metrics", "dimensions"}).
+    definitions: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +95,9 @@ class SqlSmokeReport:
     overall_status: SmokeOutcome
     files: list[SqlSmokeFile] = field(default_factory=list)
     connection_error: str | None = None
+    # The published semantic models the files read (through the model or its source tables),
+    # with their readiness and, unless VALID, the issues behind it.
+    semantic_models: list[SemanticModelRef] = field(default_factory=list)
 
     @property
     def first_failure(self) -> SqlSmokeFile | None:
@@ -76,6 +111,20 @@ class SqlSmokeReport:
 # `{name!d}` (decimal), `{name!f}` (float), `{name!q}` (quoted identifier),
 # `{name!i}` (identifier), `{name!r}` (raw SQL fragment).
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?:![sdfqir])?\}")
+
+# A query file may call a script instead of selecting, e.g. a Semantic Views check that a
+# dashboard shows. Scripts can't be wrapped in a WHERE 1=0 probe and may change data, so only
+# known read-only ones are run (as written); the rest are skipped with the reason.
+_SCRIPT_CALL_RE = re.compile(
+    r'^(?:\s*(?:--[^\n]*(?:\n|$)|/\*.*?\*/))*\s*EXECUTE\s+SCRIPT\s+"?(\w+)"?\s*\.\s*"?(\w+)"?',
+    re.IGNORECASE | re.DOTALL,
+)
+_READ_ONLY_SCRIPTS = {"SEMANTIC_ADMIN.CHECK_FUSION_HEALTH"}
+_SCRIPT_SKIP_REASONS = {
+    "SEMANTIC_ADMIN.CHECK_PARTITION_COVERAGE": (
+        "not run by the smoke check: Exasol Semantic Views 0.5.0 records an unfinished validation run on every call"
+    ),
+}
 
 
 def run_sql_smoke(
@@ -116,6 +165,8 @@ def run_sql_smoke(
         )
 
     results: list[SqlSmokeFile] = []
+    semantic = _SemanticContext(connection)
+    referenced_refs: list[SemanticModelRef] = []
     try:
         for relative_path, sql_text in sql_files:
             results.append(
@@ -124,8 +175,18 @@ def run_sql_smoke(
                     relative_path,
                     sql_text,
                     params=(smoke_params or {}).get(relative_path, {}),
+                    semantic=semantic,
+                    profile_name=profile.name,
                 )
             )
+        referenced = {name for entry in results for name in (*entry.semantic_models, *entry.governed_reads)}
+        referenced_refs = with_synonyms(
+            connection,
+            with_fusion(
+                connection,
+                with_validation_issues(connection, [ref for ref in semantic.known_models if ref.model in referenced]),
+            ),
+        )
     finally:
         close = getattr(connection, "close", None)
         if callable(close):
@@ -144,7 +205,11 @@ def run_sql_smoke(
         overall = "skipped"
     else:
         overall = "passed"
-    return SqlSmokeReport(overall_status=overall, files=results)
+    return SqlSmokeReport(
+        overall_status=overall,
+        files=results,
+        semantic_models=referenced_refs,
+    )
 
 
 def _smoke_one(
@@ -153,6 +218,8 @@ def _smoke_one(
     sql_text: str,
     *,
     params: dict[str, Any],
+    semantic: _SemanticContext | None = None,
+    profile_name: str = "",
 ) -> SqlSmokeFile:
     stripped = sql_text.strip()
     if not stripped:
@@ -177,16 +244,64 @@ def _smoke_one(
                 ),
             )
 
-    # Wrap so the server parses and binds names without fetching rows. Strip a
-    # trailing semicolon so the wrapped query parses cleanly.
-    wrapped = f"SELECT * FROM (\n{stripped.rstrip(';')}\n) WHERE 1=0"
-    try:
-        statement = connection.execute(wrapped, params)  # type: ignore[attr-defined]
-    except Exception as exc:
+    semantic_models = referenced_models(stripped, semantic.models) if semantic is not None else []
+    model_names = tuple(ref.model for ref in semantic_models)
+    frozen = semantic is not None and bool(semantic.models) and looks_like_compiled_semantic_sql(stripped)
+    governed_reads = _governed_reads(stripped, semantic) if semantic is not None else ()
+    warnings = _governed_source_warnings(stripped, semantic, frozen=frozen) if semantic is not None else ()
+    inactive = [
+        ref
+        for ref in semantic_models
+        if semantic is not None and normalize_identifier(ref.preprocessor) != semantic.session_preprocessor
+    ]
+    if inactive:
+        ref = inactive[0]
         return SqlSmokeFile(
             relative_path=relative_path,
             outcome="failed",
-            error_text=str(exc),
+            semantic_models=model_names,
+            error_text=(
+                f"This query reads the published semantic model {ref.model!r} ({ref.published_schema}), "
+                f"which needs the {ref.preprocessor} SQL preprocessor active in the session, but "
+                f"sessions opened by Exasol profile {profile_name!r} don't activate it. Without it the "
+                "dashboard fails at runtime (SEMANTIC_SURFACE_001 or 'not a valid GROUP BY expression'). "
+                "Add this statement to the profile's session_init_sql (exasol_profile_create_local with "
+                f"name, overwrite: true and session_init_sql; other settings are kept): "
+                f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {ref.preprocessor}"
+            ),
+        )
+
+    script = _SCRIPT_CALL_RE.match(stripped)
+    if script is not None:
+        return _smoke_script(connection, relative_path, stripped, params, f"{script[1]}.{script[2]}".upper())
+
+    # Wrap so the server parses and binds names without fetching rows. Strip a
+    # trailing semicolon so the wrapped query parses cleanly.
+    wrapped = f"SELECT * FROM (\n{stripped.rstrip(';')}\n) WHERE 1=0"
+    compiled: dict[str, Any] | None = None
+    try:
+        statement = connection.execute(wrapped, params)  # type: ignore[attr-defined]
+    except Exception as exc:
+        # Semantic Views answers some query shapes at the top level but not nested, e.g. a
+        # renamed field's old name in an ungrouped select. If the query compiles, bind its
+        # compiled SQL instead: that is what the preprocessor runs for the dashboard.
+        compiled = _compile(connection, stripped.rstrip(";"), params) if semantic_models else None
+        statement = _bind_compiled(connection, compiled) if compiled is not None else None
+        if statement is None:
+            return SqlSmokeFile(
+                relative_path=relative_path,
+                outcome="failed",
+                error_text=describe_query_error(exc),
+                semantic_models=model_names,
+                warnings=warnings,
+                governed_reads=governed_reads,
+                frozen_semantic_sql=frozen,
+            )
+        warnings = (
+            *warnings,
+            "Semantic Views refused this query inside the smoke check's nested probe "
+            f"(SELECT * FROM (<query>) WHERE 1=0: {database_message(str(exc)) or 'error'}), but the query "
+            "compiles and its compiled SQL binds, so it was checked that way. Avoid wrapping it in a subquery.",
         )
 
     close = getattr(statement, "close", None)
@@ -195,7 +310,173 @@ def _smoke_one(
             close()
         except Exception:
             pass
+    return SqlSmokeFile(
+        relative_path=relative_path,
+        outcome="passed",
+        semantic_models=model_names,
+        warnings=warnings,
+        governed_reads=governed_reads,
+        frozen_semantic_sql=frozen,
+        definitions=(
+            _definitions_from_compile(compiled or _compile(connection, stripped.rstrip(";"), params))
+            if semantic_models
+            else None
+        ),
+    )
+
+
+def _smoke_script(
+    connection: object, relative_path: str, sql_text: str, params: dict[str, Any], script: str
+) -> SqlSmokeFile:
+    if script not in _READ_ONLY_SCRIPTS:
+        return SqlSmokeFile(
+            relative_path=relative_path,
+            outcome="skipped",
+            skip_reason=_SCRIPT_SKIP_REASONS.get(
+                script, f"not run by the smoke check: EXECUTE SCRIPT {script} may change data"
+            ),
+        )
+    try:
+        statement = connection.execute(sql_text.rstrip(";"), params)  # type: ignore[attr-defined]
+    except Exception as exc:
+        return SqlSmokeFile(relative_path=relative_path, outcome="failed", error_text=describe_query_error(exc))
+    close = getattr(statement, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
     return SqlSmokeFile(relative_path=relative_path, outcome="passed")
+
+
+def _compile(connection: object, sql_text: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    """The semantic layer's ``COMPILE_SQL`` result row for a query, if it compiled."""
+
+    try:
+        if params:
+            sql_text = connection.format.format(sql_text, **params)  # type: ignore[attr-defined]
+        statement = connection.execute(  # type: ignore[attr-defined]
+            "EXECUTE SCRIPT SEMANTIC_ADMIN.COMPILE_SQL({sql})", {"sql": sql_text}
+        )
+        row = dict(zip(statement.column_names(), statement.fetchone(), strict=False))
+    except Exception:
+        return None
+    return row if row.get("STATUS") == "OK" else None
+
+
+def _bind_compiled(connection: object, compiled: dict[str, Any]) -> object | None:
+    """Parse and bind a compile's generated SQL without fetching rows; the statement, or None."""
+
+    generated = compiled.get("GENERATED_SQL")
+    if not generated:
+        return None
+    try:
+        return connection.execute(f"SELECT * FROM (\n{generated}\n) WHERE 1=0")  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+def _definitions_from_compile(compiled: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What a Semantic SQL query depends on, from its compile.
+
+    ``COMPILE_SQL``'s plan names the model and object and carries the definition hash of
+    every field the query selected. Best effort: ``None`` if the query didn't compile.
+    """
+
+    if compiled is None:
+        return None
+    try:
+        plan = json.loads(compiled["PLAN_JSON"])
+        hashes = plan.get("definition_hashes") or {}
+        return {
+            "model": str(plan["model"]),
+            "object": str(plan["object"]),
+            "metrics": dict(hashes.get("metrics") or {}),
+            "dimensions": dict(hashes.get("dimensions") or {}),
+        }
+    except Exception:
+        return None
+
+
+def _governed_models(sql_text: str, semantic: _SemanticContext) -> tuple[list[str], list[tuple[str, str]]]:
+    """The governed tables ``sql_text`` reads, and the (model, published schema) pairs behind them."""
+
+    sources = referenced_governed_sources(sql_text, semantic.governed_sources)
+    models: list[tuple[str, str]] = []
+    for source in sources:
+        models.extend(model for model in semantic.governed_sources[source] if model not in models)
+    return sources, models
+
+
+def _governed_reads(sql_text: str, semantic: _SemanticContext) -> tuple[str, ...]:
+    return tuple(model for model, _ in _governed_models(sql_text, semantic)[1])
+
+
+def _governed_source_warnings(sql_text: str, semantic: _SemanticContext, *, frozen: bool = False) -> tuple[str, ...]:
+    """One warning when the query reads tables that published semantic models govern."""
+
+    sources, models = _governed_models(sql_text, semantic)
+    if frozen:
+        named = _join_names([f"{model!r} ({schema})" for model, schema in models]) if models else "a semantic model"
+        return (
+            f"This query is SQL saved from the semantic layer's compiler for {named}. It keeps today's metric "
+            "definitions and won't follow certified changes; query the published schema with Semantic SQL "
+            "instead. See dash://exasol/help/semantic-layer.",
+        )
+    if not sources:
+        return ()
+    tables = _join_names(sources)
+    named = _join_names([f"{model!r} ({schema})" for model, schema in models])
+    plural = len(models) > 1
+    return (
+        f"This query reads {tables}, which back{'' if len(sources) > 1 else 's'} the published semantic "
+        f"model{'s' if plural else ''} {named}. Metrics written by hand over "
+        f"{'them' if len(sources) > 1 else 'it'} can disagree with the certified definitions; query "
+        f"{models[0][1]} instead. See dash://exasol/help/semantic-layer.",
+    )
+
+
+def _join_names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+class _SemanticContext:
+    """The smoke session's view of Semantic Views, looked up on first use.
+
+    Lazy so a batch whose files all fail before execution (missing placeholder values)
+    runs no statements at all.
+    """
+
+    def __init__(self, connection: object) -> None:
+        self._connection = connection
+        self._models: list[SemanticModelRef] | None = None
+        self._session_preprocessor: str | None = None
+        self._governed_sources: dict[str, list[tuple[str, str]]] = {}
+
+    @property
+    def models(self) -> list[SemanticModelRef]:
+        if self._models is None:
+            self._models = published_semantic_models(self._connection)
+            if self._models:
+                self._session_preprocessor = session_preprocessor(self._connection)
+                self._governed_sources = governed_sources(self._connection)
+        return self._models
+
+    @property
+    def governed_sources(self) -> dict[str, list[tuple[str, str]]]:
+        self.models  # noqa: B018 - looks up the session state on first use
+        return self._governed_sources
+
+    @property
+    def known_models(self) -> list[SemanticModelRef]:
+        """The models looked up so far, without triggering a lookup."""
+
+        return self._models or []
+
+    @property
+    def session_preprocessor(self) -> str | None:
+        self.models  # noqa: B018 - looks up the session state on first use
+        return self._session_preprocessor
 
 
 def collect_sql_files(artifact_root: Path) -> list[tuple[str, str]]:

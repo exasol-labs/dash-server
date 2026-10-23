@@ -41,10 +41,7 @@ class ExasolProfileStore:
     def save_profile(self, profile: ExasolProfile) -> ExasolProfile:
         self._validate_profile_name(profile.name)
         self.git_repo_service.commit_managed_update(
-            managed_files={
-                self.profile_path(profile.name): json.dumps(profile.to_dict(), indent=2)
-                + "\n"
-            },
+            managed_files={self.profile_path(profile.name): json.dumps(profile.to_dict(), indent=2) + "\n"},
             removed_paths=[],
             commit_message=f"exasol/{profile.name}: record local profile metadata",
         )

@@ -139,10 +139,7 @@ class GitRepoService:
         """Initialize the repo, export the seeded demo app, and expose repo status."""
 
         self.initialize()
-        managed_files = {
-            f"apps/demo/{relative_path}": content
-            for relative_path, content in demo_files.items()
-        }
+        managed_files = {f"apps/demo/{relative_path}": content for relative_path, content in demo_files.items()}
         managed_files["desired-state/live/demo.yaml"] = self._render_demo_live_state()
         managed_files[".dash-server/repo-meta.yaml"] = self._render_repo_meta()
         managed_files[".gitignore"] = self._render_gitignore()
@@ -394,9 +391,7 @@ class GitRepoService:
             }
         )
         committed = self._commit_managed_update(
-            managed_files={
-                self.history_path(app_name): self._render_history_entries(history_entries)
-            },
+            managed_files={self.history_path(app_name): self._render_history_entries(history_entries)},
             removed_paths=sorted(set(removed_paths)),
             commit_message=commit_message,
         )
@@ -488,9 +483,7 @@ class GitRepoService:
             parsed = self._parse_yaml_mapping(path.read_text())
             parsed["path"] = str(path.relative_to(self.repo_root))
             manifests.append(parsed)
-        manifests.sort(
-            key=lambda item: str(item.get("metadata", {}).get("revision", ""))
-        )
+        manifests.sort(key=lambda item: str(item.get("metadata", {}).get("revision", "")))
         return manifests
 
     def read_history_events(self, app_name: str) -> list[dict[str, Any]]:
@@ -562,12 +555,15 @@ class GitRepoService:
     def branch_exists(self, branch_name: str) -> bool:
         """Return whether a local branch exists."""
 
-        return self._git_exit_code(
-            "show-ref",
-            "--verify",
-            "--quiet",
-            f"refs/heads/{branch_name}",
-        ) == 0
+        return (
+            self._git_exit_code(
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{branch_name}",
+            )
+            == 0
+        )
 
     def worktrees(self) -> list[dict[str, Any]]:
         """Return structured metadata for attached worktrees."""
@@ -717,11 +713,7 @@ class GitRepoService:
         directory = self.repo_root / relative_directory
         if not directory.exists():
             return []
-        return sorted(
-            str(path.relative_to(self.repo_root))
-            for path in directory.rglob("*")
-            if path.is_file()
-        )
+        return sorted(str(path.relative_to(self.repo_root)) for path in directory.rglob("*") if path.is_file())
 
     def _delete_release_tags(self, app_name: str) -> list[str]:
         prefix = f"dash-server/{app_name}/"
@@ -931,11 +923,7 @@ class GitRepoService:
         )
 
     def _render_gitignore(self) -> str:
-        return (
-            "**/.draft-state.json\n"
-            "**/__pycache__/\n"
-            "**/*.pyc\n"
-        )
+        return "**/.draft-state.json\n**/__pycache__/\n**/*.pyc\n"
 
     def _render_live_desired_state(
         self,

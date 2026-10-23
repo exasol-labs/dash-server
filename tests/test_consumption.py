@@ -19,7 +19,7 @@ from dash_server.consumption import consumption_contract_hash, normalize_consump
 from dash_server.consumption.execution import DatasetStream, ExasolDatasetExecutor
 from dash_server.exceptions import DashServerError
 
-from _helpers import wait_for
+from _helpers import wait_for, wait_for_audit_events
 
 
 _APP_PY = """from dash import Dash, html
@@ -129,8 +129,8 @@ class _ConsumptionSmokeFakePyExasolModule:
 
 
 def _wire_fake_exasol_connector(app) -> None:
-    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = (
-        lambda: _ConsumptionSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: (
+        _ConsumptionSmokeFakePyExasolModule()
     )
 
 
@@ -189,11 +189,13 @@ class _FakeDatasetExecutor:
     def __init__(self, rows: list[list[Any]] | None = None) -> None:
         self.rows = rows or [["2026-07", "=SUM(A1:A2)"], ["2026-07", "safe"]]
         self.preflight_calls = 0
+        self.fetch_mappers: list[Any] = []
 
     def preflight(self, revision, output) -> None:
         self.preflight_calls += 1
 
-    def stream(self, revision, output, parameters, *, cancelled) -> DatasetStream:
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None) -> DatasetStream:
+        self.fetch_mappers.append(fetch_mapper)
         return DatasetStream(columns=["PERIOD", "VALUE"], batches=iter([[*self.rows]]))
 
 
@@ -203,7 +205,7 @@ class _BlockingDatasetExecutor(_FakeDatasetExecutor):
         self.started = Event()
         self.release = Event()
 
-    def stream(self, revision, output, parameters, *, cancelled) -> DatasetStream:
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None) -> DatasetStream:
         def batches():
             self.started.set()
             self.release.wait(timeout=5)
@@ -721,9 +723,7 @@ def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client)
     assert completed["job"]["policy_version"] == service.policy_version
     assert "parameters" not in completed["job"]
     assert completed["artifact"]["row_count"] == 2
-    assert resource_payload == {
-        key: value for key, value in completed.items() if key != "guidance"
-    }
+    assert resource_payload == {key: value for key, value in completed.items() if key != "guidance"}
     assert executor.preflight_calls == 1
 
     with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
@@ -754,19 +754,11 @@ def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client)
     assert artifact_path.exists() is False
     expired = _call_tool(client, "export_get", {"job_id": job_id})
     assert expired.get_json()["result"]["structuredContent"]["job"]["status"] == "expired"
-    with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
-        audit_events = {
-            row[0]
-            for row in connection.execute(
-                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?", (job_id,)
-            ).fetchall()
-        }
-    assert {
-        "export.created",
-        "export.succeeded",
-        "artifact.downloaded",
-        "artifact.expired",
-    } <= audit_events
+    wait_for_audit_events(
+        app.config["REGISTRY_DB_PATH"],
+        job_id,
+        {"export.created", "export.succeeded", "artifact.downloaded", "artifact.expired"},
+    )
 
 
 @pytest.mark.slow
@@ -978,7 +970,7 @@ def test_exasol_export_executor_uses_bounded_fetch_and_closes_resources(tmp_path
     assert stream.columns == ["PERIOD"]
     assert list(stream.batches) == [[["2026-07"], ["2026-08"]]]
     assert statement.fetch_sizes == [2, 2]
-    assert connection_options == {"query_timeout_seconds": 30}
+    assert connection_options == {"query_timeout_seconds": 30, "fetch_mapper": None}
     assert statement.closed is True
     assert connection.closed is True
 
@@ -995,11 +987,11 @@ class _FlakyDatasetExecutor(_FakeDatasetExecutor):
         super().__init__()
         self.stream_calls = 0
 
-    def stream(self, revision, output, parameters, *, cancelled) -> DatasetStream:
+    def stream(self, revision, output, parameters, *, cancelled, fetch_mapper=None) -> DatasetStream:
         self.stream_calls += 1
         if self.stream_calls == 1:
             raise RuntimeError("transient connection failure")
-        return super().stream(revision, output, parameters, cancelled=cancelled)
+        return super().stream(revision, output, parameters, cancelled=cancelled, fetch_mapper=fetch_mapper)
 
 
 def _wait_store_status(store, job_id: str, expected: set[str], timeout: float = 5.0):
@@ -1080,8 +1072,10 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
 
     from openpyxl import load_workbook
 
+    from dash_server.exasol.fetch_mappers import typed_fetch_mapper
+
     _create_output_app(app, client)
-    _enable_phase1(app)
+    service = _enable_phase1(app)
 
     outputs = _call_tool(client, "app_outputs_list", {"name": "finance-outputs"}).get_json()["result"][
         "structuredContent"
@@ -1112,10 +1106,9 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
     ).get_json()["result"]["structuredContent"]
     payload = _wait_for_job(client, created["job"]["id"])
     assert payload["job"]["status"] == "succeeded"
+    assert service.executor.fetch_mappers == [typed_fetch_mapper]
     assert payload["artifact"]["filename"].endswith(".xlsx")
-    assert payload["artifact"]["content_type"] == (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    assert payload["artifact"]["content_type"] == ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     link = _call_tool(client, "export_download_link_create", {"job_id": created["job"]["id"]}).get_json()["result"][
         "structuredContent"
@@ -1156,16 +1149,11 @@ def test_phase2_retry_recovers_from_transient_failure(app, client):
     assert payload["job"]["status"] == "succeeded"
     assert payload["job"]["attempt_count"] == 2
     assert executor.stream_calls == 2
-    db_path = app.config["REGISTRY_DB_PATH"]
-    with sqlite3.connect(db_path) as connection:
-        events = {
-            row[0]
-            for row in connection.execute(
-                "SELECT event_type FROM consumption_audit_events WHERE job_id = ?",
-                (created["job"]["id"],),
-            ).fetchall()
-        }
-    assert {"export.created", "export.retried", "export.succeeded"} <= events
+    wait_for_audit_events(
+        app.config["REGISTRY_DB_PATH"],
+        created["job"]["id"],
+        {"export.created", "export.retried", "export.succeeded"},
+    )
 
 
 @pytest.mark.slow

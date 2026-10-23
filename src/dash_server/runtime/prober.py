@@ -9,6 +9,7 @@ and downgrade the overall status. The service keeps ``run_healthcheck`` /
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,9 +17,13 @@ from werkzeug.test import Client as WSGIClient
 from werkzeug.wrappers import Response as WSGIResponse
 
 from dash_server.registry.models import AppRevision
+from dash_server.timestamps import parse_iso8601
 
 if TYPE_CHECKING:
     from .service import AppRuntimeService
+
+# Exasol Semantic Views AGENT_READINESS values that make a model's numbers untrustworthy.
+_UNUSABLE_SEMANTIC_READINESS = {"INVALID", "PRECONDITION", "NOT_PUBLISHED"}
 
 
 class HealthProber:
@@ -47,11 +52,7 @@ class HealthProber:
         )
         asset_probe = self._asset_probe(mount_path)
         probes = [homepage_probe, layout_probe, dependency_probe, asset_probe]
-        overall_status = (
-            "healthy"
-            if all(probe["status"] == "passed" for probe in probes)
-            else "unhealthy"
-        )
+        overall_status = "healthy" if all(probe["status"] == "passed" for probe in probes) else "unhealthy"
         # Ensure every probe carries its canonical name even for the passed-dict
         # shapes returned by `_http_probe` / `_asset_probe`.
         homepage_probe["name"] = "http_ready"
@@ -135,7 +136,7 @@ class HealthProber:
             )
         body = response.get_data(as_text=True)
         asset_path = None
-        for marker in ('src="', "href=\""):
+        for marker in ('src="', 'href="'):
             start = body.find(marker)
             while start != -1:
                 end = body.find('"', start + len(marker))
@@ -235,6 +236,29 @@ class HealthProber:
             connection_manager=exasol_service.connection_manager,
             smoke_params=collect_sql_smoke_params(Path(revision.artifact_path)),
         )
+        semantic_models = [asdict(ref) for ref in report.semantic_models]
+        warnings = [{"path": f.relative_path, "message": message} for f in report.files for message in f.warnings]
+        extra: dict[str, Any] = {}
+        if semantic_models:
+            extra["semantic_models"] = semantic_models
+        definitions = [{"path": f.relative_path, **f.definitions} for f in report.files if f.definitions is not None]
+        if definitions:
+            extra["definitions"] = definitions
+        if warnings:
+            extra["warnings"] = warnings
+        # Query files that bypass the semantic layer: saved compiler output ("frozen") or
+        # hand-written SQL over a model's source tables ("raw").
+        bypasses = [
+            {
+                "path": f.relative_path,
+                "lane": "frozen" if f.frozen_semantic_sql else "raw",
+                "models": list(f.governed_reads),
+            }
+            for f in report.files
+            if f.frozen_semantic_sql or f.governed_reads
+        ]
+        if bypasses:
+            extra["semantic_bypasses"] = bypasses
         if report.overall_status == "passed":
             return {
                 "name": "sql_smoke",
@@ -247,6 +271,7 @@ class HealthProber:
                         for f in report.files
                         if f.outcome == "skipped"
                     ],
+                    **extra,
                 },
             }
         if report.overall_status == "skipped":
@@ -255,10 +280,7 @@ class HealthProber:
                 "status": "not_applicable",
                 "details": {
                     "reason": "all_files_skipped",
-                    "files": [
-                        {"path": f.relative_path, "reason": f.skip_reason}
-                        for f in report.files
-                    ],
+                    "files": [{"path": f.relative_path, "reason": f.skip_reason} for f in report.files],
                 },
             }
         # failed — surface the first failure plus the connection error if any.
@@ -272,12 +294,113 @@ class HealthProber:
                 "first_failed_file": first.relative_path if first is not None else None,
                 "latest_error": first.error_text if first is not None else report.connection_error,
                 "failed_files": [
-                    {"path": f.relative_path, "error": f.error_text}
-                    for f in report.files
-                    if f.outcome == "failed"
+                    {"path": f.relative_path, "error": f.error_text} for f in report.files if f.outcome == "failed"
                 ],
+                **extra,
             },
         }
+
+    def _semantic_models_probe(
+        self,
+        sql_smoke_probe: dict[str, Any],
+        *,
+        built_definitions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Report the readiness of the Exasol Semantic Views models the app's queries read.
+
+        Derived from the `sql_smoke` probe, whose session already looked the models up.
+        Fails when a model is unusable (INVALID, PRECONDITION, or NOT_PUBLISHED): its
+        numbers can't be trusted even if today's queries still run. WARNING passes, as in
+        the semantic layer's own agent views, but is listed so it stays visible.
+
+        With the definitions recorded when the revision was built, also lists every field
+        whose definition has changed since. The dashboard already shows the new definition
+        (it queries the model live), so this is for review, not a failure.
+        """
+
+        details_in = sql_smoke_probe.get("details", {})
+        models = details_in.get("semantic_models") or []
+        bypasses = details_in.get("semantic_bypasses") or []
+        if not models and not bypasses:
+            return {"name": "semantic_models", "status": "not_applicable", "details": {"reason": "no_semantic_queries"}}
+        unusable = [model for model in models if model.get("readiness") in _UNUSABLE_SEMANTIC_READINESS]
+        details: dict[str, Any] = {"models": models}
+        frozen = [entry for entry in bypasses if entry["lane"] == "frozen"]
+        raw = [entry for entry in bypasses if entry["lane"] == "raw"]
+        if frozen:
+            details["frozen_files"] = frozen
+        if raw:
+            details["raw_governed_reads"] = raw
+            details["raw_governed_reads_note"] = (
+                "These files compute numbers from tables a semantic model governs instead of querying the model. "
+                "They don't follow certified definition changes and can disagree with governed dashboards."
+            )
+        fusion = [_fusion_summary(model) for model in models if model.get("fusion_layout")]
+        if fusion:
+            details["fusion"] = fusion
+        fusion_changes: dict[str, list[str]] = {}
+        if built_definitions is not None:
+            fusion_changes = _fusion_changes(built_definitions, models)
+            if fusion_changes:
+                details["fusion_changed_since_build"] = [
+                    {"model": model, "change": change}
+                    for model, changes in fusion_changes.items()
+                    for change in changes
+                ]
+                details["fusion_changed_since_build_note"] = (
+                    "How these fused models combine their sources, or how their reconciled attributes are answered, "
+                    "changed after this revision was built. The definitions may be unchanged, but the numbers move: "
+                    "check the affected panels, and show coverage and unresolved keys to viewers."
+                )
+            changed = _changed_definitions(built_definitions, details_in.get("definitions") or [], models)
+            if changed:
+                layout_moved = {
+                    model for model, changes in fusion_changes.items() if any(c.startswith("layout:") for c in changes)
+                }
+                for entry in changed:
+                    if entry.get("model") in layout_moved:
+                        entry["fusion_layout_changed"] = True
+                details["changed_since_build"] = changed
+                details["changed_since_build_note"] = (
+                    "These metric or dimension definitions changed after this revision was built (change: "
+                    "definition, renamed, missing, or not_compiled for a file that no longer compiles; see "
+                    "sql_smoke). The dashboard queries the model live, so it already shows the new definitions; "
+                    "check that each panel's label and meaning still match."
+                    + (
+                        " Entries with fusion_layout_changed belong to a model whose fusion layout also changed "
+                        "(see fusion_changed_since_build): a partition boundary or authority change moves the hash "
+                        "of every field on the affected entity even when its expression is unchanged."
+                        if layout_moved
+                        else ""
+                    )
+                )
+        warnings = [model["model"] for model in models if model.get("readiness") == "WARNING"]
+        if warnings:
+            details["models_with_warnings"] = warnings
+        unknown = [model["model"] for model in models if model.get("readiness") == "UNKNOWN"]
+        if unknown:
+            details["models_not_assessed"] = unknown
+            details["models_not_assessed_note"] = (
+                "The newest validation run of these models never finished, and this profile can't read "
+                "SEMANTIC_SOURCE.VALIDATION_RUNS to find the last finished one. Grant the profile's user "
+                "SEMANTIC_USER, or run SEMANTIC_ADMIN.VALIDATE_MODEL."
+            )
+        if unusable:
+            first = unusable[0]
+            details["latest_error"] = (
+                f"Semantic model {first['model']!r} ({first['published_schema']}) is {first['readiness']}"
+                + _first_issue_text(first)
+                + ". Check SEMANTIC_AGENT.MODELS_FOR_AGENT and SEMANTIC_SOURCE.VALIDATION_RESULTS."
+            )
+            return {"name": "semantic_models", "status": "failed", "details": details}
+        if frozen:
+            details["latest_error"] = (
+                f"{frozen[0]['path']} is SQL saved from the semantic layer's compiler: it keeps the metric "
+                "definitions of the day it was compiled and won't follow certified changes. Query the model's "
+                "published schema with Semantic SQL instead (dash://exasol/help/semantic-layer)."
+            )
+            return {"name": "semantic_models", "status": "failed", "details": details}
+        return {"name": "semantic_models", "status": "passed", "details": details}
 
     def _manifest_profile_name(self, revision: AppRevision) -> str | None:
         """Return ``manifest.data_sources.primary.profile`` if it's set to an Exasol profile, else None."""
@@ -310,12 +433,12 @@ class HealthProber:
         errors = self.svc.diagnostics_service.list_errors(app_name, limit=0, source="data_layer")
         records = errors.get("errors", [])
         watermark = self.svc.diagnostics_service.data_layer_ack_watermark(app_name)
+        diagnostics = self.svc.diagnostics_service
         applicable = [
             record
             for record in records
-            if _data_layer_record_applies_to(
-                record, revision_number=revision_number, watermark=watermark
-            )
+            if _data_layer_record_applies_to(record, revision_number=revision_number, watermark=watermark)
+            and not _data_layer_record_resolved(diagnostics, app_name, record)
         ]
         if not applicable:
             return {
@@ -347,9 +470,7 @@ class HealthProber:
             },
         }
 
-    def _worker_http_probe(
-        self, *, mount_path: str, revision_number: int | None
-    ) -> dict[str, Any]:
+    def _worker_http_probe(self, *, mount_path: str, revision_number: int | None) -> dict[str, Any]:
         """Probe a worker via its last-seen HTTP response status from the proxy.
 
         The proxy calls ``manager.set_last_response_status(...)`` on every forwarded
@@ -369,9 +490,7 @@ class HealthProber:
                 "name": "worker_http",
                 "status": "skipped",
                 "details": {
-                    "message": (
-                        "No HTTP request has reached the worker yet for the current revision."
-                    ),
+                    "message": ("No HTTP request has reached the worker yet for the current revision."),
                     "mount_path": mount_path,
                     "revision_number": revision_number,
                 },
@@ -388,9 +507,7 @@ class HealthProber:
             },
         }
 
-    def _worker_alive_probe(
-        self, *, mount_path: str, revision_number: int | None
-    ) -> dict[str, Any]:
+    def _worker_alive_probe(self, *, mount_path: str, revision_number: int | None) -> dict[str, Any]:
         """Probe an isolated-mode worker for liveness.
 
         Returns ``status="not_applicable"`` when the server is running in_process so the
@@ -428,6 +545,171 @@ class HealthProber:
                 "rss_bytes": rss,
             },
         }
+
+
+def _fusion_summary(model: dict[str, Any]) -> dict[str, Any]:
+    """A fused model's partitions and reconciled attributes, as the probe reports them."""
+
+    partitions = [
+        {"entity": part["entity"], "representation": part["representation"], "coverage": part["coverage"]}
+        for part in model["fusion_layout"]
+        if part["aspect"] == "PARTITION"
+    ]
+    summary: dict[str, Any] = {"model": model["model"]}
+    if partitions:
+        summary["partitions"] = partitions
+    if model.get("fusion_health"):
+        summary["reconciled_attributes"] = model["fusion_health"]
+        unresolved = [
+            f"{health['entity']}.{health['attribute']}: {health['unresolved']} of {health['total_keys']} keys"
+            for health in model["fusion_health"]
+            if health.get("unresolved")
+        ]
+        if unresolved:
+            summary["unresolved"] = unresolved
+        errors = [health["probe_error"] for health in model["fusion_health"] if health.get("probe_error")]
+        if errors:
+            summary["probe_errors"] = errors
+    return summary
+
+
+def _fusion_part_key(part: dict[str, Any]) -> tuple[Any, ...]:
+    return (part["entity"], part["aspect"], part["representation"], part["attribute"])
+
+
+def _fusion_part_name(key: tuple[Any, ...]) -> str:
+    entity, aspect, representation, attribute = key
+    return " ".join(str(value) for value in (entity, aspect.lower(), representation or attribute) if value)
+
+
+def _fusion_changes(built: list[dict[str, Any]], models: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """What changed in each fused model's layout and attribute health since the build snapshot."""
+
+    current = {model["model"]: model for model in models if model.get("fusion_layout")}
+    changes: dict[str, list[str]] = {}
+    for entry in built:
+        if entry.get("lane") != "fusion" or entry.get("model") not in current:
+            continue
+        model = current[entry["model"]]
+        found: list[str] = []
+        before = {_fusion_part_key(part): part for part in entry.get("fusion_layout") or []}
+        after = {_fusion_part_key(part): part for part in model["fusion_layout"]}
+        for key in sorted(before.keys() | after.keys(), key=lambda value: tuple(str(item) for item in value)):
+            old, new = before.get(key), after.get(key)
+            name = _fusion_part_name(key)
+            if old is None:
+                found.append(f"layout: added {name}")
+            elif new is None:
+                found.append(f"layout: removed {name}")
+            elif (old["coverage"], old["strategy"]) != (new["coverage"], new["strategy"]):
+                if old["coverage"] != new["coverage"]:
+                    found.append(f"layout: {name} coverage {old['coverage']} -> {new['coverage']}")
+                else:
+                    found.append(f"layout: {name} strategy {old['strategy']} -> {new['strategy']}")
+        built_health = {(h["entity"], h["attribute"]): h for h in entry.get("fusion_health") or []}
+        for health in model.get("fusion_health") or []:
+            old_health = built_health.get((health["entity"], health["attribute"]))
+            if old_health is None:
+                continue
+            moved = [
+                f"{label} {old_health[field]} -> {health[field]}"
+                for field, label in (("unresolved", "unresolved"), ("filled", "filled"), ("total_keys", "keys"))
+                if old_health.get(field) != health.get(field)
+            ]
+            if moved:
+                found.append(f"health: {health['entity']}.{health['attribute']} " + ", ".join(moved))
+        if found:
+            changes[entry["model"]] = found
+    return changes
+
+
+def _first_issue_text(model: dict[str, Any]) -> str:
+    """``": RULE_CODE on object: message"`` for a model's first validation issue, or ``""``."""
+
+    issues = model.get("issues") or []
+    if not issues:
+        return ""
+    issue = issues[0]
+    where = f" on {issue['object_name']}" if issue.get("object_name") else ""
+    return f": {issue['rule_code']}{where}: {str(issue['message']).rstrip('.')}"
+
+
+def _changed_definitions(
+    built: list[dict[str, Any]], current: list[dict[str, Any]], models: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Every field used at build time whose current definition differs, or that can't be found.
+
+    ``change`` says how: ``definition`` (the hash moved), ``renamed`` (the field now answers
+    under ``renamed_to``; its old name is a synonym), ``missing`` (no longer in the compile),
+    or ``not_compiled`` (the file doesn't compile now, so its fields can't be compared).
+    """
+
+    renamed_to = {
+        (model["model"], synonym["kind"], synonym["synonym"]): synonym["field"]
+        for model in models or []
+        for synonym in model.get("synonyms") or []
+    }
+    current_by_path = {entry.get("path"): entry for entry in current}
+    changed: list[dict[str, Any]] = []
+    for entry in built:
+        if entry.get("lane") is not None or not (entry.get("metrics") or entry.get("dimensions")):
+            continue
+        now = current_by_path.get(entry.get("path"))
+        if now is None:
+            changed.append(
+                {
+                    "path": entry.get("path"),
+                    "model": entry.get("model"),
+                    "change": "not_compiled",
+                    "fields": sorted([*(entry.get("metrics") or {}), *(entry.get("dimensions") or {})]),
+                }
+            )
+            continue
+        for kind in ("metrics", "dimensions"):
+            current_hashes = now.get(kind) or {}
+            for field, built_hash in (entry.get(kind) or {}).items():
+                record = {
+                    "path": entry.get("path"),
+                    "model": entry.get("model"),
+                    "field": field,
+                    "kind": kind[:-1],
+                    "built_hash": built_hash,
+                }
+                if field in current_hashes:
+                    if current_hashes[field] != built_hash:
+                        changed.append({**record, "change": "definition", "current_hash": current_hashes[field]})
+                    continue
+                new_name = renamed_to.get((entry.get("model"), kind[:-1], field))
+                if new_name is not None and new_name in current_hashes:
+                    changed.append(
+                        {
+                            **record,
+                            "change": "renamed",
+                            "renamed_to": new_name,
+                            "current_hash": current_hashes[new_name],
+                        }
+                    )
+                else:
+                    changed.append({**record, "change": "missing", "current_hash": None})
+    return changed
+
+
+def _data_layer_record_resolved(diagnostics: Any, app_name: str, record: dict[str, Any]) -> bool:
+    """True when the record's SQL file has run successfully in its revision since the error."""
+
+    sql_file = (record.get("details") or {}).get("sql_file")
+    timestamp = record.get("timestamp")
+    if not isinstance(sql_file, str) or not isinstance(timestamp, str):
+        return False
+    last_success = diagnostics.data_layer_last_success(
+        app_name, sql_file=sql_file, revision_number=record.get("revision_number")
+    )
+    if last_success is None:
+        return False
+    # Compare as datetimes: the stored strings drop the fraction when it is zero, so
+    # they don't sort lexically.
+    success_at, error_at = parse_iso8601(last_success), parse_iso8601(timestamp)
+    return success_at is not None and error_at is not None and success_at > error_at
 
 
 def _data_layer_record_applies_to(

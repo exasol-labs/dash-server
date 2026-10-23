@@ -312,6 +312,19 @@ code, so **when a skill and a resource disagree, the resource is right.**
 pytest
 ```
 
+CI blocks merges to `main`, and so releases, on these checks. Run them before pushing:
+
+```bash
+uv sync --locked --extra dev   # fails if uv.lock is out of date with pyproject.toml
+uv run ruff check src tests
+uv run ruff format --check src tests   # `uv run ruff format src tests` fixes it
+uv run mypy
+uv run pytest
+```
+
+CI runs the whole test suite. While iterating, `uv run pytest -m "not slow"` skips the slow
+tests, which start real apps, subprocess workers, and background jobs.
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.

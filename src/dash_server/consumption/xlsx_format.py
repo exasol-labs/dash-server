@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, time
 from decimal import Decimal
 import hashlib
 import json
@@ -23,6 +23,7 @@ from .csv_format import limit_error
 _INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\']")
 _MIN_COLUMN_WIDTH = 12
 _MAX_COLUMN_WIDTH = 40
+_EXCEL_SIGNIFICANT_DIGITS = 15
 
 
 def write_xlsx(
@@ -83,12 +84,32 @@ def _safe_cell(sheet: Any, value: Any) -> Any:
     value can ever be interpreted as an Excel formula."""
     if value is None:
         return None
-    if isinstance(value, bool | int | float | Decimal | datetime | date | time):
+    if _excel_native(value):
+        # openpyxl binds Decimal, date, and time too (cell.NUMERIC_TYPES / TIME_TYPES),
+        # though types-openpyxl narrows `value` to str | float | datetime.
         cell = WriteOnlyCell(sheet, value=value)
         return cell
     cell = WriteOnlyCell(sheet, value=str(value))
     cell.data_type = "s"
     return cell
+
+
+def _excel_native(value: Any) -> bool:
+    """Whether Excel can store ``value`` as a number or date cell without altering it.
+
+    Excel keeps 15 significant digits, so longer integers and decimals (IDs from
+    ``DECIMAL(36,0)``, high-precision amounts) would be silently rounded; its 1900
+    date system can't represent earlier dates. Those are written as text instead.
+    """
+    if isinstance(value, bool | float | time):
+        return True
+    if isinstance(value, int):
+        return abs(value) < 10**_EXCEL_SIGNIFICANT_DIGITS
+    if isinstance(value, Decimal):
+        return value.is_finite() and len(value.normalize().as_tuple().digits) <= _EXCEL_SIGNIFICANT_DIGITS
+    if isinstance(value, date):  # also datetime
+        return value.year >= 1900
+    return False
 
 
 def _safe_sheet_name(candidate: Any) -> str:

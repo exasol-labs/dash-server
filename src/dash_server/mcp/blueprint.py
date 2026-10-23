@@ -103,11 +103,7 @@ def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
 
     auth_context = current_auth_context()
     principal = auth_context.principal
-    if (
-        not principal.is_authenticated
-        or principal.principal_type != "user"
-        or not isinstance(payload, dict)
-    ):
+    if not principal.is_authenticated or principal.principal_type != "user" or not isinstance(payload, dict):
         return False
 
     params = payload.get("params")
@@ -144,9 +140,7 @@ def _app_scoped_mcp_call_allowed(payload: dict[str, Any] | None = None) -> bool:
             if export_match is None:
                 return False
             capability = DASHBOARD_EXPORT
-            app_name = current_app.extensions["consumption_service"].peek_job_app(
-                export_match.group(1)
-            )
+            app_name = current_app.extensions["consumption_service"].peek_job_app(export_match.group(1))
     else:
         return False
     if capability is None:

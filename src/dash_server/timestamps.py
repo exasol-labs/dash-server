@@ -18,6 +18,15 @@ def to_iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def utc_now_naive() -> datetime:
+    """The current UTC time without tzinfo, for comparing with stored naive UTC timestamps.
+
+    Replaces ``datetime.utcnow()``, which Python 3.12 deprecates.
+    """
+
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def now_iso() -> str:
     """The canonical stored-timestamp format: UTC now as ``"...Z"``."""
 

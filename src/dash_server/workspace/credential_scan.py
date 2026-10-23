@@ -14,9 +14,7 @@ from typing import Any
 from dash_server.artifacts_io import APP_MANIFEST_FILENAME
 from dash_server.registry.models import AppManifest
 
-EXASOL_ENV_PATTERN = re.compile(
-    r"\b(?:EXA|EXASOL)_(?:DSN|USER|PASS|PASSWORD|PAT|ACCESS_TOKEN|REFRESH_TOKEN)\b"
-)
+EXASOL_ENV_PATTERN = re.compile(r"\b(?:EXA|EXASOL)_(?:DSN|USER|PASS|PASSWORD|PAT|ACCESS_TOKEN|REFRESH_TOKEN)\b")
 
 _FORBIDDEN_DATA_SOURCE_KEYS = {
     "dsn",
@@ -41,9 +39,7 @@ def credential_safety_report(
     if isinstance(raw_data_sources, dict):
         primary = raw_data_sources.get("primary")
         if isinstance(primary, dict) and primary.get("kind") == "exasol":
-            forbidden_keys = sorted(
-                key for key in primary if key in _FORBIDDEN_DATA_SOURCE_KEYS
-            )
+            forbidden_keys = sorted(key for key in primary if key in _FORBIDDEN_DATA_SOURCE_KEYS)
             if forbidden_keys:
                 findings.append(
                     {

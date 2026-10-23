@@ -14,11 +14,7 @@ from dash_server.consumption.models import ConsumptionPolicy
 
 
 def _config_consumption_keys() -> dict[str, object]:
-    return {
-        key: getattr(Config, key)
-        for key in vars(Config)
-        if key.startswith("DASH_SERVER_CONSUMPTION")
-    }
+    return {key: getattr(Config, key) for key in vars(Config) if key.startswith("DASH_SERVER_CONSUMPTION")}
 
 
 def test_consumption_policy_field_defaults_match_config_under_empty_env():

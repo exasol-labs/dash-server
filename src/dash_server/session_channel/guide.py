@@ -137,14 +137,12 @@ _RECIPES: tuple[dict[str, str], ...] = (
         "goal": (
             "Switch to a different tab by its visible label (PS27-BUG-012: a "
             "dcc.Tabs without an explicit id/value has no addressable prop for "
-            "ctx.setProps - Dash renders each tab as a plain <div class=\"tab\">, "
-            "not role=\"tab\", so finding it by visible text and clicking it "
+            'ctx.setProps - Dash renders each tab as a plain <div class="tab">, '
+            'not role="tab", so finding it by visible text and clicking it '
             "directly is the reliable approach for any multi-tab app)."
         ),
         "code": (
-            "Array.from(document.querySelectorAll('div.tab'))"
-            ".find(el => el.textContent === 'Cohort Retention')"
-            ".click()"
+            "Array.from(document.querySelectorAll('div.tab')).find(el => el.textContent === 'Cohort Retention').click()"
         ),
     },
 )
@@ -182,8 +180,7 @@ def session_channel_guide(channel_status: dict[str, Any] | None = None) -> dict[
                 "statements": "Plain body; use an explicit `return` to produce a value.",
             },
             "notes": [
-                "The mode used is reported as `eval_mode`, so you can tell why a value did "
-                "or did not come back.",
+                "The mode used is reported as `eval_mode`, so you can tell why a value did or did not come back.",
                 "`await` is allowed anywhere; the body runs as an async function.",
                 "A fresh scope per command — nothing you define survives into the next call. "
                 "Use ctx.out or return a value.",
@@ -191,7 +188,7 @@ def session_channel_guide(channel_status: dict[str, Any] | None = None) -> dict[
                 "A thrown error comes back as ok=false with name, message, stack, and `line` "
                 "relative to the code you submitted.",
                 "Multi-statement bodies auto-return their trailing expression "
-                "(`eval_mode: \"last_line\"`) whether it's semicolon-joined onto one "
+                '(`eval_mode: "last_line"`) whether it\'s semicolon-joined onto one '
                 "physical line (\"console.log('a'); 42\") or spans several lines of its "
                 "own (a wrapped array/object literal) — this is now statement-boundary-"
                 "aware, not line-based. It can still fall back to `statements` mode "
@@ -206,8 +203,7 @@ def session_channel_guide(channel_status: dict[str, Any] | None = None) -> dict[
             "order": [TIER_DASH_COMPONENT_API, TIER_REACT_FIBER, TIER_DOM],
             TIER_DASH_COMPONENT_API: "Supported renderer API. Full prop tree, including dcc.Store data.",
             TIER_REACT_FIBER: (
-                "Unsupported React-internals traversal. Works in practice but is fragile "
-                "across Dash versions."
+                "Unsupported React-internals traversal. Works in practice but is fragile across Dash versions."
             ),
             TIER_DOM: "Rendered DOM only — values of inputs and text content. Always `partial: true`.",
             "guidance": (

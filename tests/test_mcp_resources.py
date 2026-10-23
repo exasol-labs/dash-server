@@ -12,6 +12,7 @@ from _mcp_helpers import (
     _bundle,
 )
 
+
 def test_mcp_get_exposes_streamable_http_endpoint(client):
     response = client.get("/mcp")
 
@@ -129,14 +130,10 @@ def test_mcp_resources_list_includes_repo_status(client):
     repo_status = next(resource for resource in resources if resource["uri"] == "dash://repo/status")
     assert repo_status["title"] == "GitOps repository status"
     artifact_files = next(
-        resource
-        for resource in resources
-        if resource["uri"] == "dash://apps/demo/artifacts/latest/files"
+        resource for resource in resources if resource["uri"] == "dash://apps/demo/artifacts/latest/files"
     )
     latest_build_diff = next(
-        resource
-        for resource in resources
-        if resource["uri"] == "dash://apps/demo/diff/latest-build...draft"
+        resource for resource in resources if resource["uri"] == "dash://apps/demo/diff/latest-build...draft"
     )
     assert artifact_files["title"] == "demo latest artifact files"
     assert latest_build_diff["title"] == "demo latest-build-to-draft diff"
@@ -250,4 +247,3 @@ def test_live_apps_expose_revision_status_for_auto_refresh(client):
     updated_status = client.get("/apps/refresh-app/__dash-server/status")
     assert updated_status.status_code == 200
     assert updated_status.get_json()["revision_number"] == 2
-
