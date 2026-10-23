@@ -34,6 +34,37 @@ class SemanticModelRef:
     # Issues the validation run behind ``readiness`` recorded; filled in by
     # ``with_validation_issues`` for models that aren't VALID.
     issues: tuple[ValidationIssue, ...] = ()
+    # For a fused model (partitions, alternate sources, reconciled attributes): how it is
+    # fused, and how its reconciled attributes are answered today. Filled in by ``with_fusion``.
+    fusion_layout: tuple[FusionPart, ...] = ()
+    fusion_health: tuple[FusionHealth, ...] = ()
+
+
+@dataclass(frozen=True)
+class FusionPart:
+    """One row of a model's fusion layout (SEMANTIC_AGENT.FUSION_FOR_AGENT)."""
+
+    entity: str
+    aspect: str
+    representation: str | None
+    attribute: str | None
+    strategy: str | None
+    coverage: str | None
+
+
+@dataclass(frozen=True)
+class FusionHealth:
+    """How one reconciled attribute is answered (SEMANTIC_ADMIN.CHECK_FUSION_HEALTH)."""
+
+    entity: str
+    attribute: str
+    strategy: str | None
+    first_source: str | None
+    total_keys: int | None
+    from_first_source: int | None
+    filled: int | None
+    unresolved: int | None
+    probe_error: str | None
 
 
 @dataclass(frozen=True)
@@ -178,6 +209,105 @@ def _readiness(errors: int | None, preconditions: int | None, warnings: int | No
     if warnings:
         return "WARNING"
     return "VALID"
+
+
+_FUSION_LAYOUT_COLUMNS = [
+    "MODEL_NAME",
+    "ENTITY_NAME",
+    "FUSION_ASPECT",
+    "REPRESENTATION_NAME",
+    "ATTRIBUTE_NAME",
+    "STRATEGY",
+    "COVERAGE_PREDICATE",
+]
+_FUSION_HEALTH_COLUMNS = [
+    "ENTITY_NAME",
+    "ATTRIBUTE_TYPE",
+    "ATTRIBUTE_NAME",
+    "FUSION_STRATEGY",
+    "FIRST_SOURCE",
+    "TOTAL_KEYS",
+    "FROM_FIRST_SOURCE",
+    "FILLED",
+    "UNRESOLVED",
+    "PROBE_ERROR",
+]
+
+
+def with_fusion(connection: object, models: list[SemanticModelRef]) -> list[SemanticModelRef]:
+    """``models`` with the fusion layout and attribute health of each fused one.
+
+    Every model has a single PRIMARY representation per entity; anything else (partitions,
+    alternates, authority, reconcile policies, identity maps) makes it fused. Health comes
+    from ``CHECK_FUSION_HEALTH``, which reads only and records nothing. Best effort.
+    """
+
+    if not models:
+        return models
+    names = {f"m{index}": ref.model for index, ref in enumerate(models)}
+    try:
+        statement = connection.execute(  # type: ignore[attr-defined]
+            f"SELECT {', '.join(_FUSION_LAYOUT_COLUMNS)} FROM SEMANTIC_AGENT.FUSION_FOR_AGENT "
+            f"WHERE MODEL_NAME IN ({', '.join(f'{{{key}!s}}' for key in names)})",
+            names,
+        )
+        if list(statement.column_names()) != _FUSION_LAYOUT_COLUMNS:
+            return models
+        rows = statement.fetchall()
+    except Exception:
+        return models
+    layouts: dict[str, set[FusionPart]] = {}
+    for model, entity, aspect, representation, attribute, strategy, coverage in rows:
+        layouts.setdefault(str(model), set()).add(
+            FusionPart(
+                entity=str(entity),
+                aspect=str(aspect),
+                representation=representation,
+                attribute=attribute,
+                strategy=strategy,
+                coverage=coverage,
+            )
+        )
+    resolved = []
+    for ref in models:
+        layout = layouts.get(ref.model, set())
+        if all(part.aspect == "REPRESENTATION" and part.strategy == "PRIMARY" for part in layout):
+            resolved.append(ref)
+            continue
+        resolved.append(
+            replace(
+                ref,
+                fusion_layout=tuple(sorted(layout, key=lambda part: tuple(str(value) for value in vars(part).values()))),
+                fusion_health=_fusion_health(connection, ref.model),
+            )
+        )
+    return resolved
+
+
+def _fusion_health(connection: object, model: str) -> tuple[FusionHealth, ...]:
+    try:
+        statement = connection.execute(  # type: ignore[attr-defined]
+            "EXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH({model!s})", {"model": model}
+        )
+        if list(statement.column_names()) != _FUSION_HEALTH_COLUMNS:
+            return ()
+        rows = statement.fetchall()
+    except Exception:
+        return ()
+    return tuple(
+        FusionHealth(
+            entity=str(entity),
+            attribute=str(attribute),
+            strategy=strategy,
+            first_source=first_source,
+            total_keys=_optional_int(total),
+            from_first_source=_optional_int(first),
+            filled=_optional_int(filled),
+            unresolved=_optional_int(unresolved),
+            probe_error=probe_error,
+        )
+        for entity, _kind, attribute, strategy, first_source, total, first, filled, unresolved, probe_error in rows
+    )
 
 
 _ISSUES_PER_MODEL = 20
@@ -359,6 +489,8 @@ __all__ = [
     "GOVERNED_SOURCES_QUERY",
     "MODELS_COLUMNS",
     "MODELS_QUERY",
+    "FusionHealth",
+    "FusionPart",
     "SemanticModelRef",
     "ValidationIssue",
     "apply_finished_runs",
@@ -372,5 +504,6 @@ __all__ = [
     "referenced_models",
     "session_preprocessor",
     "with_finished_validation",
+    "with_fusion",
     "with_validation_issues",
 ]

@@ -288,6 +288,20 @@ The probe also covers query files that bypass the model:
 `dash://exasol/semantic-usage` lists both kinds under `bypasses`, so a metric owner sees the
 dashboards a definition change won't reach.
 
+For a **fused** model (partitions, alternate sources, reconciled attributes), the probe reports
+the partitions' coverage windows and how each reconciled attribute is answered
+(`details.fusion`, from Semantic Views' read-only `CHECK_FUSION_HEALTH`). It also compares both
+with the build: a moved partition boundary, or more keys filled from another source or left
+unresolved, is listed under `details.fusion_changed_since_build`. These change the numbers
+without changing any definition, so they don't fail the probe; `app_run_healthcheck`'s text lists
+them for review. A definition hash that moved together with the fusion layout is marked
+`fusion_layout_changed`: a boundary move changes the hash of every field on the entity.
+
+A query file may call `EXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH(...)` to show those counts
+to viewers; SQL smoke runs it as written. SQL smoke skips other `EXECUTE SCRIPT` files, which may
+change data, including `CHECK_PARTITION_COVERAGE`: on Semantic Views 0.5.0 it records an
+unfinished validation run on every call, so don't poll it from a dashboard.
+
 ## pyexasol Telemetry
 
 pyexasol 3 sends an anonymized usage event to Exasol on every connection. dash-server

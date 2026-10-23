@@ -386,6 +386,8 @@ class AppRuntimeService:
             if revision_number is None:
                 continue
             for entry in self.diagnostics_service.semantic_lock(app.name, revision_number) or []:
+                if entry.get("lane") == "fusion":
+                    continue
                 if entry.get("lane") in ("frozen", "raw"):
                     for model in entry.get("models") or ["(unknown model)"]:
                         bypasses.setdefault(str(model), []).append(
@@ -1284,7 +1286,23 @@ class AppRuntimeService:
             smoke_details = sql_smoke_probe.get("details", {})
             # What the revision's queries depend on: Semantic SQL fields with their definition
             # hashes, plus files that bypass the model (frozen compiler output, raw table reads).
-            lock_entries = [*(smoke_details.get("definitions") or []), *(smoke_details.get("semantic_bypasses") or [])]
+            # For fused models, also how they were fused and how their reconciled attributes were
+            # answered, so the healthcheck can say what moved since.
+            fusion_entries = [
+                {
+                    "lane": "fusion",
+                    "model": model["model"],
+                    "fusion_layout": model["fusion_layout"],
+                    "fusion_health": model["fusion_health"],
+                }
+                for model in smoke_details.get("semantic_models") or []
+                if model.get("fusion_layout")
+            ]
+            lock_entries = [
+                *(smoke_details.get("definitions") or []),
+                *(smoke_details.get("semantic_bypasses") or []),
+                *fusion_entries,
+            ]
             if lock_entries:
                 self.diagnostics_service.record_semantic_lock(name, revision.revision_number, lock_entries)
             overall_status = (

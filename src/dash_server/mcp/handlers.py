@@ -21,6 +21,37 @@ from dash_server.mailer import InvitationEmailSender
 from dash_server.registry.models import Invitation, ShareLink
 
 
+def _healthcheck_text(health: dict[str, Any]) -> str:
+    """The health status, failed probes, and findings that pass but need a human look."""
+
+    probes = health.get("probes") or []
+    lines = [str(health.get("status"))]
+    failed = [probe for probe in probes if probe.get("status") == "failed"]
+    for probe in failed:
+        error = (probe.get("details") or {}).get("latest_error")
+        lines.append(f"Failed: {probe.get('name')}" + (f" - {' '.join(str(error).split())[:300]}" if error else ""))
+    semantic = next((probe for probe in probes if probe.get("name") == "semantic_models"), None)
+    details = (semantic or {}).get("details") or {}
+    review = []
+    if details.get("changed_since_build"):
+        fields = sorted({f"{entry['model']}.{entry['field']}" for entry in details["changed_since_build"]})
+        review.append(f"definitions changed since build: {', '.join(fields)}")
+    for entry in details.get("fusion_changed_since_build") or []:
+        review.append(f"{entry['model']} {entry['change']}")
+    for summary in details.get("fusion") or []:
+        if summary.get("unresolved"):
+            review.append(f"{summary['model']} unresolved keys: {'; '.join(summary['unresolved'])}")
+    if details.get("raw_governed_reads"):
+        review.append("SQL over governed tables: " + ", ".join(entry["path"] for entry in details["raw_governed_reads"]))
+    if details.get("models_with_warnings"):
+        review.append("models with validation warnings: " + ", ".join(details["models_with_warnings"]))
+    if details.get("models_not_assessed"):
+        review.append("models not assessed: " + ", ".join(details["models_not_assessed"]))
+    if review:
+        lines.append("Review (semantic_models): " + "; ".join(review))
+    return "\n".join(lines)
+
+
 def _preflight_headline(preflight: dict[str, Any]) -> str:
     """One line on why an artifact preflight didn't pass, for a tool result's summary."""
 
@@ -1162,7 +1193,7 @@ class HandlersMixin(MCPServerHost):
         health = self.runtime_service.run_healthcheck(self._require_name(arguments), target=target)
         return self._tool_result(
             "app_run_healthcheck",
-            text=f"Ran {target} health check for app {health['app']['name']}.",
+            text=f"Ran {target} health check for app {health['app']['name']}: {_healthcheck_text(health['health'])}",
             structured_content=health,
         )
 

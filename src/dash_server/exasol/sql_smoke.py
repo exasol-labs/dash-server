@@ -45,6 +45,7 @@ from .semantic_models import (
     referenced_governed_sources,
     referenced_models,
     session_preprocessor,
+    with_fusion,
     with_validation_issues,
 )
 
@@ -109,6 +110,20 @@ class SqlSmokeReport:
 # `{name!i}` (identifier), `{name!r}` (raw SQL fragment).
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?:![sdfqir])?\}")
 
+# A query file may call a script instead of selecting, e.g. a Semantic Views check that a
+# dashboard shows. Scripts can't be wrapped in a WHERE 1=0 probe and may change data, so only
+# known read-only ones are run (as written); the rest are skipped with the reason.
+_SCRIPT_CALL_RE = re.compile(
+    r'^(?:\s*(?:--[^\n]*(?:\n|$)|/\*.*?\*/))*\s*EXECUTE\s+SCRIPT\s+"?(\w+)"?\s*\.\s*"?(\w+)"?',
+    re.IGNORECASE | re.DOTALL,
+)
+_READ_ONLY_SCRIPTS = {"SEMANTIC_ADMIN.CHECK_FUSION_HEALTH"}
+_SCRIPT_SKIP_REASONS = {
+    "SEMANTIC_ADMIN.CHECK_PARTITION_COVERAGE": (
+        "not run by the smoke check: Exasol Semantic Views 0.5.0 records an unfinished validation run on every call"
+    ),
+}
+
 
 def run_sql_smoke(
     *,
@@ -163,8 +178,9 @@ def run_sql_smoke(
                 )
             )
         referenced = {name for entry in results for name in (*entry.semantic_models, *entry.governed_reads)}
-        referenced_refs = with_validation_issues(
-            connection, [ref for ref in semantic.known_models if ref.model in referenced]
+        referenced_refs = with_fusion(
+            connection,
+            with_validation_issues(connection, [ref for ref in semantic.known_models if ref.model in referenced]),
         )
     finally:
         close = getattr(connection, "close", None)
@@ -249,6 +265,10 @@ def _smoke_one(
             ),
         )
 
+    script = _SCRIPT_CALL_RE.match(stripped)
+    if script is not None:
+        return _smoke_script(connection, relative_path, stripped, params, f"{script[1]}.{script[2]}".upper())
+
     # Wrap so the server parses and binds names without fetching rows. Strip a
     # trailing semicolon so the wrapped query parses cleanly.
     wrapped = f"SELECT * FROM (\n{stripped.rstrip(';')}\n) WHERE 1=0"
@@ -280,6 +300,30 @@ def _smoke_one(
         frozen_semantic_sql=frozen,
         definitions=_compile_definitions(connection, stripped.rstrip(";"), params) if semantic_models else None,
     )
+
+
+def _smoke_script(
+    connection: object, relative_path: str, sql_text: str, params: dict[str, Any], script: str
+) -> SqlSmokeFile:
+    if script not in _READ_ONLY_SCRIPTS:
+        return SqlSmokeFile(
+            relative_path=relative_path,
+            outcome="skipped",
+            skip_reason=_SCRIPT_SKIP_REASONS.get(
+                script, f"not run by the smoke check: EXECUTE SCRIPT {script} may change data"
+            ),
+        )
+    try:
+        statement = connection.execute(sql_text.rstrip(";"), params)  # type: ignore[attr-defined]
+    except Exception as exc:
+        return SqlSmokeFile(relative_path=relative_path, outcome="failed", error_text=str(exc))
+    close = getattr(statement, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+    return SqlSmokeFile(relative_path=relative_path, outcome="passed")
 
 
 def _compile_definitions(connection: object, sql_text: str, params: dict[str, Any]) -> dict[str, Any] | None:

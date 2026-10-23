@@ -348,14 +348,39 @@ class HealthProber:
                 "These files compute numbers from tables a semantic model governs instead of querying the model. "
                 "They don't follow certified definition changes and can disagree with governed dashboards."
             )
+        fusion = [_fusion_summary(model) for model in models if model.get("fusion_layout")]
+        if fusion:
+            details["fusion"] = fusion
+        fusion_changes: dict[str, list[str]] = {}
         if built_definitions is not None:
+            fusion_changes = _fusion_changes(built_definitions, models)
+            if fusion_changes:
+                details["fusion_changed_since_build"] = [
+                    {"model": model, "change": change} for model, changes in fusion_changes.items() for change in changes
+                ]
+                details["fusion_changed_since_build_note"] = (
+                    "How these fused models combine their sources, or how their reconciled attributes are answered, "
+                    "changed after this revision was built. The definitions may be unchanged, but the numbers move: "
+                    "check the affected panels, and show coverage and unresolved keys to viewers."
+                )
             changed = _changed_definitions(built_definitions, details_in.get("definitions") or [])
             if changed:
+                layout_moved = {model for model, changes in fusion_changes.items() if any(c.startswith("layout:") for c in changes)}
+                for entry in changed:
+                    if entry.get("model") in layout_moved:
+                        entry["fusion_layout_changed"] = True
                 details["changed_since_build"] = changed
                 details["changed_since_build_note"] = (
                     "These metric or dimension definitions changed after this revision was built. The dashboard "
                     "queries the model live, so it already shows the new definitions; check that each panel's "
                     "label and meaning still match."
+                    + (
+                        " Entries with fusion_layout_changed belong to a model whose fusion layout also changed "
+                        "(see fusion_changed_since_build): a partition boundary or authority change moves the hash "
+                        "of every field on the affected entity even when its expression is unchanged."
+                        if layout_moved
+                        else ""
+                    )
                 )
         warnings = [model["model"] for model in models if model.get("readiness") == "WARNING"]
         if warnings:
@@ -534,6 +559,82 @@ class HealthProber:
                 "rss_bytes": rss,
             },
         }
+
+
+def _fusion_summary(model: dict[str, Any]) -> dict[str, Any]:
+    """A fused model's partitions and reconciled attributes, as the probe reports them."""
+
+    partitions = [
+        {"entity": part["entity"], "representation": part["representation"], "coverage": part["coverage"]}
+        for part in model["fusion_layout"]
+        if part["aspect"] == "PARTITION"
+    ]
+    summary: dict[str, Any] = {"model": model["model"]}
+    if partitions:
+        summary["partitions"] = partitions
+    if model.get("fusion_health"):
+        summary["reconciled_attributes"] = model["fusion_health"]
+        unresolved = [
+            f"{health['entity']}.{health['attribute']}: {health['unresolved']} of {health['total_keys']} keys"
+            for health in model["fusion_health"]
+            if health.get("unresolved")
+        ]
+        if unresolved:
+            summary["unresolved"] = unresolved
+        errors = [health["probe_error"] for health in model["fusion_health"] if health.get("probe_error")]
+        if errors:
+            summary["probe_errors"] = errors
+    return summary
+
+
+def _fusion_part_key(part: dict[str, Any]) -> tuple[Any, ...]:
+    return (part["entity"], part["aspect"], part["representation"], part["attribute"])
+
+
+def _fusion_part_name(key: tuple[Any, ...]) -> str:
+    entity, aspect, representation, attribute = key
+    return " ".join(str(value) for value in (entity, aspect.lower(), representation or attribute) if value)
+
+
+def _fusion_changes(built: list[dict[str, Any]], models: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """What changed in each fused model's layout and attribute health since the build snapshot."""
+
+    current = {model["model"]: model for model in models if model.get("fusion_layout")}
+    changes: dict[str, list[str]] = {}
+    for entry in built:
+        if entry.get("lane") != "fusion" or entry.get("model") not in current:
+            continue
+        model = current[entry["model"]]
+        found: list[str] = []
+        before = {_fusion_part_key(part): part for part in entry.get("fusion_layout") or []}
+        after = {_fusion_part_key(part): part for part in model["fusion_layout"]}
+        for key in sorted(before.keys() | after.keys(), key=lambda value: tuple(str(item) for item in value)):
+            old, new = before.get(key), after.get(key)
+            name = _fusion_part_name(key)
+            if old is None:
+                found.append(f"layout: added {name}")
+            elif new is None:
+                found.append(f"layout: removed {name}")
+            elif (old["coverage"], old["strategy"]) != (new["coverage"], new["strategy"]):
+                if old["coverage"] != new["coverage"]:
+                    found.append(f"layout: {name} coverage {old['coverage']} -> {new['coverage']}")
+                else:
+                    found.append(f"layout: {name} strategy {old['strategy']} -> {new['strategy']}")
+        built_health = {(h["entity"], h["attribute"]): h for h in entry.get("fusion_health") or []}
+        for health in model.get("fusion_health") or []:
+            old_health = built_health.get((health["entity"], health["attribute"]))
+            if old_health is None:
+                continue
+            moved = [
+                f"{label} {old_health[field]} -> {health[field]}"
+                for field, label in (("unresolved", "unresolved"), ("filled", "filled"), ("total_keys", "keys"))
+                if old_health.get(field) != health.get(field)
+            ]
+            if moved:
+                found.append(f"health: {health['entity']}.{health['attribute']} " + ", ".join(moved))
+        if found:
+            changes[entry["model"]] = found
+    return changes
 
 
 def _first_issue_text(model: dict[str, Any]) -> str:

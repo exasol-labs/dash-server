@@ -41,8 +41,10 @@
     ]
   },
   "provenance": [
-    "Show the model's validation state next to its numbers: MODELS_FOR_AGENT.VALIDATION_STATUS (WARNING is not VALID; the warnings are in SEMANTIC_CATALOG.CURRENT_VALIDATION_ISSUES).",
-    "For fused fields (FIELDS_FOR_AGENT.SOURCE_COUNT > 1 or FUSION_STRATEGY other than NONE), tell the viewer the number combines several sources."
+    "Show the model's validation state next to its numbers. Readiness (VALID, WARNING, INVALID, PRECONDITION) is MODELS_FOR_AGENT.AGENT_READINESS; VALIDATION_STATUS is the validation run's own OK, WARNING or ERROR. Take it from the newest finished run (SEMANTIC_SOURCE.VALIDATION_RUNS with STATUS <> 'RUNNING'): some Semantic Views checks leave a run unfinished, and MODELS_FOR_AGENT then reports VALID. The semantic scaffold's queries/business/provenance.sql does this; the issues are in SEMANTIC_SOURCE.VALIDATION_RESULTS.",
+    "For fused fields (FIELDS_FOR_AGENT.SOURCE_COUNT > 1 or FUSION_STRATEGY other than NONE), tell the viewer the number combines several sources.",
+    "For a fused model, show viewers what its numbers rest on: each partition's coverage window (SEMANTIC_AGENT.FUSION_FOR_AGENT, COVERAGE_PREDICATE where FUSION_ASPECT = 'PARTITION'), and for each reconciled attribute how many keys come from the first source, are filled from another, or are unresolved (EXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH('<model>'): read-only, so a query file may call it and SQL smoke runs it). Unresolved keys land in a NULL group.",
+    "Don't poll SEMANTIC_ADMIN.CHECK_PARTITION_COVERAGE from a dashboard on Semantic Views 0.5.0: every call leaves an unfinished validation run behind. SQL smoke skips query files that call it."
   ],
   "checks": [
     "SQL smoke (app_build preflight, app_run_healthcheck) runs Semantic SQL exactly as the dashboard will, so an unknown field, an invalid combination or a dropped metric fails the check instead of waiting for a viewer.",
@@ -51,7 +53,8 @@
     "SQL smoke warns (sql_smoke details.warnings) when a query file reads a table that backs a published model, naming the published schema to use instead.",
     "app_validate warns when a query file looks like saved COMPILE_SQL / COMPILE_REQUEST_JSON output.",
     "Each build records the definition hash of every metric and dimension the app's Semantic SQL uses. app_run_healthcheck's semantic_models probe then lists fields whose definition changed since the revision was built (details.changed_since_build): the dashboard already shows the new definition, so check that each panel's label and meaning still match.",
-    "dash://exasol/semantic-usage lists which live dashboards use which model fields: impact analysis before changing or dropping a metric. Its bypasses section lists dashboards that a metric change never reaches: saved compiled SQL (lane frozen) and SQL over the model's source tables (lane raw)."
+    "dash://exasol/semantic-usage lists which live dashboards use which model fields: impact analysis before changing or dropping a metric. Its bypasses section lists dashboards that a metric change never reaches: saved compiled SQL (lane frozen) and SQL over the model's source tables (lane raw).",
+    "For a fused model, the semantic_models probe reports partitions and reconciled-attribute health (details.fusion), and what changed since the revision was built (details.fusion_changed_since_build): a moved partition boundary, or more keys filled or unresolved. Those change the numbers without changing any definition, so they're for review and don't fail the probe. A definition hash that moved together with the fusion layout is marked fusion_layout_changed."
   ],
   "prototyping": [
     "The fastest reliable check of a semantic query is the dashboard's own: put it in queries/*.sql, deploy a preview, and run app_run_healthcheck.",

@@ -53,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`changed_since_build`, including fields derived from a changed one), for review. The dashboard
   already shows the new definition, so this doesn't fail the probe. Needs a Semantic Views build
   with definition hashes.
+- For fused Exasol Semantic Views models, the `semantic_models` probe reports partition coverage
+  and how each reconciled attribute is answered (`fusion`, from the read-only
+  `CHECK_FUSION_HEALTH`), and what changed since the build (`fusion_changed_since_build`): a moved
+  partition boundary, or more keys filled or unresolved. A definition hash that moved with the
+  fusion layout is marked `fusion_layout_changed`.
+- SQL smoke runs query files that call `SEMANTIC_ADMIN.CHECK_FUSION_HEALTH` as written, and skips
+  other `EXECUTE SCRIPT` files with the reason instead of failing them inside its `WHERE 1=0`
+  wrapper.
+- `app_run_healthcheck`'s text states the health status and failed probes, and lists
+  semantic-model findings that pass but need review.
 - `dash://exasol/semantic-usage` lists which live dashboards use which model fields, with the
   definition hash each was built against: impact analysis before changing or dropping a metric.
 

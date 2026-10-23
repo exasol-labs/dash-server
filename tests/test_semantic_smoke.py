@@ -27,7 +27,11 @@ class _Connection:
         compile_status: str = "OK",
         finished_runs: list[tuple[Any, ...]] | None = None,
         issues: list[tuple[Any, ...]] | None = None,
+        fusion_layout: list[tuple[Any, ...]] | None = None,
+        fusion_health: list[tuple[Any, ...]] | None = None,
     ) -> None:
+        self.fusion_layout = fusion_layout or []
+        self.fusion_health = fusion_health or []
         self.compile_status = compile_status
         # None: SEMANTIC_SOURCE isn't readable.
         self.finished_runs = finished_runs
@@ -58,6 +62,15 @@ class _Connection:
             }
             row = (self.compile_status, json.dumps(plan))
             return SimpleNamespace(column_names=lambda: ["STATUS", "PLAN_JSON"], fetchone=lambda: row)
+        if "CHECK_FUSION_HEALTH" in sql:
+            self.statements.append(sql)
+            columns = ["ENTITY_NAME", "ATTRIBUTE_TYPE", "ATTRIBUTE_NAME", "FUSION_STRATEGY", "FIRST_SOURCE",
+                       "TOTAL_KEYS", "FROM_FIRST_SOURCE", "FILLED", "UNRESOLVED", "PROBE_ERROR"]
+            return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.fusion_health, close=lambda: None)
+        if "FUSION_ASPECT" in sql:
+            columns = ["MODEL_NAME", "ENTITY_NAME", "FUSION_ASPECT", "REPRESENTATION_NAME", "ATTRIBUTE_NAME",
+                       "STRATEGY", "COVERAGE_PREDICATE"]
+            return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.fusion_layout)
         if "SEMANTIC_SOURCE.VALIDATION_RUNS" in sql:
             if self.finished_runs is None:
                 raise RuntimeError("insufficient privileges: SELECT on SEMANTIC_SOURCE")
@@ -357,3 +370,110 @@ def _probe_from_details(details: dict[str, Any]) -> dict[str, Any]:
     from dash_server.runtime.prober import HealthProber
 
     return HealthProber(svc=None)._semantic_models_probe({"name": "sql_smoke", "details": details})  # type: ignore[arg-type]
+
+
+FUSION_MODEL = ("fusion", "SEMANTIC_FUSION", PREPROCESSOR, "VALID", "OK", 0, 0, 102, None)
+FUSION_LAYOUT = [
+    ("fusion", "order", "PARTITION", "primary", None, "UNION", "o.order_ts >= TIMESTAMP '2026-09-01 00:00:00'"),
+    ("fusion", "order", "PARTITION", "archive", None, "UNION", "o.order_ts < TIMESTAMP '2026-09-01 00:00:00'"),
+    ("fusion", "customer", "ATTRIBUTE_POLICY", None, "customer_segment", "RECONCILE", None),
+    ("sales", "order", "REPRESENTATION", "primary", None, "PRIMARY", None),
+]
+FUSION_HEALTH = [("customer", "DIMENSION", "customer_segment", "RECONCILE", "crm", 120, 92, 20, 8, None)]
+
+
+def test_fused_models_report_their_layout_and_attribute_health() -> None:
+    connection = _Connection(
+        models=[FUSION_MODEL, SALES_MODEL],
+        preprocessor=PREPROCESSOR,
+        fusion_layout=FUSION_LAYOUT,
+        fusion_health=FUSION_HEALTH,
+    )
+
+    report = _smoke(connection, [FUSION_QUERY, SEMANTIC_QUERY])
+
+    fusion, sales = sorted(report.semantic_models, key=lambda ref: ref.model)
+    assert [(part.aspect, part.representation or part.attribute) for part in fusion.fusion_layout] == [
+        ("ATTRIBUTE_POLICY", "customer_segment"),
+        ("PARTITION", "archive"),
+        ("PARTITION", "primary"),
+    ]
+    (health,) = fusion.fusion_health
+    assert (health.attribute, health.total_keys, health.filled, health.unresolved) == ("customer_segment", 120, 20, 8)
+    # A model with one PRIMARY representation per entity isn't fused: no health check is run for it.
+    assert (sales.fusion_layout, sales.fusion_health) == ((), ())
+    assert [sql for sql in connection.statements if "CHECK_FUSION_HEALTH" in sql] == [
+        "EXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH({model!s})"
+    ]
+
+    probe = _probe_from_details({"semantic_models": [asdict(fusion)]})
+    assert probe["status"] == "passed"
+    (summary,) = probe["details"]["fusion"]
+    assert summary["unresolved"] == ["customer.customer_segment: 8 of 120 keys"]
+    assert [partition["representation"] for partition in summary["partitions"]] == ["archive", "primary"]
+
+
+def _fused(layout_rows: list[tuple[Any, ...]], health_rows: list[tuple[Any, ...]]) -> dict[str, Any]:
+    connection = _Connection(
+        models=[FUSION_MODEL], preprocessor=PREPROCESSOR, fusion_layout=layout_rows, fusion_health=health_rows
+    )
+    (model,) = _smoke(connection, [FUSION_QUERY]).semantic_models
+    return asdict(model)
+
+
+def test_fusion_changes_since_build_are_reported_and_attributed() -> None:
+    from dash_server.runtime.prober import HealthProber
+
+    built_model = _fused(FUSION_LAYOUT, FUSION_HEALTH)
+    moved = [
+        (*row[:6], row[6].replace("2026-09-01", "2026-10-01")) if row[2] == "PARTITION" else row for row in FUSION_LAYOUT
+    ]
+    current_model = _fused(moved, [("customer", "DIMENSION", "customer_segment", "RECONCILE", "crm", 120, 65, 35, 20, None)])
+    built = [
+        {"path": "queries/fusion.sql", "model": "fusion", "metrics": {"total_revenue": "old"}},
+        {"lane": "fusion", "model": "fusion", "fusion_layout": built_model["fusion_layout"],
+         "fusion_health": built_model["fusion_health"]},
+    ]
+    current = [{"path": "queries/fusion.sql", "model": "fusion", "metrics": {"total_revenue": "new"}}]
+    smoke_probe = {"name": "sql_smoke", "details": {"semantic_models": [current_model], "definitions": current}}
+
+    probe = HealthProber(svc=None)._semantic_models_probe(smoke_probe, built_definitions=built)  # type: ignore[arg-type]
+
+    assert probe["status"] == "passed"
+    assert [entry["change"] for entry in probe["details"]["fusion_changed_since_build"]] == [
+        "layout: order partition archive coverage o.order_ts < TIMESTAMP '2026-09-01 00:00:00' -> "
+        "o.order_ts < TIMESTAMP '2026-10-01 00:00:00'",
+        "layout: order partition primary coverage o.order_ts >= TIMESTAMP '2026-09-01 00:00:00' -> "
+        "o.order_ts >= TIMESTAMP '2026-10-01 00:00:00'",
+        "health: customer.customer_segment unresolved 8 -> 20, filled 20 -> 35",
+    ]
+    # The hash moved with the boundary: say so, so it isn't read as a change of meaning.
+    (changed,) = probe["details"]["changed_since_build"]
+    assert changed["fusion_layout_changed"] is True
+    assert "partition boundary or authority change" in probe["details"]["changed_since_build_note"]
+
+    from dash_server.mcp.handlers import _healthcheck_text
+
+    text = _healthcheck_text({"status": "healthy", "probes": [probe]})
+    assert text.splitlines()[0] == "healthy"
+    assert "definitions changed since build: fusion.total_revenue" in text
+    assert "fusion health: customer.customer_segment unresolved 8 -> 20, filled 20 -> 35" in text
+    assert "fusion unresolved keys: customer.customer_segment: 20 of 120 keys" in text
+
+
+def test_read_only_semantic_checks_run_unwrapped_and_other_scripts_are_skipped() -> None:
+    connection = _Connection(models=[SALES_MODEL], preprocessor=PREPROCESSOR)
+    files = [
+        ("queries/health.sql", "-- shown on the provenance panel\nEXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH('fusion');"),
+        ("queries/coverage.sql", "EXECUTE SCRIPT semantic_admin.check_partition_coverage('fusion')"),
+        ("queries/etl.sql", 'EXECUTE SCRIPT "ETL"."RELOAD"()'),
+    ]
+
+    health, coverage, etl = _smoke(connection, files).files
+
+    assert health.outcome == "passed"
+    assert "EXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH('fusion')" in connection.statements[-1]
+    assert (coverage.outcome, etl.outcome) == ("skipped", "skipped")
+    assert "records an unfinished validation run" in (coverage.skip_reason or "")
+    assert etl.skip_reason == "not run by the smoke check: EXECUTE SCRIPT ETL.RELOAD may change data"
+    assert not [sql for sql in connection.statements if "RELOAD" in sql or "PARTITION_COVERAGE" in sql]
