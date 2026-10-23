@@ -137,9 +137,7 @@ class DiagnosticsService:
         traceback_text: str | None = None,
         revision_number: int | None = None,
     ) -> dict[str, Any]:
-        parsed_traceback = (
-            self.inspect_traceback(traceback_text)["traceback"] if traceback_text else None
-        )
+        parsed_traceback = self.inspect_traceback(traceback_text)["traceback"] if traceback_text else None
         record = {
             "id": uuid.uuid4().hex,
             "timestamp": self._timestamp(),
@@ -287,7 +285,9 @@ class DiagnosticsService:
         """
 
         path = self._app_dir(app_name) / "semantic_locks" / f"r{revision_number:06d}.json"
-        self._write_json(path, {"revision_number": revision_number, "recorded_at": self._timestamp(), "files": definitions})
+        self._write_json(
+            path, {"revision_number": revision_number, "recorded_at": self._timestamp(), "files": definitions}
+        )
 
     def semantic_lock(self, app_name: str, revision_number: int) -> list[dict[str, Any]] | None:
         """The definitions recorded when ``revision_number`` was built, or None."""
@@ -346,9 +346,7 @@ class DiagnosticsService:
     ) -> dict[str, Any] | None:
         records = self.list_errors(app_name, limit=0, source=source)["errors"]
         if revision_number is not None:
-            records = [
-                record for record in records if record.get("revision_number") == revision_number
-            ]
+            records = [record for record in records if record.get("revision_number") == revision_number]
         return records[-1] if records else None
 
     def inspect_traceback(self, traceback_text: str) -> dict[str, Any]:

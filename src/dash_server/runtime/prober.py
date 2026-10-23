@@ -52,11 +52,7 @@ class HealthProber:
         )
         asset_probe = self._asset_probe(mount_path)
         probes = [homepage_probe, layout_probe, dependency_probe, asset_probe]
-        overall_status = (
-            "healthy"
-            if all(probe["status"] == "passed" for probe in probes)
-            else "unhealthy"
-        )
+        overall_status = "healthy" if all(probe["status"] == "passed" for probe in probes) else "unhealthy"
         # Ensure every probe carries its canonical name even for the passed-dict
         # shapes returned by `_http_probe` / `_asset_probe`.
         homepage_probe["name"] = "http_ready"
@@ -140,7 +136,7 @@ class HealthProber:
             )
         body = response.get_data(as_text=True)
         asset_path = None
-        for marker in ('src="', "href=\""):
+        for marker in ('src="', 'href="'):
             start = body.find(marker)
             while start != -1:
                 end = body.find('"', start + len(marker))
@@ -241,15 +237,11 @@ class HealthProber:
             smoke_params=collect_sql_smoke_params(Path(revision.artifact_path)),
         )
         semantic_models = [asdict(ref) for ref in report.semantic_models]
-        warnings = [
-            {"path": f.relative_path, "message": message} for f in report.files for message in f.warnings
-        ]
+        warnings = [{"path": f.relative_path, "message": message} for f in report.files for message in f.warnings]
         extra: dict[str, Any] = {}
         if semantic_models:
             extra["semantic_models"] = semantic_models
-        definitions = [
-            {"path": f.relative_path, **f.definitions} for f in report.files if f.definitions is not None
-        ]
+        definitions = [{"path": f.relative_path, **f.definitions} for f in report.files if f.definitions is not None]
         if definitions:
             extra["definitions"] = definitions
         if warnings:
@@ -288,10 +280,7 @@ class HealthProber:
                 "status": "not_applicable",
                 "details": {
                     "reason": "all_files_skipped",
-                    "files": [
-                        {"path": f.relative_path, "reason": f.skip_reason}
-                        for f in report.files
-                    ],
+                    "files": [{"path": f.relative_path, "reason": f.skip_reason} for f in report.files],
                 },
             }
         # failed — surface the first failure plus the connection error if any.
@@ -305,9 +294,7 @@ class HealthProber:
                 "first_failed_file": first.relative_path if first is not None else None,
                 "latest_error": first.error_text if first is not None else report.connection_error,
                 "failed_files": [
-                    {"path": f.relative_path, "error": f.error_text}
-                    for f in report.files
-                    if f.outcome == "failed"
+                    {"path": f.relative_path, "error": f.error_text} for f in report.files if f.outcome == "failed"
                 ],
                 **extra,
             },
@@ -356,7 +343,9 @@ class HealthProber:
             fusion_changes = _fusion_changes(built_definitions, models)
             if fusion_changes:
                 details["fusion_changed_since_build"] = [
-                    {"model": model, "change": change} for model, changes in fusion_changes.items() for change in changes
+                    {"model": model, "change": change}
+                    for model, changes in fusion_changes.items()
+                    for change in changes
                 ]
                 details["fusion_changed_since_build_note"] = (
                     "How these fused models combine their sources, or how their reconciled attributes are answered, "
@@ -365,7 +354,9 @@ class HealthProber:
                 )
             changed = _changed_definitions(built_definitions, details_in.get("definitions") or [], models)
             if changed:
-                layout_moved = {model for model, changes in fusion_changes.items() if any(c.startswith("layout:") for c in changes)}
+                layout_moved = {
+                    model for model, changes in fusion_changes.items() if any(c.startswith("layout:") for c in changes)
+                }
                 for entry in changed:
                     if entry.get("model") in layout_moved:
                         entry["fusion_layout_changed"] = True
@@ -479,9 +470,7 @@ class HealthProber:
             },
         }
 
-    def _worker_http_probe(
-        self, *, mount_path: str, revision_number: int | None
-    ) -> dict[str, Any]:
+    def _worker_http_probe(self, *, mount_path: str, revision_number: int | None) -> dict[str, Any]:
         """Probe a worker via its last-seen HTTP response status from the proxy.
 
         The proxy calls ``manager.set_last_response_status(...)`` on every forwarded
@@ -501,9 +490,7 @@ class HealthProber:
                 "name": "worker_http",
                 "status": "skipped",
                 "details": {
-                    "message": (
-                        "No HTTP request has reached the worker yet for the current revision."
-                    ),
+                    "message": ("No HTTP request has reached the worker yet for the current revision."),
                     "mount_path": mount_path,
                     "revision_number": revision_number,
                 },
@@ -520,9 +507,7 @@ class HealthProber:
             },
         }
 
-    def _worker_alive_probe(
-        self, *, mount_path: str, revision_number: int | None
-    ) -> dict[str, Any]:
+    def _worker_alive_probe(self, *, mount_path: str, revision_number: int | None) -> dict[str, Any]:
         """Probe an isolated-mode worker for liveness.
 
         Returns ``status="not_applicable"`` when the server is running in_process so the
@@ -697,7 +682,12 @@ def _changed_definitions(
                 new_name = renamed_to.get((entry.get("model"), kind[:-1], field))
                 if new_name is not None and new_name in current_hashes:
                     changed.append(
-                        {**record, "change": "renamed", "renamed_to": new_name, "current_hash": current_hashes[new_name]}
+                        {
+                            **record,
+                            "change": "renamed",
+                            "renamed_to": new_name,
+                            "current_hash": current_hashes[new_name],
+                        }
                     )
                 else:
                     changed.append({**record, "change": "missing", "current_hash": None})

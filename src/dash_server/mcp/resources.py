@@ -164,9 +164,7 @@ class ResourcesMixin(MCPServerHost):
             ),
             (
                 "dash://runtime/logs/runtime.events",
-                lambda _m: runtime.diagnostics_service.tail_logs(
-                    "__runtime__", channel="runtime.events", limit=200
-                ),
+                lambda _m: runtime.diagnostics_service.tail_logs("__runtime__", channel="runtime.events", limit=200),
                 _ServerResource(
                     "runtime-events",
                     "Runtime audit events",
@@ -353,9 +351,7 @@ class ResourcesMixin(MCPServerHost):
             ),
             (
                 APP_OUTPUTS_RESOURCE_RE,
-                lambda m: self._consumption_service().list_outputs(
-                    m.group(1), self._consumption_auth_context()
-                ),
+                lambda m: self._consumption_service().list_outputs(m.group(1), self._consumption_auth_context()),
                 _AppResource(
                     "/outputs",
                     "{app}-outputs",
@@ -365,9 +361,7 @@ class ResourcesMixin(MCPServerHost):
             ),
             (
                 EXPORT_RESOURCE_RE,
-                lambda m: self._consumption_service().get_export(
-                    m.group(1), self._consumption_auth_context()
-                ),
+                lambda m: self._consumption_service().get_export(m.group(1), self._consumption_auth_context()),
                 None,
             ),
             (
@@ -526,7 +520,6 @@ class ResourcesMixin(MCPServerHost):
             details={"uri": uri},
         )
 
-
     def _resource_dispatch_table(
         self,
     ) -> list[tuple[str | re.Pattern[str], Callable[[Any], dict[str, Any]]]]:
@@ -545,7 +538,6 @@ class ResourcesMixin(MCPServerHost):
                 }
             ]
         }
-
 
     def _runtime_isolation_snapshot(self) -> dict[str, Any]:
         """Read-only view of runtime-isolation config and cache roots."""
@@ -569,12 +561,10 @@ class ResourcesMixin(MCPServerHost):
             "worker_idle_stop_seconds": config.get("APP_WORKER_IDLE_STOP_SECONDS"),
         }
 
-
     def _repo_status_payload(self) -> dict[str, Any]:
         payload = self.git_repo_service.status()
         payload["runtime_isolation"] = self._runtime_isolation_snapshot()
         return payload
-
 
     def _session_channel_guide_payload(self) -> dict[str, Any]:
         """The ctx/eval reference, with this server's live channel settings folded in.
@@ -588,7 +578,6 @@ class ResourcesMixin(MCPServerHost):
         service = getattr(self, "session_channel_service", None)
         return session_channel_guide(service.status() if service is not None else None)
 
-
     def _app_sessions_payload(self, app_name: str) -> dict[str, Any]:
         service = getattr(self, "session_channel_service", None)
         if service is None:
@@ -596,7 +585,6 @@ class ResourcesMixin(MCPServerHost):
         payload = service.list_sessions(app_name=app_name)
         payload["app"] = app_name
         return payload
-
 
     def _runtime_status_payload(self) -> dict[str, Any]:
         payload = {
@@ -615,7 +603,6 @@ class ResourcesMixin(MCPServerHost):
         if self.consumption_service is not None:
             payload["consumption_coordinator"] = self.consumption_service.coordinator_status()
         return payload
-
 
     def _resource_definitions(self) -> list[dict[str, Any]]:
         routes = self._resource_routes()
@@ -645,9 +632,7 @@ class ResourcesMixin(MCPServerHost):
                         }
                     )
         try:
-            exports = self._consumption_service().list_exports(
-                self._consumption_auth_context()
-            )
+            exports = self._consumption_service().list_exports(self._consumption_auth_context())
         except DashServerError:
             exports = {"jobs": []}
         for export in exports["jobs"]:
@@ -676,7 +661,6 @@ class ResourcesMixin(MCPServerHost):
             "last_start_ms_p50": manager.start_time_ms_p50(),
         }
 
-
     def _environments_payload(self) -> dict[str, Any]:
         env_service = self._dep_env_service_or_error()
         environments = env_service.list_environments()
@@ -686,7 +670,6 @@ class ResourcesMixin(MCPServerHost):
             "bytes_on_disk_total": env_service.total_bytes_on_disk(),
             "wheel_cache_bytes": env_service.wheel_cache_bytes(),
         }
-
 
     def _workflow_resource(self) -> dict[str, Any]:
         return {
@@ -732,7 +715,14 @@ class ResourcesMixin(MCPServerHost):
                 },
                 {
                     "name": "create_exasol_dashboard_with_external_mcp",
-                    "steps": ["Read dash://exasol/help/agent-workflow", "Use external Exasol MCP for schema discovery and SQL prototyping (for Semantic SQL: one call at a time, see dash://exasol/help/semantic-layer)", "exasol_profile_validate", "app_create_from_files", "app_validate", "app_deploy_draft"],
+                    "steps": [
+                        "Read dash://exasol/help/agent-workflow",
+                        "Use external Exasol MCP for schema discovery and SQL prototyping (for Semantic SQL: one call at a time, see dash://exasol/help/semantic-layer)",
+                        "exasol_profile_validate",
+                        "app_create_from_files",
+                        "app_validate",
+                        "app_deploy_draft",
+                    ],
                 },
                 {
                     "name": "edit_existing_app",
@@ -754,7 +744,13 @@ class ResourcesMixin(MCPServerHost):
                 },
                 {
                     "name": "diagnose_failure",
-                    "steps": ["app_collect_diagnostics", "app_tail_logs", "app_inspect_traceback", "app_patch_file", "app_validate"],
+                    "steps": [
+                        "app_collect_diagnostics",
+                        "app_tail_logs",
+                        "app_inspect_traceback",
+                        "app_patch_file",
+                        "app_validate",
+                    ],
                 },
                 {
                     "name": "apply_direct_git_changes",

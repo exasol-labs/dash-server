@@ -20,7 +20,9 @@ COMPILED_FUSED = (
 
 def _messages(sql: str) -> list[str]:
     files = {"queries/q.sql": sql, "app.py": "# queries/q.sql\n"}
-    manifest = SimpleNamespace(template="exasol-analytics", data_sources={"primary": {"kind": "exasol", "profile": "kit"}})
+    manifest = SimpleNamespace(
+        template="exasol-analytics", data_sources={"primary": {"kind": "exasol", "profile": "kit"}}
+    )
     report = exasol_validation_report(files, manifest, python_files={"app.py": files["app.py"]})
     return [issue["message"] for issue in report["issues"] if issue.get("path") == "queries/q.sql"]
 

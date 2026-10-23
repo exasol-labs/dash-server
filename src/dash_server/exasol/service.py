@@ -78,21 +78,68 @@ _KEY_COLUMN_RE = re.compile(r"(?:^|_)(?:ID|SK|PK|FK)$|KEY$")
 # when summed - rank last. Ties keep the table's column order.
 _MONEY_MEASURE_TOKENS = frozenset(
     {
-        "REVENUE", "SALES", "AMOUNT", "AMT", "COST", "COSTS", "PROFIT", "MARGIN", "SPEND",
-        "INCOME", "EXPENSE", "EXPENSES", "TURNOVER", "BOOKINGS",
+        "REVENUE",
+        "SALES",
+        "AMOUNT",
+        "AMT",
+        "COST",
+        "COSTS",
+        "PROFIT",
+        "MARGIN",
+        "SPEND",
+        "INCOME",
+        "EXPENSE",
+        "EXPENSES",
+        "TURNOVER",
+        "BOOKINGS",
     }
 )
 _ADDITIVE_MEASURE_TOKENS = frozenset(
     {
-        "NET", "GROSS", "TOTAL", "VALUE", "QUANTITY", "QTY", "UNITS", "VOLUME", "WEIGHT",
-        "KG", "KM", "MILES", "CO2", "EMISSION", "EMISSIONS", "ENERGY", "KWH", "HOURS",
+        "NET",
+        "GROSS",
+        "TOTAL",
+        "VALUE",
+        "QUANTITY",
+        "QTY",
+        "UNITS",
+        "VOLUME",
+        "WEIGHT",
+        "KG",
+        "KM",
+        "MILES",
+        "CO2",
+        "EMISSION",
+        "EMISSIONS",
+        "ENERGY",
+        "KWH",
+        "HOURS",
     }
 )
 _NON_ADDITIVE_MEASURE_TOKENS = frozenset(
     {
-        "SCORE", "RATE", "RATIO", "PCT", "PERCENT", "SHARE", "AVG", "MEAN", "MEDIAN", "RANK",
-        "INDEX", "PER", "AGE", "YEAR", "MONTH", "LEVEL", "BAND", "GRADE", "PRICE",
-        "LATENCY", "TEMPERATURE", "TEMP",
+        "SCORE",
+        "RATE",
+        "RATIO",
+        "PCT",
+        "PERCENT",
+        "SHARE",
+        "AVG",
+        "MEAN",
+        "MEDIAN",
+        "RANK",
+        "INDEX",
+        "PER",
+        "AGE",
+        "YEAR",
+        "MONTH",
+        "LEVEL",
+        "BAND",
+        "GRADE",
+        "PRICE",
+        "LATENCY",
+        "TEMPERATURE",
+        "TEMP",
     }
 )
 
@@ -593,9 +640,7 @@ class ExasolDashboardService:
         )
         if result.get("status") != "ok":
             return set()
-        return {
-            (str(row["METRIC_NAME"]), str(row["DIMENSION_NAME"])) for row in self._records_from_result(result)
-        }
+        return {(str(row["METRIC_NAME"]), str(row["DIMENSION_NAME"])) for row in self._records_from_result(result)}
 
     def execute_profile_query(
         self,
@@ -764,10 +809,7 @@ class ExasolDashboardService:
         if schema_name:
             sql_text += "WHERE COLUMN_SCHEMA = {schema_name!s}\n"
         else:
-            sql_text += (
-                "WHERE COLUMN_SCHEMA NOT LIKE 'EXA_%'\n"
-                "  AND COLUMN_SCHEMA NOT IN ('SYS')\n"
-            )
+            sql_text += "WHERE COLUMN_SCHEMA NOT LIKE 'EXA_%'\n  AND COLUMN_SCHEMA NOT IN ('SYS')\n"
         sql_text += "ORDER BY COLUMN_SCHEMA, COLUMN_TABLE, COLUMN_ORDINAL_POSITION\n"
 
         result = self.execute_profile_query(profile_name, sql_text, params=params)
@@ -839,9 +881,7 @@ class ExasolDashboardService:
             if override is None:
                 raise DashServerError(
                     category="exasol_schema_scaffold_error",
-                    summary=(
-                        f"Table {table_name} was not found in the introspected schema."
-                    ),
+                    summary=(f"Table {table_name} was not found in the introspected schema."),
                     details={
                         "profile": profile_name,
                         "schema_name": schema_name,

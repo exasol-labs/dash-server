@@ -380,10 +380,7 @@ def _semantic_trend_sql(blueprint: dict[str, Any]) -> str:
     else:
         return f"SELECT {metric}\nFROM {_semantic_object_ref(blueprint)}\n"
     return (
-        f"SELECT {dimension},\n"
-        f"       {metric}\n"
-        f"FROM {_semantic_object_ref(blueprint)}\n"
-        f"GROUP BY {dimension}\n" + order
+        f"SELECT {dimension},\n       {metric}\nFROM {_semantic_object_ref(blueprint)}\nGROUP BY {dimension}\n" + order
     )
 
 
@@ -459,9 +456,8 @@ def _semantic_notes_md(blueprint: dict[str, Any]) -> str:
         "Rules:",
         "",
         "- The profile needs the model's preprocessor in every session: `session_init_sql` "
-        f"`[\"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {blueprint['preprocessor']}\"]`.",
-        "- Only combine a metric with a dimension listed for it in "
-        "`SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT`.",
+        f'`["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {blueprint["preprocessor"]}"]`.',
+        "- Only combine a metric with a dimension listed for it in `SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT`.",
         "- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes "
         "today's definition.",
         "- `app.py` reads labels, formats (`FORMAT_HINT`, `UNIT_HINT`; a percentage is a fraction), and "
@@ -538,7 +534,7 @@ def _schema_trend_sql(blueprint: dict[str, Any]) -> str:
             "SELECT TO_CHAR(CAST("
             + time_ref
             + " AS DATE), 'YYYY-MM-DD') AS \"LABEL\",\n"
-            + f"       CAST(SUM({measure_ref}) AS DOUBLE) AS \"VALUE\"\n"
+            + f'       CAST(SUM({measure_ref}) AS DOUBLE) AS "VALUE"\n'
             + f"FROM {table_ref}\n"
             + f"WHERE {time_ref} IS NOT NULL\n"
             + "GROUP BY 1\n"
@@ -560,7 +556,7 @@ def _schema_trend_sql(blueprint: dict[str, Any]) -> str:
             foreign_key = _quoted_identifier(joined["other_key_column"])
             return (
                 f"SELECT TO_CHAR(CAST(j.{time_ref} AS DATE), 'YYYY-MM-DD') AS \"LABEL\",\n"
-                f"       CAST(SUM(t.{measure_ref}) AS DOUBLE) AS \"VALUE\"\n"
+                f'       CAST(SUM(t.{measure_ref}) AS DOUBLE) AS "VALUE"\n'
                 f"FROM {table_ref} t\n"
                 f"JOIN {join_table_ref} j ON t.{local_key} = j.{foreign_key}\n"
                 f"WHERE j.{time_ref} IS NOT NULL\n"
@@ -573,18 +569,15 @@ def _schema_trend_sql(blueprint: dict[str, Any]) -> str:
         measure_ref = _quoted_identifier(measure)
         dimension_ref = _quoted_identifier(dimension)
         return (
-            f"SELECT CAST({dimension_ref} AS VARCHAR(128)) AS \"LABEL\",\n"
-            f"       CAST(SUM({measure_ref}) AS DOUBLE) AS \"VALUE\"\n"
+            f'SELECT CAST({dimension_ref} AS VARCHAR(128)) AS "LABEL",\n'
+            f'       CAST(SUM({measure_ref}) AS DOUBLE) AS "VALUE"\n'
             f"FROM {table_ref}\n"
             f"WHERE {dimension_ref} IS NOT NULL\n"
             "GROUP BY 1\n"
             "ORDER BY 2 DESC\n"
             "LIMIT 15\n"
         )
-    return (
-        "SELECT 'Populate business trend SQL' AS \"LABEL\", 1 AS \"VALUE\"\n"
-        "FROM DUAL\n"
-    )
+    return 'SELECT \'Populate business trend SQL\' AS "LABEL", 1 AS "VALUE"\nFROM DUAL\n'
 
 
 def _schema_detail_sql(blueprint: dict[str, Any]) -> str:
@@ -598,10 +591,7 @@ def _schema_detail_sql(blueprint: dict[str, Any]) -> str:
         if column_name and column_name not in select_columns:
             select_columns.append(column_name)
     if not select_columns:
-        return (
-            "SELECT 'Populate business detail SQL' AS \"DETAIL_NOTE\"\n"
-            "FROM DUAL\n"
-        )
+        return "SELECT 'Populate business detail SQL' AS \"DETAIL_NOTE\"\nFROM DUAL\n"
     rendered_columns = ",\n       ".join(_quoted_identifier(column_name) for column_name in select_columns)
     order_column = blueprint.get("time_column") or select_columns[0]
     return (

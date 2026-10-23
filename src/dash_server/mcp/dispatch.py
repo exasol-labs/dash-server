@@ -41,7 +41,6 @@ class DispatchMixin(MCPServerHost):
         }
         return f"event: message\ndata: {json.dumps(event)}\n\n"
 
-
     def handle_jsonrpc(self, payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         request_id = payload.get("id")
         method = payload.get("method")
@@ -102,7 +101,6 @@ class DispatchMixin(MCPServerHost):
             request_id, {"code": JSONRPC_METHOD_NOT_FOUND, "message": f"Method not found: {method}"}, 200
         )
 
-
     def _initialize_result(self) -> dict[str, Any]:
         return {
             "protocolVersion": self.protocol_version,
@@ -112,7 +110,6 @@ class DispatchMixin(MCPServerHost):
             },
             "serverInfo": {"name": "dash-server", "version": "0.5.0"},
         }
-
 
     def _call_tool(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
@@ -167,7 +164,6 @@ class DispatchMixin(MCPServerHost):
             self._log_mcp_error("tools/call", params, synthetic)
             return self._tool_error_result(str(name), synthetic)
 
-
     def _enforce_tool_capability(self, tool_name: str, arguments: dict[str, Any]) -> None:
         """Handler-path capability gate for app-scoped tools without a service check.
 
@@ -187,7 +183,6 @@ class DispatchMixin(MCPServerHost):
             tool_name=tool_name,
         )
 
-
     def _validate_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> None:
         schema = self._tool_input_schema(tool_name)
         if schema is None:
@@ -201,9 +196,7 @@ class DispatchMixin(MCPServerHost):
             if validator == "additionalProperties":
                 allowed_props = self._resolve_subschema_properties(schema, path)
                 provided = self._resolve_subobject(arguments, path)
-                extra_provided = (
-                    sorted(set(provided) - set(allowed_props)) if isinstance(provided, dict) else []
-                )
+                extra_provided = sorted(set(provided) - set(allowed_props)) if isinstance(provided, dict) else []
                 summary = (
                     f"Unknown argument(s) for {tool_name}: {', '.join(extra_provided) or '?'}. "
                     f"Allowed: {', '.join(sorted(allowed_props)) or '(none)'}."
@@ -212,9 +205,7 @@ class DispatchMixin(MCPServerHost):
                 required = self._resolve_subschema_required(schema, path)
                 provided = self._resolve_subobject(arguments, path)
                 missing = sorted(set(required) - set(provided)) if isinstance(provided, dict) else list(required)
-                summary = (
-                    f"Missing required argument(s) for {tool_name}: {', '.join(missing) or '?'}."
-                )
+                summary = f"Missing required argument(s) for {tool_name}: {', '.join(missing) or '?'}."
             elif validator == "anyOf":
                 summary = (
                     f"Arguments for {tool_name} did not match any allowed shape. "
@@ -237,7 +228,6 @@ class DispatchMixin(MCPServerHost):
                 jsonrpc_code=JSONRPC_INVALID_PARAMS,
             ) from exc
 
-
     @staticmethod
     def _resolve_subobject(arguments: dict[str, Any], path: list[Any]) -> Any:
         current: Any = arguments
@@ -247,7 +237,6 @@ class DispatchMixin(MCPServerHost):
             else:
                 return current
         return current
-
 
     @staticmethod
     def _resolve_subschema_properties(schema: dict[str, Any], path: list[Any]) -> list[str]:
@@ -261,7 +250,6 @@ class DispatchMixin(MCPServerHost):
             return sorted((current.get("properties") or {}).keys())
         return []
 
-
     @staticmethod
     def _resolve_subschema_required(schema: dict[str, Any], path: list[Any]) -> list[str]:
         current: Any = schema
@@ -271,7 +259,6 @@ class DispatchMixin(MCPServerHost):
                 continue
             return list(current.get("required", []) if isinstance(current, dict) else [])
         return list(current.get("required", []) if isinstance(current, dict) else [])
-
 
     def _schema_error_context(
         self, tool_name: str, path: list[Any], extra_provided: list[str]
@@ -309,7 +296,6 @@ class DispatchMixin(MCPServerHost):
             return "tool_validation_error", details
         return "tool_validation_error", {}
 
-
     def _tool_input_schema(self, tool_name: str) -> dict[str, Any] | None:
         if not hasattr(self, "_tool_schemas_cache"):
             self._tool_schemas_cache = {
@@ -318,7 +304,6 @@ class DispatchMixin(MCPServerHost):
                 if isinstance(tool.get("inputSchema"), dict)
             }
         return self._tool_schemas_cache.get(tool_name)
-
 
     def _tool_result(
         self,
@@ -339,7 +324,6 @@ class DispatchMixin(MCPServerHost):
             "structuredContent": payload,
             "isError": False,
         }
-
 
     def _tool_error_result(
         self,
@@ -382,16 +366,13 @@ class DispatchMixin(MCPServerHost):
             "isError": True,
         }
 
-
     def _success_response(self, request_id: Any, result: dict[str, Any]) -> tuple[dict[str, Any], int]:
         return {"jsonrpc": "2.0", "id": request_id, "result": result}, 200
-
 
     def _error_response(
         self, request_id: Any, error_object: dict[str, Any], status_code: int
     ) -> tuple[dict[str, Any], int]:
         return {"jsonrpc": "2.0", "id": request_id, "error": error_object}, status_code
-
 
     def _log_mcp_error(self, method: str, params: dict[str, Any], exc: DashServerError) -> None:
         tool_name = params.get("name") if method == "tools/call" else None
@@ -407,7 +388,6 @@ class DispatchMixin(MCPServerHost):
             param_summary,
             exc.details,
         )
-
 
     def _summarize_params(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "tools/call":
@@ -428,7 +408,6 @@ class DispatchMixin(MCPServerHost):
         if method == "resources/read":
             return {"uri": params.get("uri")}
         return {}
-
 
     def _diagnostic_lines_for_error(self, exc: DashServerError) -> list[str]:
         details = exc.details
@@ -475,7 +454,6 @@ class DispatchMixin(MCPServerHost):
             if isinstance(field, str):
                 return [f"Field: {field}"]
         return []
-
 
     def _validation_summary_lines(self, validation: dict[str, Any]) -> list[str]:
         lines: list[str] = []
@@ -566,7 +544,11 @@ class DispatchMixin(MCPServerHost):
             issues = exasol_validation.get("issues")
             if isinstance(issues, list) and issues:
                 first = issues[0]
-                prefix = "Exasol validation failed" if exasol_validation.get("status") == "failed" else "Exasol validation warning"
+                prefix = (
+                    "Exasol validation failed"
+                    if exasol_validation.get("status") == "failed"
+                    else "Exasol validation warning"
+                )
                 lines.append(
                     f"{prefix} in {first.get('path', 'unknown')}: {first.get('message', 'Exasol validation issue')}"
                 )
@@ -593,13 +575,11 @@ class DispatchMixin(MCPServerHost):
 
         return lines
 
-
     def _first_non_empty_line(self, text: str) -> str:
         for line in text.splitlines():
             if line.strip():
                 return line.strip()
         return text.strip()
-
 
     def _render_visible_tool_text(self, summary_text: str, structured_content: dict[str, Any]) -> str:
         # `default=repr` lets us serialize objects the validator captured from the user's
@@ -608,7 +588,6 @@ class DispatchMixin(MCPServerHost):
         # response is built separately via `_make_json_safe`.
         payload_text = json.dumps(structured_content, indent=2, ensure_ascii=False, default=repr)
         return f"{summary_text}\n\nResult:\n{payload_text}"
-
 
     def _attach_absolute_urls(self, payload: Any) -> Any:
         if isinstance(payload, dict):
@@ -635,7 +614,6 @@ class DispatchMixin(MCPServerHost):
             return [self._attach_absolute_urls(item) for item in payload]
         return payload
 
-
     def _absolute_url(self, path: str) -> str:
         if not path.startswith("/"):
             return path
@@ -645,7 +623,6 @@ class DispatchMixin(MCPServerHost):
                 return public_base_url.rstrip("/") + path
             return request.host_url.rstrip("/") + path
         return path
-
 
     def _require_app_capability(
         self,
@@ -673,4 +650,3 @@ class DispatchMixin(MCPServerHost):
             details=decision.to_dict(),
             http_status=decision.status_code,
         )
-

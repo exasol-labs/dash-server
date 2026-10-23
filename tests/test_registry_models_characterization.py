@@ -180,9 +180,7 @@ def test_public_policy_matched_policy_is_plain_dict(tmp_path: Path) -> None:
     assert app is not None
 
     authz = AuthorizationService(registry, {"DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED": True})
-    decision = authz.authorize_app(
-        _hosted_context(Principal.anonymous()), app, "dashboard.view_live"
-    )
+    decision = authz.authorize_app(_hosted_context(Principal.anonymous()), app, "dashboard.view_live")
 
     assert decision.allowed is True
     assert decision.reason == "public_dashboard"

@@ -63,7 +63,10 @@ def dashboard_fetch_mapper(value: Any, data_type: Mapping[str, Any]) -> Any:
         return converted
     if isinstance(converted, int) and abs(converted) >= 10**_EXACT_SIGNIFICANT_DIGITS:
         return str(value)
-    if isinstance(converted, decimal.Decimal) and len(converted.normalize().as_tuple().digits) > _EXACT_SIGNIFICANT_DIGITS:
+    if (
+        isinstance(converted, decimal.Decimal)
+        and len(converted.normalize().as_tuple().digits) > _EXACT_SIGNIFICANT_DIGITS
+    ):
         return str(value)
     return converted
 

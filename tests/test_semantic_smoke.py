@@ -77,17 +77,43 @@ class _Connection:
             )
         if "CHECK_FUSION_HEALTH" in sql:
             self.statements.append(sql)
-            columns = ["ENTITY_NAME", "ATTRIBUTE_TYPE", "ATTRIBUTE_NAME", "FUSION_STRATEGY", "FIRST_SOURCE",
-                       "TOTAL_KEYS", "FROM_FIRST_SOURCE", "FILLED", "UNRESOLVED", "PROBE_ERROR"]
-            return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.fusion_health, close=lambda: None)
+            columns = [
+                "ENTITY_NAME",
+                "ATTRIBUTE_TYPE",
+                "ATTRIBUTE_NAME",
+                "FUSION_STRATEGY",
+                "FIRST_SOURCE",
+                "TOTAL_KEYS",
+                "FROM_FIRST_SOURCE",
+                "FILLED",
+                "UNRESOLVED",
+                "PROBE_ERROR",
+            ]
+            return SimpleNamespace(
+                column_names=lambda: columns, fetchall=lambda: self.fusion_health, close=lambda: None
+            )
         if "FUSION_ASPECT" in sql:
-            columns = ["MODEL_NAME", "ENTITY_NAME", "FUSION_ASPECT", "REPRESENTATION_NAME", "ATTRIBUTE_NAME",
-                       "STRATEGY", "COVERAGE_PREDICATE"]
+            columns = [
+                "MODEL_NAME",
+                "ENTITY_NAME",
+                "FUSION_ASPECT",
+                "REPRESENTATION_NAME",
+                "ATTRIBUTE_NAME",
+                "STRATEGY",
+                "COVERAGE_PREDICATE",
+            ]
             return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.fusion_layout)
         if "SEMANTIC_SOURCE.VALIDATION_RUNS" in sql:
             if self.finished_runs is None:
                 raise RuntimeError("insufficient privileges: SELECT on SEMANTIC_SOURCE")
-            columns = ["MODEL_NAME", "VALIDATION_RUN_ID", "STATUS", "ERROR_COUNT", "WARNING_COUNT", "PRECONDITION_COUNT"]
+            columns = [
+                "MODEL_NAME",
+                "VALIDATION_RUN_ID",
+                "STATUS",
+                "ERROR_COUNT",
+                "WARNING_COUNT",
+                "PRECONDITION_COUNT",
+            ]
             return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.finished_runs)
         if "SEMANTIC_SOURCE.VALIDATION_RESULTS" in sql:
             return SimpleNamespace(fetchall=lambda: self.issues)
@@ -144,9 +170,7 @@ def test_semantic_query_without_active_preprocessor_fails_with_the_fix() -> None
 
 
 def test_semantic_query_with_active_preprocessor_is_smoke_tested_normally() -> None:
-    connection = _Connection(
-        models=[SALES_MODEL], preprocessor='"SEMANTIC_ADMIN"."semantic_preprocessor"'
-    )
+    connection = _Connection(models=[SALES_MODEL], preprocessor='"SEMANTIC_ADMIN"."semantic_preprocessor"')
 
     report = _smoke(connection, [SEMANTIC_QUERY])
 
@@ -266,7 +290,9 @@ def test_semantic_models_probe_lists_definitions_changed_since_build() -> None:
 
     model = {"model": "sales", "published_schema": "SEMANTIC_SALES", "readiness": "VALID"}
     built = [{"path": "queries/kpis.sql", "model": "sales", "metrics": {"total_revenue": "old", "total_cost": "same"}}]
-    current = [{"path": "queries/kpis.sql", "model": "sales", "metrics": {"total_revenue": "new", "total_cost": "same"}}]
+    current = [
+        {"path": "queries/kpis.sql", "model": "sales", "metrics": {"total_revenue": "new", "total_cost": "same"}}
+    ]
     smoke_probe = {"name": "sql_smoke", "details": {"semantic_models": [model], "definitions": current}}
 
     probe = HealthProber(svc=None)._semantic_models_probe(smoke_probe, built_definitions=built)  # type: ignore[arg-type]
@@ -368,7 +394,9 @@ def test_saved_compiled_sql_fails_the_semantic_models_probe() -> None:
     assert probe["status"] == "failed"
     assert probe["details"]["frozen_files"] == bypasses[:1]
     assert probe["details"]["raw_governed_reads"] == bypasses[1:]
-    assert probe["details"]["latest_error"].startswith("queries/frozen.sql is SQL saved from the semantic layer's compiler")
+    assert probe["details"]["latest_error"].startswith(
+        "queries/frozen.sql is SQL saved from the semantic layer's compiler"
+    )
 
 
 def test_raw_governed_reads_alone_pass_the_semantic_models_probe() -> None:
@@ -440,13 +468,20 @@ def test_fusion_changes_since_build_are_reported_and_attributed() -> None:
 
     built_model = _fused(FUSION_LAYOUT, FUSION_HEALTH)
     moved = [
-        (*row[:6], row[6].replace("2026-09-01", "2026-10-01")) if row[2] == "PARTITION" else row for row in FUSION_LAYOUT
+        (*row[:6], row[6].replace("2026-09-01", "2026-10-01")) if row[2] == "PARTITION" else row
+        for row in FUSION_LAYOUT
     ]
-    current_model = _fused(moved, [("customer", "DIMENSION", "customer_segment", "RECONCILE", "crm", 120, 65, 35, 20, None)])
+    current_model = _fused(
+        moved, [("customer", "DIMENSION", "customer_segment", "RECONCILE", "crm", 120, 65, 35, 20, None)]
+    )
     built = [
         {"path": "queries/fusion.sql", "model": "fusion", "metrics": {"total_revenue": "old"}},
-        {"lane": "fusion", "model": "fusion", "fusion_layout": built_model["fusion_layout"],
-         "fusion_health": built_model["fusion_health"]},
+        {
+            "lane": "fusion",
+            "model": "fusion",
+            "fusion_layout": built_model["fusion_layout"],
+            "fusion_health": built_model["fusion_health"],
+        },
     ]
     current = [{"path": "queries/fusion.sql", "model": "fusion", "metrics": {"total_revenue": "new"}}]
     smoke_probe = {"name": "sql_smoke", "details": {"semantic_models": [current_model], "definitions": current}}
@@ -478,7 +513,10 @@ def test_fusion_changes_since_build_are_reported_and_attributed() -> None:
 def test_read_only_semantic_checks_run_unwrapped_and_other_scripts_are_skipped() -> None:
     connection = _Connection(models=[SALES_MODEL], preprocessor=PREPROCESSOR)
     files = [
-        ("queries/health.sql", "-- shown on the provenance panel\nEXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH('fusion');"),
+        (
+            "queries/health.sql",
+            "-- shown on the provenance panel\nEXECUTE SCRIPT SEMANTIC_ADMIN.CHECK_FUSION_HEALTH('fusion');",
+        ),
         ("queries/coverage.sql", "EXECUTE SCRIPT semantic_admin.check_partition_coverage('fusion')"),
         ("queries/etl.sql", 'EXECUTE SCRIPT "ETL"."RELOAD"()'),
     ]
@@ -499,7 +537,10 @@ def test_a_query_refused_only_when_nested_is_checked_through_its_compiled_sql() 
     (result,) = _smoke(connection, [SEMANTIC_QUERY]).files
 
     assert result.outcome == "passed"
-    assert connection.statements[-1] == 'SELECT * FROM (\nSELECT SUM(x) AS "TOTAL_REVENUE" FROM MART.ORDER_LINES\n) WHERE 1=0'
+    assert (
+        connection.statements[-1]
+        == 'SELECT * FROM (\nSELECT SUM(x) AS "TOTAL_REVENUE" FROM MART.ORDER_LINES\n) WHERE 1=0'
+    )
     assert "SEMANTIC_QUERY_020: Unknown semantic field: total_revenue" in result.warnings[0]
     assert "host:8563" not in result.warnings[0]
     assert result.definitions is not None and result.definitions["metrics"] == {"total_revenue": "h-revenue"}
@@ -539,7 +580,12 @@ def test_drift_report_keeps_renamed_missing_and_uncompiled_fields() -> None:
     }
     built = [
         {"path": "queries/kpis.sql", "model": "sales", "metrics": {"total_revenue": "h1", "units_sold": "h2"}},
-        {"path": "queries/broken.sql", "model": "sales", "metrics": {"units_sold": "h2"}, "dimensions": {"region": "h3"}},
+        {
+            "path": "queries/broken.sql",
+            "model": "sales",
+            "metrics": {"units_sold": "h2"},
+            "dimensions": {"region": "h3"},
+        },
         {"path": "queries/raw.sql", "lane": "raw", "models": ["sales"]},
     ]
     # kpis.sql still compiles (the old name is a synonym); broken.sql no longer does.
@@ -548,7 +594,9 @@ def test_drift_report_keeps_renamed_missing_and_uncompiled_fields() -> None:
 
     probe = HealthProber(svc=None)._semantic_models_probe(smoke_probe, built_definitions=built)  # type: ignore[arg-type]
 
-    changes = {(entry["path"], entry.get("field"), entry["change"]) for entry in probe["details"]["changed_since_build"]}
+    changes = {
+        (entry["path"], entry.get("field"), entry["change"]) for entry in probe["details"]["changed_since_build"]
+    }
     assert changes == {
         ("queries/kpis.sql", "total_revenue", "renamed"),
         ("queries/kpis.sql", "units_sold", "missing"),

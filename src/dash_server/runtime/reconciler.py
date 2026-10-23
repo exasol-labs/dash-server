@@ -111,11 +111,7 @@ class GitReconciler:
                     timestamp = event_payload.get("timestamp")
                     if not isinstance(event_type, str) or not isinstance(event_data, dict):
                         continue
-                    revision_id = (
-                        revision_map.get(revision_number)
-                        if isinstance(revision_number, int)
-                        else None
-                    )
+                    revision_id = revision_map.get(revision_number) if isinstance(revision_number, int) else None
                     self.svc.registry.ensure_event(
                         app_name,
                         event_type,
@@ -167,7 +163,9 @@ class GitReconciler:
                     else "drifted"
                 )
                 preview_revision = self.svc.registry.get_preview_revision(app_name)
-                preview_target = self._resolve_desired_revision(app_name, preview_desired) if preview_desired is not None else None
+                preview_target = (
+                    self._resolve_desired_revision(app_name, preview_desired) if preview_desired is not None else None
+                )
                 if preview_desired is None:
                     preview_status = "cleared" if preview_revision is None else "drifted"
                 else:
@@ -369,9 +367,7 @@ class GitReconciler:
             assert updated is not None
             app = updated
             desired_live_revision = self._resolve_desired_revision(app_name, live_desired)
-            if desired_live_revision is not None and (
-                app.current_revision_id != desired_live_revision.id
-            ):
+            if desired_live_revision is not None and (app.current_revision_id != desired_live_revision.id):
                 previous_current = self.svc.registry.get_current_revision(app_name)
                 self.svc.registry.promote_revision(app_name, desired_live_revision.id)
                 self.svc.registry.update_revision_state(
@@ -407,7 +403,9 @@ class GitReconciler:
             self.svc.registry.update_revision_state(
                 desired_preview_revision.id,
                 "warming",
-                rollout_metadata={"preview_path": self.svc.preview_path(app_name, desired_preview_revision.revision_number)},
+                rollout_metadata={
+                    "preview_path": self.svc.preview_path(app_name, desired_preview_revision.revision_number)
+                },
             )
             self.svc._mount_preview_revision(app_name, desired_preview_revision.revision_number)
         else:
@@ -441,8 +439,12 @@ class GitReconciler:
         return {
             "app": app_name,
             "status": status,
-            "live_revision": desired_live_revision.revision_number if live_desired is not None and desired_live_revision is not None else None,
-            "preview_revision": desired_preview_revision.revision_number if desired_preview_revision is not None else None,
+            "live_revision": desired_live_revision.revision_number
+            if live_desired is not None and desired_live_revision is not None
+            else None,
+            "preview_revision": desired_preview_revision.revision_number
+            if desired_preview_revision is not None
+            else None,
             "route": self.svc._require_app(app_name).route,
         }
 
@@ -531,10 +533,14 @@ class GitReconciler:
             "route": str(spec.get("route", fallback_app.route if fallback_app is not None else fallback_manifest.route))
             if isinstance(spec, dict)
             else (fallback_app.route if fallback_app is not None else fallback_manifest.route),
-            "visibility": str(spec.get("visibility", fallback_app.visibility if fallback_app is not None else "private"))
+            "visibility": str(
+                spec.get("visibility", fallback_app.visibility if fallback_app is not None else "private")
+            )
             if isinstance(spec, dict)
             else (fallback_app.visibility if fallback_app is not None else "private"),
-            "auth_policy": str(spec.get("authPolicy", fallback_app.auth_policy if fallback_app is not None else "inherited"))
+            "auth_policy": str(
+                spec.get("authPolicy", fallback_app.auth_policy if fallback_app is not None else "inherited")
+            )
             if isinstance(spec, dict)
             else (fallback_app.auth_policy if fallback_app is not None else "inherited"),
             "enabled": bool(spec.get("enabled", fallback_app.enabled if fallback_app is not None else True))

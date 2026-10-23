@@ -51,7 +51,9 @@ def _healthcheck_text(health: dict[str, Any]) -> str:
         if summary.get("unresolved"):
             review.append(f"{summary['model']} unresolved keys: {'; '.join(summary['unresolved'])}")
     if details.get("raw_governed_reads"):
-        review.append("SQL over governed tables: " + ", ".join(entry["path"] for entry in details["raw_governed_reads"]))
+        review.append(
+            "SQL over governed tables: " + ", ".join(entry["path"] for entry in details["raw_governed_reads"])
+        )
     if details.get("models_with_warnings"):
         review.append("models with validation warnings: " + ", ".join(details["models_with_warnings"]))
     if details.get("models_not_assessed"):
@@ -128,7 +130,6 @@ def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-
 class HandlersMixin(MCPServerHost):
     """Tool handlers plus the argument/service helpers they share."""
 
@@ -141,7 +142,6 @@ class HandlersMixin(MCPServerHost):
             }
         return self._tool_schemas_cache.get(tool_name)
 
-
     def _tool_apps_list(self, _: dict[str, Any]) -> dict[str, Any]:
         apps = self.runtime_service.list_apps()
         app_names = ", ".join(app["name"] for app in apps) if apps else "none"
@@ -151,7 +151,6 @@ class HandlersMixin(MCPServerHost):
             structured_content={"apps": apps},
         )
 
-
     def _tool_repo_reconcile(self, _: dict[str, Any]) -> dict[str, Any]:
         reconciled = self.runtime_service.reconcile_git_desired_state()
         return self._tool_result(
@@ -159,7 +158,6 @@ class HandlersMixin(MCPServerHost):
             text="Reconciled runtime state from the Git desired-state manifests.",
             structured_content=reconciled,
         )
-
 
     def _tool_exasol_profiles_list(self, _: dict[str, Any]) -> dict[str, Any]:
         payload = self._exasol_service().list_profiles()
@@ -169,7 +167,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Listed {len(payload['profiles'])} Exasol profile(s): {profile_names}.",
             structured_content=payload,
         )
-
 
     def _tool_exasol_profile_create_local(self, arguments: dict[str, Any]) -> dict[str, Any]:
         tool = "exasol_profile_create_local"
@@ -236,7 +233,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=payload,
         )
 
-
     def _tool_exasol_profile_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         payload = self._exasol_service().validate_profile(self._require_name(arguments))
         validation_state = "passed" if payload["is_valid"] else "failed"
@@ -250,7 +246,6 @@ class HandlersMixin(MCPServerHost):
             text=text,
             structured_content=payload,
         )
-
 
     def _tool_app_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
         start_immediately = arguments.get("start_immediately", True)
@@ -281,9 +276,7 @@ class HandlersMixin(MCPServerHost):
             )
         if bundle is None and "name" in arguments:
             bundle = self._bundle_from_top_level_arguments(arguments)
-        created = self.runtime_service.create_app(
-            bundle, start_immediately=start_immediately
-        )
+        created = self.runtime_service.create_app(bundle, start_immediately=start_immediately)
         preflight_error = self._preflight_failure_error(created)
         if preflight_error is not None:
             return self._tool_error_result("app_create", preflight_error, extra_payload=created)
@@ -293,7 +286,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Created app {created['app']['name']} at {browser_url}.",
             structured_content=created,
         )
-
 
     def _tool_app_create_from_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         start_immediately = arguments.get("start_immediately", True)
@@ -310,8 +302,7 @@ class HandlersMixin(MCPServerHost):
         template = arguments.get("template") or (manifest_payload or {}).get("template")
         if template == "exasol-analytics":
             has_helper = any(
-                isinstance(entry, dict) and entry.get("path") == "dash_server_exasol.py"
-                for entry in files
+                isinstance(entry, dict) and entry.get("path") == "dash_server_exasol.py" for entry in files
             )
             if not has_helper:
                 from dash_server.exasol.scaffold import render_exasol_helper_py
@@ -362,7 +353,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=created,
         )
 
-
     # dash-app.json fields that app_create_from_files also accepts as tool arguments.
     _MANIFEST_ARGUMENT_FIELDS = ("name", "title", "route", "description", "template", "data_sources", "consumption")
 
@@ -400,9 +390,7 @@ class HandlersMixin(MCPServerHost):
 
         supplied = {field: arguments[field] for field in self._MANIFEST_ARGUMENT_FIELDS if field in arguments}
         conflicts = sorted(
-            field
-            for field, value in supplied.items()
-            if field in manifest_payload and manifest_payload[field] != value
+            field for field, value in supplied.items() if field in manifest_payload and manifest_payload[field] != value
         )
         if conflicts:
             raise DashServerError(
@@ -490,7 +478,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=structured,
         )
 
-
     def _tool_app_scaffold_from_schema(self, arguments: dict[str, Any]) -> dict[str, Any]:
         start_immediately = arguments.get("start_immediately", True)
         if not isinstance(start_immediately, bool):
@@ -558,7 +545,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=structured,
         )
 
-
     def _tool_app_build(self, arguments: dict[str, Any]) -> dict[str, Any]:
         force_clean = arguments.get("force_clean", False)
         if not isinstance(force_clean, bool):
@@ -577,7 +563,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=built,
         )
 
-
     def _tool_app_read_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = arguments.get("path")
         if not isinstance(path, str) or not path:
@@ -591,7 +576,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Read draft file {path} for app {payload['app']['name']}.",
             structured_content=payload,
         )
-
 
     def _tool_app_diff_draft_vs_artifact(self, arguments: dict[str, Any]) -> dict[str, Any]:
         revision_number = arguments.get("revision_number")
@@ -617,7 +601,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Compared the draft workspace for app {payload['app']['name']} against {target_text}.",
             structured_content=payload,
         )
-
 
     def _tool_app_deploy_draft(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -664,11 +647,7 @@ class HandlersMixin(MCPServerHost):
         try:
             built = self.runtime_service.build_revision(name)
             preflight = built.get("preflight")
-            if (
-                deployment_target == "live"
-                and isinstance(preflight, dict)
-                and preflight.get("status") != "passed"
-            ):
+            if deployment_target == "live" and isinstance(preflight, dict) and preflight.get("status") != "passed":
                 exc = DashServerError(
                     category="artifact_preflight_failed",
                     summary=(
@@ -721,11 +700,7 @@ class HandlersMixin(MCPServerHost):
                 extra_payload={"force_clean": force_clean, "diagnostics": diagnostics},
             )
 
-        if (
-            deployment_target == "live"
-            and auto_rollback_on_health_failure
-            and health["health"]["status"] != "healthy"
-        ):
+        if deployment_target == "live" and auto_rollback_on_health_failure and health["health"]["status"] != "healthy":
             rollback = None
             rollback_health = None
             try:
@@ -801,7 +776,6 @@ class HandlersMixin(MCPServerHost):
             },
         )
 
-
     def _tool_app_start_preview(self, arguments: dict[str, Any]) -> dict[str, Any]:
         previewed = self.runtime_service.start_preview(
             self._require_name(arguments),
@@ -814,7 +788,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Started preview for app {previewed['app']['name']} at {preview_url}.",
             structured_content=previewed,
         )
-
 
     def _tool_app_promote_revision(self, arguments: dict[str, Any]) -> dict[str, Any]:
         require_healthy = arguments.get("require_healthy", False)
@@ -846,7 +819,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=promoted,
         )
 
-
     def _tool_app_rollback(self, arguments: dict[str, Any]) -> dict[str, Any]:
         rolled_back = self.runtime_service.rollback(self._require_name(arguments))
         return self._tool_result(
@@ -854,7 +826,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Rolled back app {rolled_back['app']['name']} to revision {rolled_back['current_revision']['revision_number']}.",
             structured_content=rolled_back,
         )
-
 
     def _tool_app_put_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         files = arguments.get("files")
@@ -874,7 +845,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=updated,
         )
 
-
     def _tool_app_patch_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         patched = self.runtime_service.patch_file(
             self._require_name(arguments),
@@ -889,7 +859,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=patched,
         )
 
-
     def _tool_app_delete_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         deleted = self.runtime_service.delete_file(
             self._require_name(arguments),
@@ -901,7 +870,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=deleted,
         )
 
-
     def _tool_app_list_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
         # Capability enforced centrally via ToolSpec(enforce_in_handler=True).
         name = self._require_name(arguments)
@@ -911,7 +879,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Listed {len(listed['draft']['files'])} draft file(s) for app {listed['app']['name']}.",
             structured_content=listed,
         )
-
 
     def _tool_app_outputs_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -924,7 +891,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Listed {payload['output_count']} registered output(s) for app {name}.",
             structured_content=payload,
         )
-
 
     def _tool_app_output_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -939,7 +905,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Read registered output {output_id} for app {name}.",
             structured_content=payload,
         )
-
 
     def _tool_app_export_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -973,66 +938,50 @@ class HandlersMixin(MCPServerHost):
             structured_content=payload,
         )
 
-
     def _tool_app_exports_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
-        payload = self._consumption_service().list_exports(
-            self._consumption_auth_context(), app_name=name
-        )
+        payload = self._consumption_service().list_exports(self._consumption_auth_context(), app_name=name)
         return self._tool_result(
             "app_exports_list",
             text=f"Listed {payload['job_count']} export job(s) for app {name}.",
             structured_content=payload,
         )
 
-
     def _tool_app_exports_admin_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
-        payload = self._consumption_service().list_app_jobs(
-            name, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().list_app_jobs(name, self._consumption_auth_context())
         return self._tool_result(
             "app_exports_admin_list",
             text=f"Listed {payload['job_count']} app-wide export job(s) for app {name}.",
             structured_content=payload,
         )
 
-
     def _tool_export_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_string(arguments.get("job_id"), "job_id")
-        payload = self._consumption_service().get_export(
-            job_id, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().get_export(job_id, self._consumption_auth_context())
         return self._tool_result(
             "export_get",
             text=f"Export {job_id} is {payload['job']['status']}.",
             structured_content=payload,
         )
 
-
     def _tool_export_cancel(self, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_string(arguments.get("job_id"), "job_id")
-        payload = self._consumption_service().cancel_export(
-            job_id, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().cancel_export(job_id, self._consumption_auth_context())
         return self._tool_result(
             "export_cancel",
             text=f"Export {job_id} cancellation state is {payload['job']['status']}.",
             structured_content=payload,
         )
 
-
     def _tool_export_download_link_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = self._require_string(arguments.get("job_id"), "job_id")
-        payload = self._consumption_service().create_download_link(
-            job_id, self._consumption_auth_context()
-        )
+        payload = self._consumption_service().create_download_link(job_id, self._consumption_auth_context())
         return self._tool_result(
             "export_download_link_create",
             text=f"Created a principal-bound download link for export {job_id}.",
             structured_content=payload,
         )
-
 
     def _tool_app_delete(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1054,7 +1003,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=deleted,
         )
 
-
     def _tool_app_validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         validation = self.runtime_service.validate_workspace(self._require_name(arguments))
         report = validation["validation"]
@@ -1069,10 +1017,7 @@ class HandlersMixin(MCPServerHost):
         # BUG-015 fix: surface warning count in the visible text so an agent following
         # `guidance.next_step` doesn't ship warnings unnoticed.
         if summary["warning_count"]:
-            text += (
-                f"\nWarnings: {summary['warning_count']}"
-                " (see structured payload `validation` for full list)."
-            )
+            text += f"\nWarnings: {summary['warning_count']} (see structured payload `validation` for full list)."
         if details:
             text = text + "\n" + "\n".join(details)
         # Build the structured response the same way for pass and fail so the
@@ -1098,7 +1043,6 @@ class HandlersMixin(MCPServerHost):
             }
         return response
 
-
     def _tool_app_start(self, arguments: dict[str, Any]) -> dict[str, Any]:
         started = self.runtime_service.start_app(self._require_name(arguments))
         return self._tool_result(
@@ -1106,7 +1050,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Started app {started['app']['name']}.",
             structured_content=started,
         )
-
 
     def _tool_app_stop(self, arguments: dict[str, Any]) -> dict[str, Any]:
         stopped = self.runtime_service.stop_app(self._require_name(arguments))
@@ -1116,7 +1059,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=stopped,
         )
 
-
     def _tool_app_restart(self, arguments: dict[str, Any]) -> dict[str, Any]:
         restarted = self.runtime_service.restart_app(self._require_name(arguments))
         return self._tool_result(
@@ -1124,7 +1066,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Restarted app {restarted['app']['name']}.",
             structured_content=restarted,
         )
-
 
     def _tool_app_get_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
         status = self.runtime_service.get_app_status(self._require_name(arguments))
@@ -1134,7 +1075,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=status,
         )
 
-
     def _tool_app_collect_diagnostics(self, arguments: dict[str, Any]) -> dict[str, Any]:
         diagnostics = self.runtime_service.collect_diagnostics(self._require_name(arguments))
         return self._tool_result(
@@ -1142,7 +1082,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Collected diagnostics for app {diagnostics['app']['name']}.",
             structured_content=diagnostics,
         )
-
 
     def _tool_app_inspect_traceback(self, arguments: dict[str, Any]) -> dict[str, Any]:
         traceback_text = arguments.get("traceback_text")
@@ -1157,7 +1096,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Inspected traceback for app {inspected['app']['name']}.",
             structured_content=inspected,
         )
-
 
     def _tool_app_tail_logs(self, arguments: dict[str, Any]) -> dict[str, Any]:
         channel = arguments.get("channel", "latest")
@@ -1179,7 +1117,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=logs,
         )
 
-
     def _tool_app_run_healthcheck(self, arguments: dict[str, Any]) -> dict[str, Any]:
         target = arguments.get("target", "live")
         if target not in {"live", "preview"}:
@@ -1191,7 +1128,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=health,
         )
 
-
     def _tool_app_share_get(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         payload = self._share_payload(name)
@@ -1200,7 +1136,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Returned sharing policy and {len(payload['grants'])} active grant(s) for app {name}.",
             structured_content=payload,
         )
-
 
     def _tool_app_share_grant(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1262,7 +1197,6 @@ class HandlersMixin(MCPServerHost):
             structured_content={"app": app.to_dict(), "grant": grant.to_dict()},
         )
 
-
     def _tool_app_share_revoke(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         grant_id = arguments.get("grant_id")
@@ -1314,7 +1248,6 @@ class HandlersMixin(MCPServerHost):
                 "revoked_grants": [grant.to_dict() for grant in revoked],
             },
         )
-
 
     def _tool_app_share_set_link_scope(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1381,7 +1314,6 @@ class HandlersMixin(MCPServerHost):
             structured_content={"app": app.to_dict(), "share_policy": policy.to_dict()},
         )
 
-
     def _tool_app_share_explain_access(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         target = self._require_choice(
@@ -1414,7 +1346,6 @@ class HandlersMixin(MCPServerHost):
                 "decision": decision.to_dict(),
             },
         )
-
 
     def _tool_app_share_create_one_time_link(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1491,7 +1422,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=payload,
         )
 
-
     def _tool_app_share_revoke_one_time_link(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         link_id = arguments.get("link_id")
@@ -1516,7 +1446,6 @@ class HandlersMixin(MCPServerHost):
             text=f"Revoked one-time sharing link {link_id} for app {name}.",
             structured_content={"app": app.to_dict(), "one_time_link": self._sanitize_share_link(revoked)},
         )
-
 
     def _tool_app_invite_external_user(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
@@ -1592,13 +1521,16 @@ class HandlersMixin(MCPServerHost):
             inviter_display_name=self._current_principal().display_name,
             message=message,
         )
-        invitation = self.runtime_service.registry.update_invitation_delivery(
-            int(invitation.id),
-            delivery_status=delivery_result.status,
-            delivery_provider=delivery_result.provider,
-            delivery_message_id=delivery_result.message_id,
-            delivery_error=delivery_result.error,
-        ) or invitation
+        invitation = (
+            self.runtime_service.registry.update_invitation_delivery(
+                int(invitation.id),
+                delivery_status=delivery_result.status,
+                delivery_provider=delivery_result.provider,
+                delivery_message_id=delivery_result.message_id,
+                delivery_error=delivery_result.error,
+            )
+            or invitation
+        )
         self.runtime_service.registry.append_event(
             name,
             "external_invitation_delivery_updated",
@@ -1634,7 +1566,6 @@ class HandlersMixin(MCPServerHost):
             structured_content=payload,
         )
 
-
     def _tool_app_revoke_external_invitation(self, arguments: dict[str, Any]) -> dict[str, Any]:
         name = self._require_name(arguments)
         invitation_id = arguments.get("invitation_id")
@@ -1666,7 +1597,6 @@ class HandlersMixin(MCPServerHost):
 
     # ---- Phase 4f: runtime / environment tools -------------------------------------
 
-
     def _session_channel_or_error(self, tool_name: str) -> Any:
         """Third of the three enforcement points for the local-mode-only channel.
 
@@ -1685,7 +1615,6 @@ class HandlersMixin(MCPServerHost):
             )
         service.require_enabled(tool_name=tool_name)
         return service
-
 
     def _tool_app_session_eval_js(self, arguments: dict[str, Any]) -> dict[str, Any]:
         service = self._session_channel_or_error("app_session_eval_js")
@@ -1714,12 +1643,10 @@ class HandlersMixin(MCPServerHost):
             error = payload.get("error") or {}
             # A page-side exception is a *result*, not a transport error: the agent needs
             # the message and the code-relative line to fix and retry in one hop.
-            text = (
-                f"The page reported {error.get('name', 'Error')}: {error.get('message', '')}"
-                + (f" (line {error['line']} of the submitted code)" if error.get("line") else "")
+            text = f"The page reported {error.get('name', 'Error')}: {error.get('message', '')}" + (
+                f" (line {error['line']} of the submitted code)" if error.get("line") else ""
             )
         return self._tool_result("app_session_eval_js", text=text, structured_content=payload)
-
 
     def _tool_app_sessions_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         service = self._session_channel_or_error("app_sessions_list")
@@ -1729,23 +1656,14 @@ class HandlersMixin(MCPServerHost):
         payload = service.list_sessions(app_name=name.strip() if isinstance(name, str) else None)
         return self._tool_result(
             "app_sessions_list",
-            text=(
-                f"{payload['live_count']} live browser session(s) of "
-                f"{len(payload['sessions'])} registered."
-            ),
+            text=(f"{payload['live_count']} live browser session(s) of {len(payload['sessions'])} registered."),
             structured_content=payload,
         )
 
-
     def _tool_app_runtime_workers_list(self, _arguments: dict[str, Any]) -> dict[str, Any]:
         payload = self._workers_payload()
-        text = (
-            f"Listed {payload['worker_count']} worker(s); rss_bytes_total={payload['rss_bytes_total']}."
-        )
-        return self._tool_result(
-            "app_runtime_workers_list", text=text, structured_content=payload
-        )
-
+        text = f"Listed {payload['worker_count']} worker(s); rss_bytes_total={payload['rss_bytes_total']}."
+        return self._tool_result("app_runtime_workers_list", text=text, structured_content=payload)
 
     def _tool_app_runtime_workers_restart(self, arguments: dict[str, Any]) -> dict[str, Any]:
         manager = self._worker_manager_or_error()
@@ -1776,7 +1694,6 @@ class HandlersMixin(MCPServerHost):
             },
         )
 
-
     def _tool_app_environment_invalidate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         env_service = self._dep_env_service_or_error()
         env_id = arguments.get("environment_id")
@@ -1796,7 +1713,6 @@ class HandlersMixin(MCPServerHost):
             ),
             structured_content={"environment_id": env_id, "invalidated": invalidated},
         )
-
 
     def _tool_app_acknowledge_data_layer_errors(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Reset the `data_layer` healthcheck probe by acknowledging current errors.
@@ -1822,7 +1738,6 @@ class HandlersMixin(MCPServerHost):
             structured_content={"app": name, "watermark": watermark},
         )
 
-
     def _tool_result(
         self,
         tool_name: str,
@@ -1842,7 +1757,6 @@ class HandlersMixin(MCPServerHost):
             "structuredContent": payload,
             "isError": False,
         }
-
 
     def _tool_error_result(
         self,
@@ -1885,7 +1799,6 @@ class HandlersMixin(MCPServerHost):
             "isError": True,
         }
 
-
     def _worker_manager_or_error(self) -> Any:
         if not has_request_context():
             raise DashServerError(
@@ -1898,13 +1811,11 @@ class HandlersMixin(MCPServerHost):
             raise DashServerError(
                 category="runtime_mode_error",
                 summary=(
-                    "No worker manager is configured. Set APP_RUNTIME_MODE=isolated to "
-                    "enable out-of-process workers."
+                    "No worker manager is configured. Set APP_RUNTIME_MODE=isolated to enable out-of-process workers."
                 ),
                 details={"runtime_mode": current_app.config.get("APP_RUNTIME_MODE")},
             )
         return manager
-
 
     def _dep_env_service_or_error(self) -> Any:
         if not has_request_context():
@@ -1921,12 +1832,9 @@ class HandlersMixin(MCPServerHost):
                     "No per-app dependency-environment service is configured. Set "
                     "APP_DEPENDENCY_ISOLATION=per_app to enable per-app envs."
                 ),
-                details={
-                    "app_dependency_isolation": current_app.config.get("APP_DEPENDENCY_ISOLATION")
-                },
+                details={"app_dependency_isolation": current_app.config.get("APP_DEPENDENCY_ISOLATION")},
             )
         return service
-
 
     def _exasol_service(self) -> ExasolDashboardService:
         if self.exasol_dashboard_service is None:
@@ -1937,7 +1845,6 @@ class HandlersMixin(MCPServerHost):
             )
         return self.exasol_dashboard_service
 
-
     def _consumption_service(self) -> ConsumptionService:
         if self.consumption_service is None:
             raise DashServerError(
@@ -1947,13 +1854,11 @@ class HandlersMixin(MCPServerHost):
             )
         return self.consumption_service
 
-
     @staticmethod
     def _consumption_auth_context() -> AuthContext:
         if has_request_context():
             return current_auth_context()
         return AuthContext.for_mode("local", auth_enabled=False)
-
 
     def _require_name(self, arguments: dict[str, Any]) -> str:
         name = arguments.get("name")
@@ -1965,13 +1870,11 @@ class HandlersMixin(MCPServerHost):
             details={"field": "name"},
         )
 
-
     def _require_revision_number(self, arguments: dict[str, Any], field_name: str) -> int:
         value = arguments.get(field_name)
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             return value
         raise self._field_error("revision_tool", field_name, "must be a positive integer.")
-
 
     def _require_existing_app(self, name: str, *, tool_name: str):
         app = self.runtime_service.registry.get_app(name)
@@ -1983,7 +1886,6 @@ class HandlersMixin(MCPServerHost):
             )
         return app
 
-
     def _share_payload(self, name: str) -> dict[str, Any]:
         app = self._require_existing_app(name, tool_name="app_share_get")
         all_grants = self.runtime_service.registry.list_acl_entries(
@@ -1994,9 +1896,7 @@ class HandlersMixin(MCPServerHost):
             "app": app.to_dict(),
             "share_policy": self.runtime_service.registry.get_share_policy(name).to_dict(),
             "grants": [grant.to_dict() for grant in self.runtime_service.registry.list_acl_entries(name)],
-            "revoked_grants": [
-                grant.to_dict() for grant in all_grants if grant.revoked_at is not None
-            ],
+            "revoked_grants": [grant.to_dict() for grant in all_grants if grant.revoked_at is not None],
             "one_time_links": [
                 self._sanitize_share_link(link)
                 for link in self.runtime_service.registry.list_share_links(name, include_revoked=True)
@@ -2008,26 +1908,15 @@ class HandlersMixin(MCPServerHost):
             "warnings": self._sharing_warnings(name),
         }
 
-
     def _sanitize_share_link(self, link: ShareLink | None) -> dict[str, Any] | None:
         if link is None:
             return None
-        return {
-            key: value
-            for key, value in link.to_dict().items()
-            if key != "token_hash"
-        }
-
+        return {key: value for key, value in link.to_dict().items() if key != "token_hash"}
 
     def _sanitize_invitation(self, invitation: Invitation | None) -> dict[str, Any] | None:
         if invitation is None:
             return None
-        return {
-            key: value
-            for key, value in invitation.to_dict().items()
-            if key != "token_hash"
-        }
-
+        return {key: value for key, value in invitation.to_dict().items() if key != "token_hash"}
 
     def _sharing_warnings(self, name: str) -> list[dict[str, str]]:
         app = self.runtime_service.registry.get_app(name)
@@ -2055,7 +1944,6 @@ class HandlersMixin(MCPServerHost):
                 }
             )
         return warnings
-
 
     def _principal_for_access_explanation(self, arguments: dict[str, Any]) -> Principal:
         principal_id = arguments.get("principal_id")
@@ -2123,18 +2011,15 @@ class HandlersMixin(MCPServerHost):
             tenant_id=tenant_id,
         )
 
-
     def _current_principal_id(self) -> str:
         if has_request_context():
             return current_auth_context().principal.principal_id
         return "system"
 
-
     def _current_principal(self) -> Principal:
         if has_request_context():
             return current_auth_context().principal
         return Principal.local_admin()
-
 
     def _normalize_email_argument(self, value: Any, *, tool_name: str) -> str:
         if not isinstance(value, str):
@@ -2144,22 +2029,15 @@ class HandlersMixin(MCPServerHost):
             raise self._field_error(tool_name, "recipient_email", "must be an email address.")
         return email.lower()
 
-
     def _normalize_allowed_domain(self, value: Any, *, tool_name: str) -> str:
         if not isinstance(value, str):
             raise self._field_error(tool_name, "allowed_domain", "is required when link_scope is domain.")
         domain = value.strip().lower()
         if domain.startswith("@"):
             domain = domain[1:]
-        if (
-            not domain
-            or "@" in domain
-            or "/" in domain
-            or any(character.isspace() for character in domain)
-        ):
+        if not domain or "@" in domain or "/" in domain or any(character.isspace() for character in domain):
             raise self._field_error(tool_name, "allowed_domain", "must be a DNS domain such as example.com.")
         return domain
-
 
     def _email_sender(self) -> InvitationEmailSender:
         if self.email_sender is not None:
@@ -2167,7 +2045,6 @@ class HandlersMixin(MCPServerHost):
         if has_request_context():
             return current_app.extensions["email_sender"]
         return InvitationEmailSender({"DASH_SERVER_EMAIL_PROVIDER": "manual"})
-
 
     def _invitation_delivery_note(self, invitation: Invitation) -> str:
         status = invitation.delivery_status
@@ -2177,16 +2054,13 @@ class HandlersMixin(MCPServerHost):
             return "Email delivery failed. Use the display-once accept_url for manual recovery or fix the provider configuration and create a new invitation."
         return "Email sender integration is manual/disabled; deliver the accept_url to the recipient through an approved channel."
 
-
     def _authorization_service(self):
         return current_app.extensions["authorization_service"]
-
 
     def _require_string(self, value: Any, field_name: str, *, allow_empty: bool = False) -> str:
         if isinstance(value, str) and (allow_empty or value):
             return value
         raise self._field_error("string_tool", field_name, "must be a string.")
-
 
     def _field_error(self, tool_name: str, field_name: str, detail: str) -> DashServerError:
         return DashServerError(
@@ -2194,7 +2068,6 @@ class HandlersMixin(MCPServerHost):
             summary=f"{field_name} {detail}",
             details={"tool": tool_name, "field": field_name},
         )
-
 
     def _preflight_failure_error(self, created: dict[str, Any]) -> DashServerError | None:
         """Build the `artifact_preflight_failed` error for a create/build result whose
@@ -2237,12 +2110,10 @@ class HandlersMixin(MCPServerHost):
             },
         )
 
-
     def _require_non_empty_string(self, value: Any, *, field_name: str, tool_name: str) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
         raise self._field_error(tool_name, field_name, "must be a non-empty string.")
-
 
     def _require_choice(
         self,
@@ -2260,14 +2131,12 @@ class HandlersMixin(MCPServerHost):
             f"must be one of {', '.join(sorted(allowed))}.",
         )
 
-
     def _optional_positive_int(self, value: Any, *, tool_name: str, field_name: str) -> int | None:
         if value is None:
             return None
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             return value
         raise self._field_error(tool_name, field_name, "must be a positive integer.")
-
 
     def _bundle_from_top_level_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         bundle: dict[str, Any] = {}
@@ -2286,4 +2155,3 @@ class HandlersMixin(MCPServerHost):
             if field_name in arguments:
                 bundle[field_name] = arguments[field_name]
         return bundle
-

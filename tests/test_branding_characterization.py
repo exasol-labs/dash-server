@@ -39,11 +39,7 @@ def _iter_components(component: Any):
 
 
 def _ids(layout: Any) -> list[str]:
-    return [
-        cid
-        for cid in (getattr(c, "id", None) for c in _iter_components(layout))
-        if cid is not None
-    ]
+    return [cid for cid in (getattr(c, "id", None) for c in _iter_components(layout)) if cid is not None]
 
 
 def _find_by_id(layout: Any, component_id: str) -> Any:
@@ -137,9 +133,7 @@ def test_apply_hosted_footer_is_idempotent():
 
     # Re-application is a no-op: same layout object, not double-wrapped.
     assert second_layout is first_layout
-    chrome_count = sum(
-        1 for cid in _ids(second_layout) if cid == "__dash-server-hosted-chrome"
-    )
+    chrome_count = sum(1 for cid in _ids(second_layout) if cid == "__dash-server-hosted-chrome")
     assert chrome_count == 1
 
 

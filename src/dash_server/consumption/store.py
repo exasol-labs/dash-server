@@ -14,8 +14,6 @@ from dash_server.timestamps import now_iso, parse_iso8601
 from .models import ConsumptionArtifact, ConsumptionJob
 
 
-
-
 _ACTIVE_STATUSES = ("queued", "running", "cancel_requested")
 _TERMINAL_STATUSES = ("succeeded", "failed", "cancelled", "expired")
 
@@ -240,9 +238,7 @@ class ConsumptionStore:
                 )
                 """
             )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS consumption_jobs_status ON consumption_jobs(status)"
-            )
+            connection.execute("CREATE INDEX IF NOT EXISTS consumption_jobs_status ON consumption_jobs(status)")
             connection.commit()
 
     def create_job(

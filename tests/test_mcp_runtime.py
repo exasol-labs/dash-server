@@ -10,6 +10,7 @@ from _mcp_helpers import (
     _bundle,
 )
 
+
 @pytest.mark.slow
 def test_mcp_lists_files_and_deletes_app_with_exact_confirmation(app, client):
     create_response = _call_mcp(
@@ -337,4 +338,3 @@ def test_route_conflicts_are_rejected_before_stage_5(app, client):
         assert getattr(exc, "category", None) == "route_conflict"
     else:
         raise AssertionError("Expected route conflict when remapping ops to /apps/sales")
-

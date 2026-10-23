@@ -346,10 +346,7 @@ def build_dash_wsgi_app(
     )
 
     metrics = dashboard["metrics"]
-    dropdown_options = [
-        {"label": metric["label"], "value": metric["label"]}
-        for metric in metrics
-    ]
+    dropdown_options = [{"label": metric["label"], "value": metric["label"]} for metric in metrics]
 
     dash_app.layout = html.Div(
         [
@@ -629,11 +626,7 @@ def _normalize_bundle_shape(bundle: dict[str, Any]) -> dict[str, Any]:
         )
         if key in bundle
     }
-    root_dashboard_fields = {
-        key: bundle[key]
-        for key in ("headline", "summary", "metrics")
-        if key in bundle
-    }
+    root_dashboard_fields = {key: bundle[key] for key in ("headline", "summary", "metrics") if key in bundle}
 
     if root_manifest_fields:
         name = root_manifest_fields.get("name")

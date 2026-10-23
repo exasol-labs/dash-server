@@ -35,7 +35,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _job_id_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -48,7 +47,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["job_id"],
             "additionalProperties": False,
         }
-
 
     def _exasol_profile_create_local_schema(self) -> dict[str, Any]:
         return {
@@ -100,7 +98,7 @@ class SchemasMixin(MCPServerHost):
                 },
                 "secret_env_var": {
                     "type": "string",
-                "description": "Environment variable containing the secret. Provide exactly one of secret_value or secret_env_var to create a profile; leave both out with overwrite: true to keep the current secret.",
+                    "description": "Environment variable containing the secret. Provide exactly one of secret_value or secret_env_var to create a profile; leave both out with overwrite: true to keep the current secret.",
                 },
                 "statement_timeout_seconds": {"type": "integer", "minimum": 1},
                 "row_limit": {"type": "integer", "minimum": 1},
@@ -113,8 +111,8 @@ class SchemasMixin(MCPServerHost):
                         "(dashboards, SQL smoke, exports, validation), like a BI tool's initial SQL. "
                         "One statement per entry; only ALTER SESSION, EXECUTE SCRIPT, and OPEN SCHEMA "
                         "are accepted. Use it for session-level features such as Exasol Semantic "
-                        "Views: [\"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = "
-                        "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR\"]."
+                        'Views: ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = '
+                        'SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"].'
                     ),
                 },
                 "overwrite": {
@@ -147,7 +145,6 @@ class SchemasMixin(MCPServerHost):
                 }
             ],
         }
-
 
     def _app_create_exasol_dashboard_schema(self) -> dict[str, Any]:
         return {
@@ -188,10 +185,14 @@ class SchemasMixin(MCPServerHost):
             "required": ["name", "profile_name"],
             "additionalProperties": False,
             "examples": [
-                {"name": "sales-overview", "profile_name": "analytics-prod", "pattern": "analytics-hub", "start_immediately": True}
+                {
+                    "name": "sales-overview",
+                    "profile_name": "analytics-prod",
+                    "pattern": "analytics-hub",
+                    "start_immediately": True,
+                }
             ],
         }
-
 
     def _app_scaffold_from_schema_schema(self) -> dict[str, Any]:
         return {
@@ -240,7 +241,6 @@ class SchemasMixin(MCPServerHost):
             ],
         }
 
-
     def _app_create_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -269,8 +269,14 @@ class SchemasMixin(MCPServerHost):
                     "type": "object",
                     "description": "Optional registered-output contract for governed consumption.",
                 },
-                "headline": {"type": "string", "description": "Optional starter dashboard headline for shorthand creation."},
-                "summary": {"type": "string", "description": "Optional starter dashboard summary for shorthand creation."},
+                "headline": {
+                    "type": "string",
+                    "description": "Optional starter dashboard headline for shorthand creation.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Optional starter dashboard summary for shorthand creation.",
+                },
                 "metrics": {
                     "type": "array",
                     "description": "Optional starter metric cards for shorthand creation.",
@@ -300,10 +306,9 @@ class SchemasMixin(MCPServerHost):
                 {
                     "name": "markets-dashboard",
                     "start_immediately": True,
-                }
+                },
             ],
         }
-
 
     def _app_create_from_files_schema(self) -> dict[str, Any]:
         return {
@@ -335,7 +340,7 @@ class SchemasMixin(MCPServerHost):
                     "type": "object",
                     "description": (
                         "Optional data-source bindings. For an Exasol-bound app use "
-                        "`{\"primary\": {\"kind\": \"exasol\", \"profile\": \"<profile-name>\"}}`. "
+                        '`{"primary": {"kind": "exasol", "profile": "<profile-name>"}}`. '
                         "Required when the app queries Exasol through dash_server_exasol: without a "
                         "binding, validation fails and the app is not created. Set it here or in a "
                         "supplied dash-app.json; an argument fills a field dash-app.json leaves out, "
@@ -359,8 +364,14 @@ class SchemasMixin(MCPServerHost):
                     "type": "object",
                     "description": "Optional registered-output contract for governed consumption.",
                 },
-                "headline": {"type": "string", "description": "Optional starter dashboard headline used for generated metadata defaults."},
-                "summary": {"type": "string", "description": "Optional starter dashboard summary used for generated metadata defaults."},
+                "headline": {
+                    "type": "string",
+                    "description": "Optional starter dashboard headline used for generated metadata defaults.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Optional starter dashboard summary used for generated metadata defaults.",
+                },
                 "metrics": {
                     "type": "array",
                     "description": "Optional starter metric cards used for generated metadata defaults.",
@@ -398,7 +409,6 @@ class SchemasMixin(MCPServerHost):
             "examples": [app_create_from_files_example()],
         }
 
-
     def _bundle_schema(self) -> dict[str, Any]:
         manifest_props = self._manifest_schema()["properties"]
         dashboard_props = self._dashboard_schema()["properties"]
@@ -423,7 +433,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
             "examples": [app_create_example_bundle()],
         }
-
 
     def _manifest_schema(self) -> dict[str, Any]:
         return {
@@ -465,7 +474,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _dashboard_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -490,7 +498,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _revision_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -501,7 +508,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name", "revision_number"],
             "additionalProperties": False,
         }
-
 
     def _app_promote_revision_schema(self) -> dict[str, Any]:
         return {
@@ -522,7 +528,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _app_diff_draft_vs_artifact_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -536,7 +541,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_build_schema(self) -> dict[str, Any]:
         return {
@@ -559,7 +563,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_deploy_draft_schema(self) -> dict[str, Any]:
         return {
@@ -587,7 +590,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _app_healthcheck_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -603,7 +605,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_share_grant_schema(self) -> dict[str, Any]:
         return {
@@ -636,7 +637,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _app_share_revoke_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -652,7 +652,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_share_set_link_scope_schema(self) -> dict[str, Any]:
         return {
@@ -680,7 +679,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _app_share_explain_access_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -699,7 +697,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_share_create_one_time_link_schema(self) -> dict[str, Any]:
         return {
@@ -734,18 +731,19 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _app_share_revoke_one_time_link_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Hosted app name."},
-                "link_id": {"type": "integer", "description": "One-time link id returned by app_share_create_one_time_link."},
+                "link_id": {
+                    "type": "integer",
+                    "description": "One-time link id returned by app_share_create_one_time_link.",
+                },
             },
             "required": ["name", "link_id"],
             "additionalProperties": False,
         }
-
 
     def _app_invite_external_user_schema(self) -> dict[str, Any]:
         return {
@@ -780,7 +778,6 @@ class SchemasMixin(MCPServerHost):
             "additionalProperties": False,
         }
 
-
     def _app_revoke_external_invitation_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -794,7 +791,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name", "invitation_id"],
             "additionalProperties": False,
         }
-
 
     def _app_tail_logs_schema(self) -> dict[str, Any]:
         return {
@@ -811,7 +807,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name"],
             "additionalProperties": False,
         }
-
 
     def _app_session_eval_js_schema(self) -> dict[str, Any]:
         return {
@@ -844,7 +839,6 @@ class SchemasMixin(MCPServerHost):
             "required": ["name", "code"],
             "additionalProperties": False,
         }
-
 
     def _app_sessions_list_schema(self) -> dict[str, Any]:
         return {

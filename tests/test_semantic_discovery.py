@@ -139,7 +139,6 @@ def test_validate_tool_names_published_models_in_its_text(app, client, monkeypat
     assert "session_init_sql" in guidance["next_step"]
 
 
-
 def test_semantic_usage_lists_the_fields_each_live_dashboard_was_built_against(app, client) -> None:
     runtime = app.extensions["runtime_service"]
     demo_revision = runtime.registry.get_app("demo").current_revision_number
@@ -147,7 +146,13 @@ def test_semantic_usage_lists_the_fields_each_live_dashboard_was_built_against(a
         "demo",
         demo_revision,
         [
-            {"path": "queries/kpis.sql", "model": "sales", "object": "SALES", "metrics": {"total_revenue": "h1"}, "dimensions": {}},
+            {
+                "path": "queries/kpis.sql",
+                "model": "sales",
+                "object": "SALES",
+                "metrics": {"total_revenue": "h1"},
+                "dimensions": {},
+            },
             {"path": "queries/frozen.sql", "lane": "frozen", "models": ["sales"]},
             {"path": "queries/raw.sql", "lane": "raw", "models": ["sales"]},
         ],
@@ -186,7 +191,17 @@ def test_scaffold_model_lookup_ignores_an_unfinished_validation_run(app) -> None
     from dash_server.exasol.semantic_models import FINISHED_RUNS_COLUMNS, FINISHED_RUNS_QUERY, MODELS_COLUMNS
 
     service = app.extensions["exasol_dashboard_service"]
-    unfinished = ["fusion", "SEMANTIC_FUSION", "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR", "VALID", "RUNNING", 0, 0, 101, None]
+    unfinished = [
+        "fusion",
+        "SEMANTIC_FUSION",
+        "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR",
+        "VALID",
+        "RUNNING",
+        0,
+        0,
+        101,
+        None,
+    ]
 
     def execute(profile_name, sql_text, *, params=None):
         if sql_text == FINISHED_RUNS_QUERY:

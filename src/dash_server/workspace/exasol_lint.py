@@ -29,9 +29,23 @@ _EXASOL_QUERY_CALLS = {
 # aliases. Exasol's full reserved list is much larger; these are the ones we've
 # actually seen trip up persona-1 / persona-2 / persona-3 SQL.
 _RESERVED_ALIAS_WORDS = {
-    "DAY", "MONTH", "YEAR", "HOUR", "MINUTE", "SECOND",
-    "ORDER", "GROUP", "LEVEL", "USER", "TIMESTAMP", "DATE",
-    "TYPE", "VALUE", "ROW", "RANK", "COUNT",
+    "DAY",
+    "MONTH",
+    "YEAR",
+    "HOUR",
+    "MINUTE",
+    "SECOND",
+    "ORDER",
+    "GROUP",
+    "LEVEL",
+    "USER",
+    "TIMESTAMP",
+    "DATE",
+    "TYPE",
+    "VALUE",
+    "ROW",
+    "RANK",
+    "COUNT",
 }
 _RESERVED_ALIAS_RE = re.compile(
     r"\bAS\s+(" + "|".join(sorted(_RESERVED_ALIAS_WORDS)) + r")\b",
@@ -55,8 +69,7 @@ def is_exasol_workspace(manifest: AppManifest) -> bool:
     data_sources = manifest.data_sources if isinstance(manifest.data_sources, dict) else {}
     primary = data_sources.get("primary")
     return bool(
-        manifest.template == "exasol-analytics"
-        or (isinstance(primary, dict) and primary.get("kind") == "exasol")
+        manifest.template == "exasol-analytics" or (isinstance(primary, dict) and primary.get("kind") == "exasol")
     )
 
 
@@ -232,11 +245,7 @@ def exasol_validation_report(
         # Skip the "no LIMIT or aggregation" warning for single-row scalar queries
         # that come only from DUAL (e.g. the scaffold's placeholder
         # `SELECT 1240 AS ACTIVE_CUSTOMERS FROM DUAL`).
-        only_from_dual = (
-            " FROM DUAL " in from_clause
-            and " JOIN " not in from_clause
-            and " UNION " not in from_clause
-        )
+        only_from_dual = " FROM DUAL " in from_clause and " JOIN " not in from_clause and " UNION " not in from_clause
         if looks_like_compiled_semantic_sql(content):
             issues.append(
                 {
@@ -317,9 +326,7 @@ def _is_cast_target(content: str, match_start: int) -> bool:
                 before = content[:i].rstrip()
                 if before.upper().endswith("CAST"):
                     boundary_index = len(before) - len("CAST") - 1
-                    if boundary_index < 0 or not (
-                        before[boundary_index].isalnum() or before[boundary_index] == "_"
-                    ):
+                    if boundary_index < 0 or not (before[boundary_index].isalnum() or before[boundary_index] == "_"):
                         return True
                 return False
             depth -= 1

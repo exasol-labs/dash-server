@@ -244,9 +244,7 @@ def test_eval_without_a_live_tab_is_an_error_that_lists_candidates(client) -> No
 def test_eval_times_out_when_the_page_never_answers(client, page) -> None:
     page(lambda _command: None)  # Polls (so it stays live) but never posts a result.
 
-    result = _tool_payload(
-        call_mcp(client, "app_session_eval_js", {"name": "demo", "code": "1", "timeout_seconds": 1})
-    )
+    result = _tool_payload(call_mcp(client, "app_session_eval_js", {"name": "demo", "code": "1", "timeout_seconds": 1}))
 
     assert result["isError"] is True
     error = result["structuredContent"]["error"]
@@ -318,9 +316,7 @@ def test_unknown_app_is_reported_before_the_session_lookup(client) -> None:
 def test_oversized_code_is_rejected_before_dispatch(client, page) -> None:
     page(_echo_responder(1))
 
-    result = _tool_payload(
-        call_mcp(client, "app_session_eval_js", {"name": "demo", "code": "x" * 20000})
-    )
+    result = _tool_payload(call_mcp(client, "app_session_eval_js", {"name": "demo", "code": "x" * 20000}))
 
     assert result["isError"] is True
     assert result["structuredContent"]["error"]["details"]["field"] == "code"
@@ -335,9 +331,9 @@ def test_an_oversized_page_result_is_truncated_by_the_control_plane(app, client,
     app.extensions["session_channel_service"].max_result_bytes = 2048
     page(_echo_responder([{"row": "x" * 500} for _ in range(200)]))
 
-    payload = _tool_payload(
-        call_mcp(client, "app_session_eval_js", {"name": "demo", "code": "big"})
-    )["structuredContent"]
+    payload = _tool_payload(call_mcp(client, "app_session_eval_js", {"name": "demo", "code": "big"}))[
+        "structuredContent"
+    ]
 
     assert payload["truncated"] is True
     assert payload["value"][SENTINEL_TRUNCATED] is True
@@ -431,9 +427,9 @@ def test_every_command_is_audited_with_its_code(client, page) -> None:
     page(_echo_responder(1))
     call_mcp(client, "app_session_eval_js", {"name": "demo", "code": "ctx.page()"})
 
-    logs = _tool_payload(
-        call_mcp(client, "app_tail_logs", {"name": "demo", "channel": "session.commands"})
-    )["structuredContent"]
+    logs = _tool_payload(call_mcp(client, "app_tail_logs", {"name": "demo", "channel": "session.commands"}))[
+        "structuredContent"
+    ]
 
     entries = logs["logs"]["entries"]
     assert entries, "the session.commands channel should carry the dispatched command"

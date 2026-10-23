@@ -102,8 +102,7 @@ def _handle_request(conn: socket.socket, listen_sock: socket.socket | None = Non
                 pass
         try:
             conn.sendall(
-                json.dumps({KEY_EVENT: EVENT_ERROR, "phase": "recv_fds", "error": "expected two FDs"}).encode()
-                + b"\n"
+                json.dumps({KEY_EVENT: EVENT_ERROR, "phase": "recv_fds", "error": "expected two FDs"}).encode() + b"\n"
             )
         except OSError:
             pass
@@ -120,10 +119,7 @@ def _handle_request(conn: socket.socket, listen_sock: socket.socket | None = Non
                 pass
         try:
             conn.sendall(
-                json.dumps(
-                    {KEY_EVENT: EVENT_ERROR, "phase": "json_parse", "error": str(exc)}
-                ).encode()
-                + b"\n"
+                json.dumps({KEY_EVENT: EVENT_ERROR, "phase": "json_parse", "error": str(exc)}).encode() + b"\n"
             )
         except OSError:
             pass
@@ -185,9 +181,7 @@ def _handle_request(conn: socket.socket, listen_sock: socket.socket | None = Non
         except OSError:
             pass
     try:
-        conn.sendall(
-            json.dumps({KEY_EVENT: EVENT_FORKED, "pid": pid}).encode() + b"\n"
-        )
+        conn.sendall(json.dumps({KEY_EVENT: EVENT_FORKED, "pid": pid}).encode() + b"\n")
     except OSError:
         pass
 
@@ -228,7 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         print(
             json.dumps(
-                {KEY_EVENT: EVENT_FAILED, "phase": "bind", "error": f"{type(exc).__name__}: {exc}", "socket_path": socket_path}
+                {
+                    KEY_EVENT: EVENT_FAILED,
+                    "phase": "bind",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "socket_path": socket_path,
+                }
             ),
             flush=True,
         )

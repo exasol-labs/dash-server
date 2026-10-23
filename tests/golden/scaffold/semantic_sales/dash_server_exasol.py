@@ -32,6 +32,7 @@ Return-contract guarantee:
             return render_error_panel(rows[0]["_error"])
         # rows is safe to iterate
 """
+
 from pathlib import Path
 
 from dash import html
@@ -97,12 +98,7 @@ def render_table(rows):
     return html.Table(
         [
             html.Thead(html.Tr([html.Th(column) for column in columns])),
-            html.Tbody(
-                [
-                    html.Tr([html.Td(str(row.get(column, ""))) for column in columns])
-                    for row in rows
-                ]
-            ),
+            html.Tbody([html.Tr([html.Td(str(row.get(column, ""))) for column in columns]) for row in rows]),
         ],
         style={"borderCollapse": "collapse", "width": "100%"},
     )

@@ -11,6 +11,7 @@ import json
 from textwrap import dedent
 from typing import Any
 
+
 def _call_mcp(client, method, params, request_id=1):
     return client.post(
         "/mcp",
@@ -116,8 +117,9 @@ def _bundle(name: str, title: str, *, summary: str, revenue: str) -> dict[str, o
 
 
 def _multipage_assets_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from pathlib import Path
 
         from dash import Dash, Input, Output, dcc, html
@@ -169,12 +171,15 @@ def _multipage_assets_app_py(title: str) -> str:
 
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _callback_failure_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from dash import Dash, Input, Output, dcc, html
 
 
@@ -212,12 +217,15 @@ def _callback_failure_app_py(title: str) -> str:
 
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _global_callback_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from dash import Dash, Input, Output, callback, dcc, html
 
 
@@ -244,12 +252,15 @@ def _global_callback_app_py(title: str) -> str:
             )
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _app_callback_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from dash import Dash, Input, Output, dcc, html
 
 
@@ -276,12 +287,15 @@ def _app_callback_app_py(title: str) -> str:
 
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _cross_module_from_import_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from dash import Dash, html
         from theme import labeled_bar
 
@@ -298,12 +312,15 @@ def _cross_module_from_import_app_py(title: str) -> str:
             app.layout = html.Div([labeled_bar("Revenue")])
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _cross_module_alias_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         import theme as T
         from dash import Dash, html
 
@@ -320,12 +337,15 @@ def _cross_module_alias_app_py(title: str) -> str:
             app.layout = html.Div([T.labeled_bar("Revenue")])
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _cross_module_wildcard_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from dash import Dash, html
         from theme import *
 
@@ -342,24 +362,30 @@ def _cross_module_wildcard_app_py(title: str) -> str:
             app.layout = html.Div([html.H1("Wildcard Theme Import")])
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _theme_labeled_bar_py() -> str:
-    return dedent(
-        """
+    return (
+        dedent(
+            """
         from dash import html
 
 
         def labeled_bar(label):
             return html.Div(f"Labeled {label}", className="labeled-bar")
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _missing_callback_id_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from dash import Dash, Input, Output, dcc, html
 
 
@@ -386,12 +412,15 @@ def _missing_callback_id_app_py(title: str) -> str:
 
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _plotly_lint_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         import plotly.graph_objects as go
         from dash import Dash, dcc, html
 
@@ -421,12 +450,15 @@ def _plotly_lint_app_py(title: str) -> str:
             app.layout = html.Div([html.H1("Plotly Lint"), dcc.Graph(figure=figure)])
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _artifact_sensitive_app_py(title: str, *, failure_mode: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from pathlib import Path
 
         from dash import Dash, html
@@ -454,12 +486,15 @@ def _artifact_sensitive_app_py(title: str, *, failure_mode: str) -> str:
             app.layout = html.Div([html.H1({title!r}), html.P("Artifact-sensitive runtime app.")])
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _artifact_first_load_crash_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from pathlib import Path
 
         from dash import Dash, html
@@ -499,12 +534,15 @@ def _artifact_first_load_crash_app_py(title: str) -> str:
                 '''.replace("__BROKEN_PREFIX__", prefix)
             return app
         """
-    ).strip() + "\n"
+        ).strip()
+        + "\n"
+    )
 
 
 def _misconfigured_prefix_app_py(title: str) -> str:
-    return dedent(
-        f"""
+    return (
+        dedent(
+            f"""
         from dash import Dash, html
 
 
@@ -525,5 +563,6 @@ def _misconfigured_prefix_app_py(title: str) -> str:
             )
             return app
         """
-    ).strip() + "\n"
-
+        ).strip()
+        + "\n"
+    )

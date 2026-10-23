@@ -42,18 +42,9 @@ def describe_callbacks(dash_app: Any) -> dict[str, Any]:
     callback_map = getattr(dash_app, "callback_map", {}) or {}
     layout_ids = collect_layout_ids(dash_app)
     for output_key, spec in callback_map.items():
-        inputs = [
-            {"id": _dep_id(dep), "property": _dep_property(dep)}
-            for dep in spec.get("inputs", []) or []
-        ]
-        outputs = [
-            {"id": _dep_id(dep), "property": _dep_property(dep)}
-            for dep in spec.get("output", []) or []
-        ]
-        state = [
-            {"id": _dep_id(dep), "property": _dep_property(dep)}
-            for dep in spec.get("state", []) or []
-        ]
+        inputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("inputs", []) or []]
+        outputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("output", []) or []]
+        state = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("state", []) or []]
         referenced_ids = {dep["id"] for dep in inputs + outputs + state}
         missing = sorted(referenced_ids - layout_ids)
         callbacks.append(
@@ -68,9 +59,7 @@ def describe_callbacks(dash_app: Any) -> dict[str, Any]:
     return {
         "callbacks": callbacks,
         "count": len(callbacks),
-        "missing_layout_ids": sorted(
-            {missing_id for cb in callbacks for missing_id in cb["missing_layout_ids"]}
-        ),
+        "missing_layout_ids": sorted({missing_id for cb in callbacks for missing_id in cb["missing_layout_ids"]}),
         "suppress_callback_exceptions": bool(
             getattr(getattr(dash_app, "config", None), "suppress_callback_exceptions", False)
         ),

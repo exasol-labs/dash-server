@@ -121,7 +121,9 @@ def test_dependency_installer_never_changes_the_servers_own_packages(tmp_path: P
     for force_clean in (False, True):
         refused = installer.ensure_requirements("old-app", ["pyexasol>=2.2.2,<3.0"], force_clean=force_clean)
         assert refused["status"] == "failed"
-        assert refused["conflicts"] == [f"pyexasol>=2.2.2,<3.0 (the server has pyexasol {metadata.version('pyexasol')})"]
+        assert refused["conflicts"] == [
+            f"pyexasol>=2.2.2,<3.0 (the server has pyexasol {metadata.version('pyexasol')})"
+        ]
         assert "DASH_SERVER_APP_DEPENDENCY_ISOLATION=per_app" in refused["notes"]
     assert calls == []
 
@@ -305,6 +307,7 @@ def test_environment_service_does_not_use_sys_executable_for_user_installs(tmp_p
         def create(self, env_dir):
             from pathlib import Path
             import os
+
             base = Path(env_dir)
             (base / "bin").mkdir(parents=True, exist_ok=True)
             python_path = base / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -350,6 +353,7 @@ def test_environment_service_caches_by_environment_id(tmp_path, monkeypatch):
         def create(self, env_dir):
             from pathlib import Path
             import os
+
             base = Path(env_dir)
             python_path = base / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
             python_path.parent.mkdir(parents=True, exist_ok=True)
@@ -391,6 +395,7 @@ def test_environment_service_force_clean_rebuilds(tmp_path, monkeypatch):
         def create(self, env_dir):
             from pathlib import Path
             import os
+
             base = Path(env_dir)
             python_path = base / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
             python_path.parent.mkdir(parents=True, exist_ok=True)
@@ -408,6 +413,7 @@ def test_environment_service_force_clean_rebuilds(tmp_path, monkeypatch):
     reqs = ["dash>=4.0,<5.0"]
     first = svc.ensure_requirements("app-a", reqs)
     import time
+
     time.sleep(0.01)
     second = svc.ensure_requirements("app-a", reqs, force_clean=True)
     assert first["environment_id"] == second["environment_id"]
@@ -437,18 +443,29 @@ def test_subprocess_validator_smoke_against_in_tree_app(tmp_path):
         "    app.layout = html.Div(metadata.get('title', 'worker-validate'))\n"
         "    return app\n"
     )
-    manifest_payload = _json.dumps({"name": "worker-validate", "title": "Worker Validate", "route": "/apps/worker-validate"})
+    manifest_payload = _json.dumps(
+        {"name": "worker-validate", "title": "Worker Validate", "route": "/apps/worker-validate"}
+    )
 
     result = _sp.run(
         [
-            sys.executable, "-m", "dash_server_runtime.worker",
+            sys.executable,
+            "-m",
+            "dash_server_runtime.worker",
             "--mode=validate",
-            "--app-name", "worker-validate",
-            "--app-source", str(app_py),
-            "--mount-path", "/apps/worker-validate",
-            "--manifest-json", manifest_payload,
+            "--app-name",
+            "worker-validate",
+            "--app-source",
+            str(app_py),
+            "--mount-path",
+            "/apps/worker-validate",
+            "--manifest-json",
+            manifest_payload,
         ],
-        capture_output=True, text=True, timeout=60, check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
     assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
     payload = _json.loads([line for line in result.stdout.splitlines() if line.strip()][-1])
@@ -470,14 +487,23 @@ def test_subprocess_validator_reports_import_failure(tmp_path):
     )
     result = _sp.run(
         [
-            sys.executable, "-m", "dash_server_runtime.worker",
+            sys.executable,
+            "-m",
+            "dash_server_runtime.worker",
             "--mode=validate",
-            "--app-name", "broken",
-            "--app-source", str(app_py),
-            "--mount-path", "/apps/broken",
-            "--manifest-json", _json.dumps({"name": "broken", "title": "B", "route": "/apps/broken"}),
+            "--app-name",
+            "broken",
+            "--app-source",
+            str(app_py),
+            "--mount-path",
+            "/apps/broken",
+            "--manifest-json",
+            _json.dumps({"name": "broken", "title": "B", "route": "/apps/broken"}),
         ],
-        capture_output=True, text=True, timeout=60, check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
     # Exit non-zero, but stdout still contains a parseable JSON result.
     assert result.returncode != 0
@@ -497,7 +523,11 @@ def test_workspace_dispatches_to_subprocess_when_dependency_install_reports_non_
 
     def fake_subprocess_check(self, **kwargs):
         captured.update(kwargs)
-        return {"status": "passed", "callbacks": {"count": 0}, "subprocess": {"python_executable": kwargs["subprocess_python"]}}
+        return {
+            "status": "passed",
+            "callbacks": {"count": 0},
+            "subprocess": {"python_executable": kwargs["subprocess_python"]},
+        }
 
     monkeypatch.setattr(WorkspaceService, "_import_smoke_check_subprocess", fake_subprocess_check, raising=True)
 

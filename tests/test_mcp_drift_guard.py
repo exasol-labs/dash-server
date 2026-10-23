@@ -36,9 +36,7 @@ def test_every_tool_has_specific_guidance(app):
     server = app.extensions["mcp_server"]
     fallback = server._guidance_for_tool("__no_such_tool__", {}, is_error=False)
     missing = [
-        name
-        for name in sorted(_tool_names(server))
-        if server._guidance_for_tool(name, {}, is_error=False) == fallback
+        name for name in sorted(_tool_names(server)) if server._guidance_for_tool(name, {}, is_error=False) == fallback
     ]
     assert not missing, f"tools with only generic fallback guidance: {missing}"
 

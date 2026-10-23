@@ -94,8 +94,8 @@ class _ConsumptionSmokeFakePyExasolModule:
 
 
 def _create_output_app(app, client, *, name: str = "finance-outputs") -> None:
-    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = (
-        lambda: _ConsumptionSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: (
+        _ConsumptionSmokeFakePyExasolModule()
     )
     profile_response = call_mcp(
         client,
@@ -211,11 +211,7 @@ def test_export_job_lifecycle_queued_running_succeeded(app, client):
     # running: the blocking executor holds the worker mid-stream.
     assert executor.started.wait(timeout=5)
     running = wait_for(
-        lambda: (
-            payload
-            if (payload := _export_get(client, job_id))["job"]["status"] == "running"
-            else None
-        ),
+        lambda: payload if (payload := _export_get(client, job_id))["job"]["status"] == "running" else None,
         message="job to reach running",
     )
     assert running["job"]["status"] == "running"
@@ -225,8 +221,7 @@ def test_export_job_lifecycle_queued_running_succeeded(app, client):
     completed = wait_for(
         lambda: (
             payload
-            if (payload := _export_get(client, job_id))["job"]["status"]
-            in {"succeeded", "failed", "cancelled"}
+            if (payload := _export_get(client, job_id))["job"]["status"] in {"succeeded", "failed", "cancelled"}
             else None
         ),
         message="job to reach a terminal state",
@@ -259,9 +254,9 @@ def test_export_job_lifecycle_queued_running_succeeded(app, client):
     # The preflight ran exactly once and encrypted parameters are stored, not plaintext.
     assert executor.preflight_calls == 1
     with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
-        encoded = connection.execute(
-            "SELECT parameters_json FROM consumption_jobs WHERE id = ?", (job_id,)
-        ).fetchone()[0]
+        encoded = connection.execute("SELECT parameters_json FROM consumption_jobs WHERE id = ?", (job_id,)).fetchone()[
+            0
+        ]
     assert "2026-07" not in encoded
     assert service.parameter_codec.decode(encoded) == {"period": "2026-07"}
 

@@ -87,7 +87,7 @@ markers = [
 # -----------------------------------------------------------------------------
 # Invocation:
 #   ruff check src tests              # lint
-#   ruff format --check src tests     # formatting drift (advisory; no auto-format yet)
+#   ruff format --check src tests     # formatting (a CI gate; `ruff format src tests` fixes it)
 #
 # The rule set is intentionally bug-leaning: pyflakes (F), bugbear (B), pyupgrade
 # (UP), and simplify (SIM) flag real defects; we *don't* opt into E501 (line
@@ -101,6 +101,11 @@ markers = [
 target-version = "py310"
 line-length = 120
 extend-exclude = ["instance", ".venv"]
+
+[tool.ruff.format]
+# Golden files are generator output, compared byte for byte; formatting them would make them
+# differ from what the scaffold actually emits.
+exclude = ["tests/golden/**"]
 
 [tool.ruff.lint]
 select = [

@@ -50,10 +50,7 @@ def iter_artifact_files(root: Path) -> Iterator[Path]:
 def read_artifact_files(root: Path) -> dict[str, str]:
     """Map each artifact source file's POSIX-relative path to its text contents."""
 
-    return {
-        source.relative_to(root).as_posix(): source.read_text()
-        for source in iter_artifact_files(root)
-    }
+    return {source.relative_to(root).as_posix(): source.read_text() for source in iter_artifact_files(root)}
 
 
 def list_artifact_files(root: Path) -> list[str]:

@@ -44,7 +44,9 @@ REAL_ROW = [
 
 
 def _mapped_row() -> list[object]:
-    return [typed_fetch_mapper(value, data_type) for value, data_type in zip(REAL_ROW, REAL_COLUMNS.values(), strict=True)]
+    return [
+        typed_fetch_mapper(value, data_type) for value, data_type in zip(REAL_ROW, REAL_COLUMNS.values(), strict=True)
+    ]
 
 
 def test_typed_fetch_mapper_converts_real_pyexasol_values() -> None:

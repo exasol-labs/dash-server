@@ -18,6 +18,7 @@ from _mcp_helpers import (
     _artifact_sensitive_app_py,
 )
 
+
 @pytest.mark.slow
 class TestMcpDiagnosticsRepairFlow:
     """Decomposition of the former single ``test_mcp_can_collect_diagnostics_
@@ -212,10 +213,7 @@ class TestMcpDiagnosticsRepairFlow:
         assert "Restore valid imports in app.py or requirements.txt." in diagnostics["suggested_recovery_steps"]
 
     def test_logs_and_errors_surface_validation_failure(self, flow):
-        assert any(
-            "Workspace validation failed" in entry["message"]
-            for entry in flow["logs"]["logs"]["entries"]
-        )
+        assert any("Workspace validation failed" in entry["message"] for entry in flow["logs"]["logs"]["entries"])
         assert flow["errors"]["errors"][-1]["category"] == "import_error"
 
     def test_healthcheck_passes_despite_build_failure(self, flow):
@@ -439,10 +437,7 @@ def test_collect_diagnostics_and_inspect_traceback_attribute_artifact_mismatch(c
     assert draft_vs_latest_statuses["app.py"] == "changed"
     assert diagnostics["artifact_comparison"]["focused_file"]["path"] == "app.py"
     assert diagnostics["artifact_comparison"]["source_context"] == "latest_built_artifact"
-    assert any(
-        "newer content for app.py" in hint
-        for hint in diagnostics["artifact_comparison"]["hints"]
-    )
+    assert any("newer content for app.py" in hint for hint in diagnostics["artifact_comparison"]["hints"])
 
     inspect_response = _call_mcp(
         client,
@@ -460,13 +455,11 @@ def test_collect_diagnostics_and_inspect_traceback_attribute_artifact_mismatch(c
     assert inspected["artifact_comparison"]["focused_file"]["path"] == "app.py"
     assert inspected["artifact_comparison"]["source_context"] == "latest_built_artifact"
     assert any(
-        "latest built artifact" in hint or "newer content for app.py" in hint
-        for hint in inspected["artifact_guidance"]
+        "latest built artifact" in hint or "newer content for app.py" in hint for hint in inspected["artifact_guidance"]
     )
     assert inspected["suggested_recovery_steps"][0].startswith(
         "Compare the current draft against the latest built artifact"
     )
-
 
 
 def test_ps27_bug002_append_jsonl_writes_one_atomic_line(tmp_path, monkeypatch) -> None:

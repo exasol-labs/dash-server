@@ -1827,7 +1827,9 @@ def test_exasol_bootstrap_reports_session_init_sql_drift(tmp_path, caplog):
 
 
 def test_exasol_bootstrap_rejects_invalid_session_init_sql(tmp_path):
-    with pytest.raises(DashServerError, match="DASH_SERVER_EXASOL_SESSION_INIT_SQL is invalid: statement 1 must be a session statement"):
+    with pytest.raises(
+        DashServerError, match="DASH_SERVER_EXASOL_SESSION_INIT_SQL is invalid: statement 1 must be a session statement"
+    ):
         create_app(_exasol_bootstrap_config(tmp_path, EXASOL_BOOTSTRAP_SESSION_INIT_SQL="DELETE FROM MART.ORDERS"))
 
 

@@ -25,9 +25,7 @@ from dash_server.app_factory import (
 from dash_server.config import Config
 
 
-def test_resolve_instance_path_config_override_beats_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_instance_path_config_override_beats_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A ``test_config["INSTANCE_PATH"]`` override wins over the ambient env var."""
 
     override = tmp_path / "override"
@@ -38,9 +36,7 @@ def test_resolve_instance_path_config_override_beats_env(
     assert resolved == str(override)
 
 
-def test_resolve_instance_path_env_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_instance_path_env_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With no config override, a runtime-set env var is honored (read live)."""
 
     env_dir = tmp_path / "from-env"
@@ -50,9 +46,7 @@ def test_resolve_instance_path_env_fallback(
     assert _resolve_instance_path({}, tmp_path / "proj") == str(env_dir)
 
 
-def test_resolve_instance_path_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_instance_path_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DASH_SERVER_INSTANCE_PATH", raising=False)
     monkeypatch.delenv("FLASK_INSTANCE_PATH", raising=False)
 
@@ -94,9 +88,7 @@ def test_resolve_roots_honors_per_subroot_override(tmp_path: Path) -> None:
 
 
 @pytest.mark.slow
-def test_instance_path_override_wins_over_env_full_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_instance_path_override_wins_over_env_full_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Wave 3 gate: build an app with test_config overriding INSTANCE_PATH while
     the env var is set to something else; the override wins end-to-end."""
 

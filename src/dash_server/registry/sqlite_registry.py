@@ -56,9 +56,7 @@ class SQLiteAppRegistry:
     # The only ``apps.*`` columns that may be interpolated into
     # ``get_revision_by_pointer``'s JOIN. Guards the one interpolated column name
     # against arbitrary SQL identifiers.
-    _REVISION_POINTER_COLUMNS = frozenset(
-        {"current_revision_id", "preview_revision_id", "rollback_revision_id"}
-    )
+    _REVISION_POINTER_COLUMNS = frozenset({"current_revision_id", "preview_revision_id", "rollback_revision_id"})
 
     def __init__(self, db_path: str) -> None:
         self.db_path = Path(db_path)
@@ -281,9 +279,7 @@ class SQLiteAppRegistry:
 
     def _applied_schema_version(self) -> int:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT MAX(version) AS version FROM registry_schema_migrations"
-            ).fetchone()
+            row = connection.execute("SELECT MAX(version) AS version FROM registry_schema_migrations").fetchone()
         return int(row["version"]) if row and row["version"] is not None else 0
 
     def _record_schema_version(self, version: int) -> None:
@@ -308,32 +304,21 @@ class SQLiteAppRegistry:
         self._ensure_column("app_revisions", "lifecycle_state", "TEXT NOT NULL DEFAULT 'validated'")
         self._ensure_column("app_revisions", "artifact_path", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("app_revisions", "source_hash", "TEXT NOT NULL DEFAULT ''")
-        self._ensure_column(
-            "app_revisions", "dependency_lock_hash", "TEXT NOT NULL DEFAULT ''"
-        )
+        self._ensure_column("app_revisions", "dependency_lock_hash", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("app_revisions", "commit_sha", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("app_revisions", "git_tag", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("app_revisions", "git_branch", "TEXT NOT NULL DEFAULT ''")
-        self._ensure_column(
-            "app_revisions", "release_manifest_path", "TEXT NOT NULL DEFAULT ''"
-        )
-        self._ensure_column(
-            "app_revisions", "rollout_metadata_json", "TEXT NOT NULL DEFAULT '{}'"
-        )
+        self._ensure_column("app_revisions", "release_manifest_path", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("app_revisions", "rollout_metadata_json", "TEXT NOT NULL DEFAULT '{}'")
         # Phase 4a: persist the env id + python executable on the revision row so
         # _mount_revision_isolated doesn't have to recompute from requirements.txt at
         # mount time and Phase 4d env GC can join revisions against envs by id.
-        self._ensure_column(
-            "app_revisions", "dependency_environment_id", "TEXT NOT NULL DEFAULT ''"
-        )
-        self._ensure_column(
-            "app_revisions", "env_python_executable", "TEXT NOT NULL DEFAULT ''"
-        )
+        self._ensure_column("app_revisions", "dependency_environment_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("app_revisions", "env_python_executable", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("app_invitations", "delivery_provider", "TEXT")
         self._ensure_column("app_invitations", "delivery_message_id", "TEXT")
         self._ensure_column("app_invitations", "delivery_error", "TEXT")
         self._ensure_column("app_invitations", "sent_at", "TEXT")
-
 
     def list_apps(self) -> list[HostedApp]:
         with self._connect() as connection:
@@ -375,8 +360,7 @@ class SQLiteAppRegistry:
             # consumption projections that are actually present before the
             # registry-owned tables (which always exist here).
             existing = {
-                row["name"]
-                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+                row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
             }
             consumption_tables = (
                 "consumption_delivery_attempts",
@@ -758,7 +742,7 @@ class SQLiteAppRegistry:
                     expires_at,
                     revoked_at
                 FROM app_acl_entries
-                WHERE {' AND '.join(clauses)}
+                WHERE {" AND ".join(clauses)}
                 ORDER BY id
                 """,
                 values,
@@ -1601,9 +1585,7 @@ class SQLiteAppRegistry:
             raise ValueError(f"Unknown revision pointer column: {pointer_column!r}")
         with self._connect() as connection:
             row = connection.execute(
-                self._revision_select_sql(
-                    f"JOIN apps ON apps.{pointer_column} = app_revisions.id WHERE apps.name = ?"
-                ),
+                self._revision_select_sql(f"JOIN apps ON apps.{pointer_column} = app_revisions.id WHERE apps.name = ?"),
                 (app_name,),
             ).fetchone()
         return self._row_to_revision(row) if row else None
@@ -1825,12 +1807,8 @@ class SQLiteAppRegistry:
             release_manifest_path=row["release_manifest_path"],
             rollout_metadata=json.loads(row["rollout_metadata_json"]),
             created_at=row["created_at"],
-            dependency_environment_id=(
-                row["dependency_environment_id"] if "dependency_environment_id" in keys else ""
-            ),
-            env_python_executable=(
-                row["env_python_executable"] if "env_python_executable" in keys else ""
-            ),
+            dependency_environment_id=(row["dependency_environment_id"] if "dependency_environment_id" in keys else ""),
+            env_python_executable=(row["env_python_executable"] if "env_python_executable" in keys else ""),
         )
 
     def _row_to_app(self, row: sqlite3.Row) -> HostedApp:

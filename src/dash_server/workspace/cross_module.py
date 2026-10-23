@@ -38,10 +38,7 @@ def cross_module_symbol_report(
     trees: dict[str, ast.AST],
 ) -> dict[str, Any]:
     module_to_path, path_to_module = _local_module_index(trees.keys())
-    module_analysis = {
-        path: _analyze_local_module(tree)
-        for path, tree in trees.items()
-    }
+    module_analysis = {path: _analyze_local_module(tree) for path, tree in trees.items()}
     issues: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     seen_issues: set[tuple[str, int | None, str, str]] = set()
@@ -212,11 +209,7 @@ def _assignment_target_names(target: ast.AST) -> set[str]:
 
 
 def _is_docstring_expr(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Constant)
-        and isinstance(node.value.value, str)
-    )
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
 
 
 def _collect_cross_module_references(
@@ -269,9 +262,7 @@ def _collect_cross_module_references(
                 {
                     "path": relative_path,
                     "line": getattr(node, "lineno", None),
-                    "message": (
-                        f"Skipped strict local symbol checks for wildcard import from {resolved_module}."
-                    ),
+                    "message": (f"Skipped strict local symbol checks for wildcard import from {resolved_module}."),
                 }
             )
             continue

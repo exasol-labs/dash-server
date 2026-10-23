@@ -280,7 +280,9 @@ def with_fusion(connection: object, models: list[SemanticModelRef]) -> list[Sema
         resolved.append(
             replace(
                 ref,
-                fusion_layout=tuple(sorted(layout, key=lambda part: tuple(str(value) for value in vars(part).values()))),
+                fusion_layout=tuple(
+                    sorted(layout, key=lambda part: tuple(str(value) for value in vars(part).values()))
+                ),
                 fusion_health=_fusion_health(connection, ref.model),
             )
         )

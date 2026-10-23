@@ -507,16 +507,24 @@ def test_python_m_dash_server_runtime_worker_validates_a_tiny_app(tmp_path):
     env = {k: v for k, v in _os.environ.items() if k in {"PATH", "HOME", "USER", "LANG", "TMPDIR"}}
     result = _sp.run(
         [
-            sys.executable, "-m", "dash_server_runtime.worker",
+            sys.executable,
+            "-m",
+            "dash_server_runtime.worker",
             "--mode=validate",
-            "--app-name", "relocated",
-            "--app-source", str(app_py),
-            "--mount-path", "/apps/relocated",
-            "--manifest-json", _json.dumps(
-                {"name": "relocated", "title": "Relocated", "route": "/apps/relocated"}
-            ),
+            "--app-name",
+            "relocated",
+            "--app-source",
+            str(app_py),
+            "--mount-path",
+            "/apps/relocated",
+            "--manifest-json",
+            _json.dumps({"name": "relocated", "title": "Relocated", "route": "/apps/relocated"}),
         ],
-        capture_output=True, text=True, timeout=60, check=False, env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env=env,
     )
     assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
     payload = _json.loads([line for line in result.stdout.splitlines() if line.strip()][-1])
@@ -560,6 +568,7 @@ def test_worker_manager_no_longer_injects_src_root_into_pythonpath(tmp_path):
     # The env builder should not be inserting the dash-server source directory.
     # (If the user had PYTHONPATH set externally, it's passed through unchanged.)
     import os as _os
+
     external = _os.environ.get("PYTHONPATH")
     if external is None:
         assert "PYTHONPATH" not in env, env
@@ -571,9 +580,7 @@ def test_worker_manager_no_longer_injects_src_root_into_pythonpath(tmp_path):
 # --- Phase 3.5c regression tests (forkserver baseline) ---
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
-)
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only")
 def test_forkserver_baseline_spawns_and_emits_ready_event(tmp_path):
     """3.5c: the baseline process starts, prewarms imports, listens on the UDS, emits ready."""
     import subprocess as _sp
@@ -583,9 +590,7 @@ def test_forkserver_baseline_spawns_and_emits_ready_event(tmp_path):
 
     # macOS caps AF_UNIX paths at 104 bytes; pytest's tmp_path can exceed that. Use the
     # short system temp dir for the socket file instead.
-    socket_path = str(
-        Path(_tempfile.gettempdir()) / f"dssrv-test-{_uuid.uuid4().hex[:8]}.sock"
-    )
+    socket_path = str(Path(_tempfile.gettempdir()) / f"dssrv-test-{_uuid.uuid4().hex[:8]}.sock")
     process = _sp.Popen(
         [
             sys.executable,
@@ -621,9 +626,7 @@ def test_forkserver_baseline_spawns_and_emits_ready_event(tmp_path):
             pass
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
-)
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only")
 def test_worker_manager_forks_from_baseline_when_enabled(tmp_path):
     """3.5c: with enable_forkserver=True the manager spawns a worker via the baseline.
 
@@ -664,9 +667,7 @@ def test_worker_manager_forks_from_baseline_when_enabled(tmp_path):
         assert manager.baseline_status() == []
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
-)
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only")
 def test_forkserver_miss_falls_back_to_spawn(tmp_path, monkeypatch):
     """3.5c: when the baseline path raises, the manager falls back to spawn."""
 
@@ -695,18 +696,21 @@ def test_forkserver_miss_falls_back_to_spawn(tmp_path, monkeypatch):
         manager.stop_all()
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
-)
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only")
 def test_record_is_alive_handles_bare_pids(tmp_path):
     """3.5c: PidHandle.is_alive uses os.kill(pid, 0) when there's no Popen handle."""
     from dash_server.runtime.worker_manager import PidHandle, WorkerRecord
 
     # A definitely-alive pid: the current process.
     alive_record = WorkerRecord(
-        app_name="x", revision_number=1, mount_path="/apps/x",
-        pid=os.getpid(), host="127.0.0.1", port=0,
-        python_executable=sys.executable, environment_id=None,
+        app_name="x",
+        revision_number=1,
+        mount_path="/apps/x",
+        pid=os.getpid(),
+        host="127.0.0.1",
+        port=0,
+        python_executable=sys.executable,
+        environment_id=None,
         started_at="2026-01-01T00:00:00Z",
         handle=PidHandle(pid=os.getpid()),
     )
@@ -715,9 +719,14 @@ def test_record_is_alive_handles_bare_pids(tmp_path):
 
     # A definitely-dead pid (very high number that's unlikely to be live).
     dead_record = WorkerRecord(
-        app_name="x", revision_number=2, mount_path="/apps/x",
-        pid=2_000_000_000, host="127.0.0.1", port=0,
-        python_executable=sys.executable, environment_id=None,
+        app_name="x",
+        revision_number=2,
+        mount_path="/apps/x",
+        pid=2_000_000_000,
+        host="127.0.0.1",
+        port=0,
+        python_executable=sys.executable,
+        environment_id=None,
         started_at="2026-01-01T00:00:00Z",
         handle=PidHandle(pid=2_000_000_000),
     )
@@ -748,7 +757,9 @@ def test_phase_4g_start_time_p50_records_durations(tmp_path):
     manager = AppWorkerManager(workers_root=str(tmp_path / "workers"))
     try:
         manager.start(
-            app_name="t", revision_number=1, mount_path="/apps/t",
+            app_name="t",
+            revision_number=1,
+            mount_path="/apps/t",
             app_source=app_dir / "app.py",
             manifest={"name": "t", "title": "T", "route": "/apps/t"},
         )
@@ -771,7 +782,9 @@ def test_phase_4c_restart_cap_refuses_excess_spawns(tmp_path):
         # First two starts pass.
         for i in range(2):
             manager.start(
-                app_name="cap", revision_number=i, mount_path="/apps/cap",
+                app_name="cap",
+                revision_number=i,
+                mount_path="/apps/cap",
                 app_source=app_dir / "app.py",
                 manifest={"name": "cap", "title": "Cap", "route": "/apps/cap"},
             )
@@ -779,7 +792,9 @@ def test_phase_4c_restart_cap_refuses_excess_spawns(tmp_path):
         # Third hits the cap and raises.
         with pytest.raises(WorkerStartError) as exc:
             manager.start(
-                app_name="cap", revision_number=99, mount_path="/apps/cap",
+                app_name="cap",
+                revision_number=99,
+                mount_path="/apps/cap",
                 app_source=app_dir / "app.py",
                 manifest={"name": "cap", "title": "Cap", "route": "/apps/cap"},
             )
@@ -794,7 +809,9 @@ def test_phase_4b_adopt_persisted_workers_adopts_live_record(tmp_path):
     manager = AppWorkerManager(workers_root=str(tmp_path / "workers"))
     try:
         record = manager.start(
-            app_name="adopt", revision_number=1, mount_path="/apps/adopt",
+            app_name="adopt",
+            revision_number=1,
+            mount_path="/apps/adopt",
             app_source=app_dir / "app.py",
             manifest={"name": "adopt", "title": "Adopt", "route": "/apps/adopt"},
         )
@@ -823,18 +840,22 @@ def test_phase_4b_adopt_persisted_workers_reaps_dead_record(tmp_path):
     workers_root.mkdir(parents=True)
     (workers_root / "ghost").mkdir()
     # Hand-craft a record file with a bogus port + pid that's almost certainly dead.
-    (workers_root / "ghost" / "1.json").write_text(json.dumps({
-        "app_name": "ghost",
-        "revision_number": 1,
-        "mount_path": "/apps/ghost",
-        "pid": 2_000_000_000,
-        "host": "127.0.0.1",
-        "port": 1,  # privileged port we can't bind without root
-        "python_executable": sys.executable,
-        "environment_id": None,
-        "started_at": "2026-01-01T00:00:00Z",
-        "status": "running",
-    }))
+    (workers_root / "ghost" / "1.json").write_text(
+        json.dumps(
+            {
+                "app_name": "ghost",
+                "revision_number": 1,
+                "mount_path": "/apps/ghost",
+                "pid": 2_000_000_000,
+                "host": "127.0.0.1",
+                "port": 1,  # privileged port we can't bind without root
+                "python_executable": sys.executable,
+                "environment_id": None,
+                "started_at": "2026-01-01T00:00:00Z",
+                "status": "running",
+            }
+        )
+    )
     manager = AppWorkerManager(workers_root=str(workers_root))
     actions = manager.adopt_persisted_workers()
     assert actions == {"/apps/ghost": "reaped"}
@@ -856,14 +877,19 @@ def test_phase_4d_env_gc_evicts_unreferenced_envs_past_retention(tmp_path):
         d = svc.environments_root / env_id
         d.mkdir(parents=True)
         from datetime import datetime, timezone, timedelta
+
         ts = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat().replace("+00:00", "Z")
-        (d / ".env_record.json").write_text(json.dumps({
-            "environment_id": env_id,
-            "status": "ready",
-            "created_at": ts,
-            "last_used_at": ts,
-            "python_executable": str(d / "bin" / "python"),
-        }))
+        (d / ".env_record.json").write_text(
+            json.dumps(
+                {
+                    "environment_id": env_id,
+                    "status": "ready",
+                    "created_at": ts,
+                    "last_used_at": ts,
+                    "python_executable": str(d / "bin" / "python"),
+                }
+            )
+        )
     # Mark "keep" as referenced; evict should drop the other.
     result = svc.run_env_gc_once(
         referenced_ids={"sha256:keep"},
@@ -887,14 +913,19 @@ def test_phase_4d_env_gc_skips_recent_envs_below_retention(tmp_path):
     d = svc.environments_root / "sha256:fresh"
     d.mkdir(parents=True)
     from datetime import datetime, timezone
+
     ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    (d / ".env_record.json").write_text(json.dumps({
-        "environment_id": "sha256:fresh",
-        "status": "ready",
-        "created_at": ts,
-        "last_used_at": ts,
-        "python_executable": str(d / "bin" / "python"),
-    }))
+    (d / ".env_record.json").write_text(
+        json.dumps(
+            {
+                "environment_id": "sha256:fresh",
+                "status": "ready",
+                "created_at": ts,
+                "last_used_at": ts,
+                "python_executable": str(d / "bin" / "python"),
+            }
+        )
+    )
     result = svc.run_env_gc_once(referenced_ids=set(), retention_seconds=7 * 24 * 3600)
     assert result["evicted"] == []
     assert "sha256:fresh" in result["skipped_retained"]
@@ -1020,13 +1051,17 @@ def test_phase_5c_env_eviction_emits_runtime_event(tmp_path):
     d = svc.environments_root / "sha256:evictme"
     d.mkdir(parents=True)
     old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat().replace("+00:00", "Z")
-    (d / ".env_record.json").write_text(json.dumps({
-        "environment_id": "sha256:evictme",
-        "status": "ready",
-        "created_at": old_ts,
-        "last_used_at": old_ts,
-        "python_executable": str(d / "bin" / "python"),
-    }))
+    (d / ".env_record.json").write_text(
+        json.dumps(
+            {
+                "environment_id": "sha256:evictme",
+                "status": "ready",
+                "created_at": old_ts,
+                "last_used_at": old_ts,
+                "python_executable": str(d / "bin" / "python"),
+            }
+        )
+    )
     result = svc.run_env_gc_once(referenced_ids=set(), retention_seconds=7 * 24 * 3600)
     assert "sha256:evictme" in result["evicted"]
     # The event should land in __runtime__/runtime.events.
@@ -1182,9 +1217,7 @@ def test_spawned_worker_exits_on_sigterm(tmp_path):
         manager.stop_all()
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
-)
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only")
 def test_forked_worker_exits_on_sigterm_and_leaves_the_baseline_intact(tmp_path):
     """A worker forked from the baseline used to inherit the baseline's SIGTERM handler,
     which unlinked the baseline's socket and raised a swallowed SystemExit in the worker."""
@@ -1204,9 +1237,7 @@ def test_forked_worker_exits_on_sigterm_and_leaves_the_baseline_intact(tmp_path)
         manager.stop_all()
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
-)
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only")
 def test_baseline_exits_when_its_parent_dies():
     """Nothing adopts a baseline after its manager's process ends, so it must not linger."""
 

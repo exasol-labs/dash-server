@@ -129,8 +129,8 @@ class _ConsumptionSmokeFakePyExasolModule:
 
 
 def _wire_fake_exasol_connector(app) -> None:
-    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = (
-        lambda: _ConsumptionSmokeFakePyExasolModule()
+    app.extensions["exasol_dashboard_service"].connection_manager.connector_loader = lambda: (
+        _ConsumptionSmokeFakePyExasolModule()
     )
 
 
@@ -723,9 +723,7 @@ def test_phase1_mcp_csv_export_is_pinned_encrypted_and_downloadable(app, client)
     assert completed["job"]["policy_version"] == service.policy_version
     assert "parameters" not in completed["job"]
     assert completed["artifact"]["row_count"] == 2
-    assert resource_payload == {
-        key: value for key, value in completed.items() if key != "guidance"
-    }
+    assert resource_payload == {key: value for key, value in completed.items() if key != "guidance"}
     assert executor.preflight_calls == 1
 
     with sqlite3.connect(app.config["REGISTRY_DB_PATH"]) as connection:
@@ -1110,9 +1108,7 @@ def test_phase2_xlsx_export_end_to_end_with_provenance(app, client):
     assert payload["job"]["status"] == "succeeded"
     assert service.executor.fetch_mappers == [typed_fetch_mapper]
     assert payload["artifact"]["filename"].endswith(".xlsx")
-    assert payload["artifact"]["content_type"] == (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    assert payload["artifact"]["content_type"] == ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     link = _call_tool(client, "export_download_link_create", {"job_id": created["job"]["id"]}).get_json()["result"][
         "structuredContent"

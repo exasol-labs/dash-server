@@ -361,9 +361,7 @@ def test_app_create_exasol_dashboard_creates_live_querying_app(app, client) -> N
 @pytest.mark.slow
 def test_exasol_authoring_guidance_and_validation_block_embedded_credentials(client) -> None:
     authoring_guide = _resource_json(client, "dash://meta/app-authoring-guide", request_id=30)
-    assert any(
-        "Do not embed database credentials" in rule for rule in authoring_guide["required_rules"]
-    )
+    assert any("Do not embed database credentials" in rule for rule in authoring_guide["required_rules"])
     assert any("pyexasol.connect" in rule for rule in authoring_guide["required_rules"])
 
     create_response = _call_mcp(
@@ -671,9 +669,7 @@ def test_ps26_bug008_blind_auto_pick_ignores_platform_internal_schemas(app, clie
     assert blueprint["schema_name"] != "SEMANTIC_AGENT"
     assert blueprint["schema_name"] == "SENSORS"
     assert blueprint["table_name"] == "READINGS"
-    assert all(
-        candidate["schema_name"] != "SEMANTIC_AGENT" for candidate in blueprint["table_candidates"]
-    )
+    assert all(candidate["schema_name"] != "SEMANTIC_AGENT" for candidate in blueprint["table_candidates"])
 
 
 @pytest.mark.slow
@@ -1087,9 +1083,7 @@ def test_bug001_self_signed_cert_error_gets_friendly_hint() -> None:
     assert "tls_verify=false" in classified["hint"]
 
 
-def test_ps26_bug001_cached_connect_passes_profile_statement_timeout_to_pyexasol(
-    tmp_path, monkeypatch
-) -> None:
+def test_ps26_bug001_cached_connect_passes_profile_statement_timeout_to_pyexasol(tmp_path, monkeypatch) -> None:
     """PS26-BUG-001 regression: `query_defaults.statement_timeout_seconds` used to be
     stored and displayed but never reached `pyexasol.connect(...)` for the runtime/
     callback path (`ExasolConnectionManager.connect`) — only one-shot uncached probe
@@ -1272,9 +1266,7 @@ class _FetchManyStatement:
         return self._rows[:size]
 
     def fetchall(self) -> list[list[Any]]:
-        raise AssertionError(
-            "fetchall() must not be called when fetchmany() is available (PS26-BUG-004)"
-        )
+        raise AssertionError("fetchall() must not be called when fetchmany() is available (PS26-BUG-004)")
 
     def close(self) -> None:
         return None
@@ -1581,11 +1573,7 @@ def _create_parameterized_sql_app(client, *, name: str, include_smoke_params: bo
         },
         {
             "path": "queries/agent_latency.sql",
-            "content": (
-                "SELECT AGENT_ID, MISSING_LATENCY_MS\n"
-                "FROM AGENT_EVENTS\n"
-                "WHERE AGENT_ID = {agent_id!s}\n"
-            ),
+            "content": ("SELECT AGENT_ID, MISSING_LATENCY_MS\nFROM AGENT_EVENTS\nWHERE AGENT_ID = {agent_id!s}\n"),
         },
         {"path": "requirements.txt", "content": "dash>=4.0,<5.0\npyexasol>=2.2.2,<3.0\n"},
     ]
@@ -1691,9 +1679,7 @@ def _sql_smoke_app_files(*, name: str, bad_column: bool) -> list[dict[str, Any]]
         "title": name.replace("-", " ").title(),
         "route": f"/apps/{name}",
         "template": "exasol-analytics",
-        "data_sources": {
-            "primary": {"kind": "exasol", "profile": "analytics-prod", "auth_mode": "local_direct"}
-        },
+        "data_sources": {"primary": {"kind": "exasol", "profile": "analytics-prod", "auth_mode": "local_direct"}},
     }
     column = "MISSING_LATENCY_MS" if bad_column else "LATENCY_MS"
     return [
@@ -1750,7 +1736,10 @@ def test_ps26_bug011_last_known_good_revision_skips_a_broken_rollback_target(app
             request_id=request_id,
         )
         return _call_mcp(
-            client, "tools/call", {"name": "app_build", "arguments": {"name": "last-known-good"}}, request_id=request_id + 1
+            client,
+            "tools/call",
+            {"name": "app_build", "arguments": {"name": "last-known-good"}},
+            request_id=request_id + 1,
         )
 
     # r1: good SQL, created via app_create_from_files (start_immediately=False, so
@@ -2204,9 +2193,7 @@ def test_profile_create_rejects_dsn_pyexasol_cannot_parse(client) -> None:
 
 
 def test_unparseable_dsn_error_from_older_profiles_gets_friendly_hint() -> None:
-    classified = _classify_connection_error(
-        "Could not parse connection string part [db.example.com:8563/ABCD]"
-    )
+    classified = _classify_connection_error("Could not parse connection string part [db.example.com:8563/ABCD]")
     assert classified is not None
     assert classified["kind"] == "dsn_invalid"
     assert "host[/FINGERPRINT][:port]" in classified["hint"]

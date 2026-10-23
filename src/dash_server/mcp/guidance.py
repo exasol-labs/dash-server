@@ -31,7 +31,6 @@ def _dedupe_preserving_order(items: list[str]) -> list[str]:
     return result
 
 
-
 def _semantic_layer_guidance(semantic_layer: Any) -> dict[str, Any] | None:
     """Next step for a valid profile whose database has published semantic models."""
 
@@ -85,11 +84,8 @@ class GuidanceMixin(MCPServerHost):
             lines.append(f"Suggested tools: {', '.join(str(tool) for tool in suggested_tools)}")
         related_resources = guidance.get("related_resources")
         if isinstance(related_resources, list) and related_resources:
-            lines.append(
-                f"Related resources: {', '.join(str(resource) for resource in related_resources)}"
-            )
+            lines.append(f"Related resources: {', '.join(str(resource) for resource in related_resources)}")
         return "\n".join(lines)
-
 
     def _attach_guidance(
         self,
@@ -113,7 +109,6 @@ class GuidanceMixin(MCPServerHost):
             guidance["related_resources"] = _dedupe_preserving_order(related)
         enriched["guidance"] = guidance
         return enriched
-
 
     def _guidance_for_tool(
         self,
@@ -158,10 +153,7 @@ class GuidanceMixin(MCPServerHost):
                     "related_resources": ["dash://meta/workflows", "dash://meta/app-authoring-guide"],
                 }
             cross_module_symbols = validation.get("cross_module_symbols")
-            if (
-                isinstance(cross_module_symbols, dict)
-                and cross_module_symbols.get("status") == "failed"
-            ):
+            if isinstance(cross_module_symbols, dict) and cross_module_symbols.get("status") == "failed":
                 return {
                     "next_step": "Patch the missing local symbol or import path, then validate the draft again.",
                     "suggested_tools": ["app_patch_file", "app_put_files", "app_validate"],
@@ -208,9 +200,7 @@ class GuidanceMixin(MCPServerHost):
             return {
                 "next_step": "Read the referenced schema/help resource and retry with the documented input shape.",
                 "suggested_tools": ["apps_list", "app_validate", "exasol_profile_validate"],
-                "related_resources": _dedupe_preserving_order(
-                    [help_resource, "dash://meta/workflows"]
-                ),
+                "related_resources": _dedupe_preserving_order([help_resource, "dash://meta/workflows"]),
             }
         if category == "workspace_validation_error":
             return {
@@ -227,7 +217,12 @@ class GuidanceMixin(MCPServerHost):
         if category == "artifact_preflight_failed":
             return {
                 "next_step": "Inspect the failed preflight probes and traceback, patch the draft, then rebuild before any live promotion.",
-                "suggested_tools": ["app_collect_diagnostics", "app_inspect_traceback", "app_patch_file", "app_diff_draft_vs_artifact"],
+                "suggested_tools": [
+                    "app_collect_diagnostics",
+                    "app_inspect_traceback",
+                    "app_patch_file",
+                    "app_diff_draft_vs_artifact",
+                ],
                 "related_resources": ["dash://meta/app-authoring-guide", "dash://meta/workflows"],
             }
         if category == "session_channel_session_gone":
@@ -251,8 +246,7 @@ class GuidanceMixin(MCPServerHost):
         if category in {"session_channel_timeout", "session_channel_busy"}:
             return {
                 "next_step": (
-                    "Confirm the tab is still polling, then retry with a smaller command or a "
-                    "longer timeout_seconds."
+                    "Confirm the tab is still polling, then retry with a smaller command or a longer timeout_seconds."
                 ),
                 "suggested_tools": ["app_sessions_list", "app_session_eval_js"],
                 "related_resources": ["dash://meta/session-channel-guide"],
@@ -267,11 +261,15 @@ class GuidanceMixin(MCPServerHost):
             return {
                 "next_step": "Inspect the Exasol profile metadata and connection help, fix the profile or secret reference, then retry.",
                 "suggested_tools": ["exasol_profiles_list", "exasol_profile_create_local", "exasol_profile_validate"],
-                "related_resources": ["dash://exasol/profiles", "dash://exasol/help/connection-modes", "dash://exasol/help/dashboard-patterns", "dash://exasol/help/agent-workflow"],
+                "related_resources": [
+                    "dash://exasol/profiles",
+                    "dash://exasol/help/connection-modes",
+                    "dash://exasol/help/dashboard-patterns",
+                    "dash://exasol/help/agent-workflow",
+                ],
             }
         return {
             "next_step": "Inspect the returned error details and recent diagnostics before retrying.",
             "suggested_tools": ["app_collect_diagnostics", "app_tail_logs"],
             "related_resources": ["dash://meta/workflows"],
         }
-

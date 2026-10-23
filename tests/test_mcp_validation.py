@@ -21,6 +21,7 @@ from _mcp_helpers import (
     _misconfigured_prefix_app_py,
 )
 
+
 @pytest.mark.slow
 def test_mcp_validation_and_build_fail_for_invalid_python_draft(client):
     _call_mcp(
@@ -602,7 +603,10 @@ def test_mcp_dependency_report_captures_invalid_requirement_entries(client):
     ).get_json()["result"]["structuredContent"]
     assert diagnostics["latest_error"] is None
     assert diagnostics["latest_build_error"]["category"] == "dependency_conflict"
-    assert "Correct invalid or conflicting requirement specifiers in requirements.txt." in diagnostics["suggested_recovery_steps"]
+    assert (
+        "Correct invalid or conflicting requirement specifiers in requirements.txt."
+        in diagnostics["suggested_recovery_steps"]
+    )
 
 
 @pytest.mark.slow
@@ -696,4 +700,3 @@ def test_mcp_records_callback_failures_from_live_dash_app(client):
     ).get_json()["result"]["structuredContent"]
     assert diagnostics["callback_failure_summary"]["callback_failures"][-1]["category"] == "dash_callback_error"
     assert "Inspect the callback function and the referenced component ids." in diagnostics["suggested_recovery_steps"]
-

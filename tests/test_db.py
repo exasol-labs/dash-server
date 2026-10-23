@@ -39,16 +39,12 @@ def test_concurrent_writers_and_readers_share_one_file_without_lock_errors(tmp_p
     db = tmp_path / "shared.sqlite3"
     with open_connection(db) as connection:
         connection.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY, progress TEXT)")
-        connection.executemany(
-            "INSERT INTO jobs (progress) VALUES (?)", [("queued",)] * 8
-        )
+        connection.executemany("INSERT INTO jobs (progress) VALUES (?)", [("queued",)] * 8)
 
     def writer(job_id: int) -> None:
         for step in range(40):
             with open_connection(db, foreign_keys=True) as connection:
-                connection.execute(
-                    "UPDATE jobs SET progress = ? WHERE id = ?", (f"step-{step}", job_id)
-                )
+                connection.execute("UPDATE jobs SET progress = ? WHERE id = ?", (f"step-{step}", job_id))
 
     def reader() -> int:
         seen = 0

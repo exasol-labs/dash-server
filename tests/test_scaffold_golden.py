@@ -84,15 +84,64 @@ _SCHEMA_BLUEPRINTS = {
         "schema_name": "SEMANTIC_SALES",
         "table_name": "SALES",
         "summary_metrics": [
-            {"name": "total_revenue", "column": "TOTAL_REVENUE", "label": "Total Revenue", "format": "currency", "certified": True, "temporal": False},
-            {"name": "gross_margin_pct", "column": "GROSS_MARGIN_PCT", "label": "Gross Margin %", "format": "percentage", "certified": True, "temporal": False},
+            {
+                "name": "total_revenue",
+                "column": "TOTAL_REVENUE",
+                "label": "Total Revenue",
+                "format": "currency",
+                "certified": True,
+                "temporal": False,
+            },
+            {
+                "name": "gross_margin_pct",
+                "column": "GROSS_MARGIN_PCT",
+                "label": "Gross Margin %",
+                "format": "percentage",
+                "certified": True,
+                "temporal": False,
+            },
         ],
-        "primary_metric": {"name": "total_revenue", "column": "TOTAL_REVENUE", "label": "Total Revenue", "format": "currency", "certified": True, "temporal": False},
-        "time_dimension": {"name": "order_month", "column": "ORDER_MONTH", "label": "Order Month", "format": "month", "certified": True, "temporal": True},
-        "category_dimension": {"name": "customer_region", "column": "CUSTOMER_REGION", "label": "Customer Region", "format": None, "certified": True, "temporal": False},
-        "detail_dimension": {"name": "customer_region", "column": "CUSTOMER_REGION", "label": "Customer Region", "format": None, "certified": True, "temporal": False},
+        "primary_metric": {
+            "name": "total_revenue",
+            "column": "TOTAL_REVENUE",
+            "label": "Total Revenue",
+            "format": "currency",
+            "certified": True,
+            "temporal": False,
+        },
+        "time_dimension": {
+            "name": "order_month",
+            "column": "ORDER_MONTH",
+            "label": "Order Month",
+            "format": "month",
+            "certified": True,
+            "temporal": True,
+        },
+        "category_dimension": {
+            "name": "customer_region",
+            "column": "CUSTOMER_REGION",
+            "label": "Customer Region",
+            "format": None,
+            "certified": True,
+            "temporal": False,
+        },
+        "detail_dimension": {
+            "name": "customer_region",
+            "column": "CUSTOMER_REGION",
+            "label": "Customer Region",
+            "format": None,
+            "certified": True,
+            "temporal": False,
+        },
         "detail_metrics": [
-            {"name": "total_revenue", "column": "TOTAL_REVENUE", "label": "Total Revenue", "format": "currency", "certified": True, "temporal": False},
+            {
+                "name": "total_revenue",
+                "column": "TOTAL_REVENUE",
+                "label": "Total Revenue",
+                "format": "currency",
+                "certified": True,
+                "temporal": False,
+            },
         ],
         "business_caption": "Governed metrics from semantic model sales (SEMANTIC_SALES.SALES).",
         "summary_heading": "SALES KPI Snapshot",
@@ -180,11 +229,7 @@ def test_scaffold_output_is_byte_identical_to_golden(rel_path: str) -> None:
 def test_golden_set_has_no_orphans() -> None:
     """Every golden fixture on disk must correspond to a produced output."""
 
-    on_disk = {
-        str(path.relative_to(GOLDEN_ROOT))
-        for path in GOLDEN_ROOT.rglob("*")
-        if path.is_file()
-    }
+    on_disk = {str(path.relative_to(GOLDEN_ROOT)) for path in GOLDEN_ROOT.rglob("*") if path.is_file()}
     produced = set(_OUTPUTS)
     orphans = on_disk - produced
     assert not orphans, f"Golden fixtures with no matching output: {sorted(orphans)}"

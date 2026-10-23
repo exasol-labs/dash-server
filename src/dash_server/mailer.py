@@ -84,9 +84,7 @@ class InvitationEmailSender:
         spec = _PROVIDERS.get(self.provider)
         self.smtp_host = self.smtp_host or (spec.host if spec else None)
         self.smtp_port = int(
-            config.get("DASH_SERVER_EMAIL_SMTP_PORT")
-            or (spec.port if spec else None)
-            or self.smtp_port
+            config.get("DASH_SERVER_EMAIL_SMTP_PORT") or (spec.port if spec else None) or self.smtp_port
         )
         self.smtp_username = self.smtp_username or (spec.username if spec else None)
         if spec is not None and spec.use_tls is not None and config.get("DASH_SERVER_EMAIL_SMTP_USE_TLS") is None:
@@ -110,9 +108,7 @@ class InvitationEmailSender:
                 raise RuntimeError("Console email delivery requires DASH_SERVER_EMAIL_FROM.")
             return
         if spec is None:
-            raise RuntimeError(
-                "DASH_SERVER_EMAIL_PROVIDER must be one of: " + ", ".join(_PROVIDERS) + "."
-            )
+            raise RuntimeError("DASH_SERVER_EMAIL_PROVIDER must be one of: " + ", ".join(_PROVIDERS) + ".")
         if not self.from_email:
             raise RuntimeError("Email delivery requires DASH_SERVER_EMAIL_FROM.")
         if not self.smtp_host:
@@ -224,9 +220,7 @@ class InvitationEmailSender:
         if message:
             plain_lines.extend(["", "Message from the inviter:", message])
         inviter_html = (
-            f"<p>Invited by: <strong>{_html_escape(inviter_display_name)}</strong></p>"
-            if inviter_display_name
-            else ""
+            f"<p>Invited by: <strong>{_html_escape(inviter_display_name)}</strong></p>" if inviter_display_name else ""
         )
         html_message = f"<p>{_html_escape(message)}</p>" if message else ""
         html = f"""

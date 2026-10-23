@@ -20,6 +20,7 @@ from _mcp_helpers import (
     _artifact_sensitive_app_py,
 )
 
+
 @pytest.mark.slow
 def test_repo_reconcile_applies_direct_git_desired_state_change(client, app):
     create_response = _call_mcp(
@@ -324,9 +325,7 @@ def test_app_build_force_clean_bypasses_cached_dependency_state(app, client, mon
 
 
 @pytest.mark.slow
-def test_app_deploy_draft_force_clean_reinstalls_dependencies_once_per_deploy(
-    app, client, monkeypatch
-):
+def test_app_deploy_draft_force_clean_reinstalls_dependencies_once_per_deploy(app, client, monkeypatch):
     installer = app.extensions["dependency_installer"]
     installer.enabled = False
     calls: list[list[str]] = []
@@ -703,9 +702,7 @@ def test_app_build_surfaces_failed_artifact_preflight(app, client):
     assert payload["error"]["category"] == "artifact_preflight_failed"
     assert payload["revision"]["revision_number"] == 2
     assert payload["preflight"]["status"] == "failed"
-    failed_probe = next(
-        probe for probe in payload["preflight"]["probes"] if probe.get("name") == "static_assets"
-    )
+    failed_probe = next(probe for probe in payload["preflight"]["probes"] if probe.get("name") == "static_assets")
     assert failed_probe["status"] == "failed"
     assert "Synthetic preflight failure." in build_result["content"][0]["text"]
     assert b"Preflight Build v1" in client.get("/apps/preflight-build").data
@@ -1471,4 +1468,3 @@ def test_mcp_surfaces_startup_runtime_mount_failure(client):
     )
     assert standby_errors["errors"][-1]["source"] == "runtime"
     assert standby_errors["errors"][-1]["category"] == "runtime_crash"
-

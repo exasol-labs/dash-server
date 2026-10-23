@@ -73,12 +73,9 @@ class DependencyInstaller:
         state_path = self.state_root / f"{app_name}.json"
         requirements_hash = self._requirements_hash(requirements)
         state = self._read_state(state_path)
-        if (
-            not force_clean
-            and (
+        if not force_clean and (
             state.get("requirements_hash") == requirements_hash
             and state.get("python_executable") == self.python_executable
-            )
         ):
             return {
                 "status": "cached",

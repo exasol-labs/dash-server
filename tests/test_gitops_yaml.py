@@ -57,7 +57,7 @@ ROUNDTRIP_CASES: list[dict] = [
     # Strings that look like reserved tokens must stay strings.
     {"spec": {"a": "true", "b": "false", "c": "null", "d": "~"}},
     # Embedded quotes.
-    {"spec": {"quote": 'say "hi"', "path": 'C:\\a\\b'}},
+    {"spec": {"quote": 'say "hi"', "path": "C:\\a\\b"}},
     # Leading indicator characters.
     {"spec": {"anchor": "*ref", "comment": "# not a comment", "dash": "- item"}},
     # Whitespace-significant values.
@@ -128,9 +128,4 @@ def test_bootstrap_manifest_format_unchanged_for_colon_free_data() -> None:
             "spec": {"route": "/apps/demo", "gitTag": "dash-server/demo/r000001"},
         }
     )
-    assert text == (
-        "apiVersion: dash-server/v1\n"
-        "spec:\n"
-        "  route: /apps/demo\n"
-        "  gitTag: dash-server/demo/r000001\n"
-    )
+    assert text == ("apiVersion: dash-server/v1\nspec:\n  route: /apps/demo\n  gitTag: dash-server/demo/r000001\n")

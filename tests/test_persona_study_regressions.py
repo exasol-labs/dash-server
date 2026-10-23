@@ -191,9 +191,7 @@ def test_phase0_related_resources_deduped_in_error_guidance(tmp_path: Path) -> N
     )
     structured = response["result"]["structuredContent"]
     related = structured["guidance"].get("related_resources", [])
-    assert len(related) == len(set(related)), (
-        f"related_resources contains duplicates: {related!r}"
-    )
+    assert len(related) == len(set(related)), f"related_resources contains duplicates: {related!r}"
 
 
 # -- Phase 1 — diagnostics coherence cluster --------------------------------
@@ -214,9 +212,7 @@ def test_bug_002_004_sql_smoke_probe_appears_in_healthcheck(tmp_path: Path) -> N
     runtime = app.extensions["runtime_service"]
     payload = runtime.run_healthcheck("demo", record=False)
     probe_names = [probe["name"] for probe in payload["health"]["probes"]]
-    assert "sql_smoke" in probe_names, (
-        f"sql_smoke probe missing from healthcheck. Found: {probe_names}"
-    )
+    assert "sql_smoke" in probe_names, f"sql_smoke probe missing from healthcheck. Found: {probe_names}"
 
 
 @pytest.mark.slow
@@ -247,10 +243,7 @@ def test_bug_004_collect_diagnostics_surfaces_latest_data_layer_error(tmp_path: 
 
     payload = runtime.collect_diagnostics("demo")
     assert payload["latest_data_layer_error"] is not None, payload.keys()
-    assert (
-        payload["latest_data_layer_error"]["details"]["sql_file"]
-        == "queries/business/summary.sql"
-    )
+    assert payload["latest_data_layer_error"]["details"]["sql_file"] == "queries/business/summary.sql"
     # When no other error is present, the recovery cascade picks up data_layer.
     assert any(
         "queries/business/summary.sql" in step or "exasol" in step.lower() or "SQL" in step
@@ -367,12 +360,12 @@ def test_bug_007_scaffold_follows_relationship_hints() -> None:
     }
     trend = _schema_trend_sql(blueprint)
     # Joins into ORDERS and uses ORDER_DATE as LABEL.
-    assert "JOIN \"MART\".\"ORDERS\"" in trend, trend
-    assert "j.\"ORDER_DATE\"" in trend, trend
+    assert 'JOIN "MART"."ORDERS"' in trend, trend
+    assert 'j."ORDER_DATE"' in trend, trend
     summary = _schema_summary_sql(blueprint)
     # Derived REVENUE measure appears in summary.sql.
-    assert "\"QUANTITY\" * \"NET_UNIT_PRICE\"" in summary, summary
-    assert "AS \"REVENUE\"" in summary, summary
+    assert '"QUANTITY" * "NET_UNIT_PRICE"' in summary, summary
+    assert 'AS "REVENUE"' in summary, summary
 
 
 @pytest.mark.parametrize(
@@ -415,7 +408,7 @@ def test_bug_009_kpi_trend_scaffold_quotes_reserved_value_alias() -> None:
     for sql in (_kpi_summary_sql(), _kpi_trend_sql(), _placeholder_business_trend_sql()):
         if "AS VALUE" in sql:
             # the bare `AS VALUE` is the bug — quoted `AS "VALUE"` should be the only form
-            assert "AS \"VALUE\"" in sql, sql
+            assert 'AS "VALUE"' in sql, sql
             # double-check no unquoted occurrence remains
             assert "AS VALUE " not in sql and "AS VALUE\n" not in sql, sql
 
@@ -459,14 +452,10 @@ def test_bug_010_app_create_from_files_forwards_data_sources(tmp_path: Path) -> 
     )
     assert response["result"]["structuredContent"]["app"]["name"] == "ds-fwd"
 
-    manifest_path = (
-        Path(app.config["INSTANCE_PATH"]) / "gitops-repo" / "apps" / "ds-fwd" / "dash-app.json"
-    )
+    manifest_path = Path(app.config["INSTANCE_PATH"]) / "gitops-repo" / "apps" / "ds-fwd" / "dash-app.json"
     assert manifest_path.exists(), "manifest was not written to gitops"
     manifest = json.loads(manifest_path.read_text())
-    assert manifest["data_sources"] == {
-        "primary": {"kind": "exasol", "profile": "analytics-prod"}
-    }, manifest
+    assert manifest["data_sources"] == {"primary": {"kind": "exasol", "profile": "analytics-prod"}}, manifest
 
 
 _HELPER_APP_PY = (
@@ -564,7 +553,7 @@ def test_bug_30_data_sources_argument_is_merged_into_a_supplied_manifest(tmp_pat
         data_sources=_BINDING,
         files=[
             {"path": "app.py", "content": _HELPER_APP_PY},
-            {"path": "queries/kpi.sql", "content": "SELECT 1 AS \"N\" FROM DUAL\n"},
+            {"path": "queries/kpi.sql", "content": 'SELECT 1 AS "N" FROM DUAL\n'},
             _manifest_file(template="exasol-analytics"),
         ],
     )
@@ -602,7 +591,7 @@ def test_bug_30_manifest_only_template_still_injects_the_helper(tmp_path: Path) 
         name="b30",
         files=[
             {"path": "app.py", "content": _HELPER_APP_PY},
-            {"path": "queries/kpi.sql", "content": "SELECT 1 AS \"N\" FROM DUAL\n"},
+            {"path": "queries/kpi.sql", "content": 'SELECT 1 AS "N" FROM DUAL\n'},
             _manifest_file(template="exasol-analytics", data_sources=_BINDING),
         ],
     )
@@ -781,10 +770,7 @@ def test_bug_011_exasol_profile_create_local_default_no_overwrite(tmp_path: Path
         }
     )
     assert second["result"]["isError"] is True
-    assert (
-        second["result"]["structuredContent"]["error"]["category"]
-        == "exasol_profile_already_exists"
-    )
+    assert second["result"]["structuredContent"]["error"]["category"] == "exasol_profile_already_exists"
 
     # With overwrite=true the upsert succeeds and the response flags the rewrite.
     third_args = {**second_args, "overwrite": True}
@@ -866,9 +852,12 @@ def test_data_layer_probe_clears_once_the_failing_file_succeeds_again(tmp_path: 
 
     # The same error recurring within the rate-limit window is recorded again, because the
     # file succeeded in between; otherwise the probe would report green while it fails.
-    assert diagnostics.record_data_layer_error(
-        "demo", sql_file="queries/trend.sql", profile_name="kit", error_text="broken again", revision_number=1
-    ) is not None
+    assert (
+        diagnostics.record_data_layer_error(
+            "demo", sql_file="queries/trend.sql", profile_name="kit", error_text="broken again", revision_number=1
+        )
+        is not None
+    )
     assert data_layer_status() == "failed"
 
 

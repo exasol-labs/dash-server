@@ -177,12 +177,30 @@ def test_generated_semantic_app_formats_and_labels_by_the_model(tmp_path: Any) -
     app = _load_semantic_app(tmp_path)
     fields = app._fields_by_column(
         [
-            {"SQL_COLUMN_NAME": "TOTAL_REVENUE", "FIELD_KIND": "METRIC", "DISPLAY_NAME": "Total Revenue",
-             "FORMAT_HINT": "currency", "UNIT_HINT": "EUR", "IS_CERTIFIED": True},
-            {"SQL_COLUMN_NAME": "GROSS_MARGIN_PCT", "FIELD_KIND": "METRIC", "DISPLAY_NAME": "Gross Margin %",
-             "FORMAT_HINT": "percentage", "UNIT_HINT": None, "IS_CERTIFIED": False},
-            {"SQL_COLUMN_NAME": "ORDER_MONTH", "FIELD_KIND": "DIMENSION", "DISPLAY_NAME": "Order Month",
-             "FORMAT_HINT": "month", "UNIT_HINT": None, "IS_CERTIFIED": True},
+            {
+                "SQL_COLUMN_NAME": "TOTAL_REVENUE",
+                "FIELD_KIND": "METRIC",
+                "DISPLAY_NAME": "Total Revenue",
+                "FORMAT_HINT": "currency",
+                "UNIT_HINT": "EUR",
+                "IS_CERTIFIED": True,
+            },
+            {
+                "SQL_COLUMN_NAME": "GROSS_MARGIN_PCT",
+                "FIELD_KIND": "METRIC",
+                "DISPLAY_NAME": "Gross Margin %",
+                "FORMAT_HINT": "percentage",
+                "UNIT_HINT": None,
+                "IS_CERTIFIED": False,
+            },
+            {
+                "SQL_COLUMN_NAME": "ORDER_MONTH",
+                "FIELD_KIND": "DIMENSION",
+                "DISPLAY_NAME": "Order Month",
+                "FORMAT_HINT": "month",
+                "UNIT_HINT": None,
+                "IS_CERTIFIED": True,
+            },
         ]
     )
 
@@ -206,10 +224,17 @@ def test_generated_semantic_app_shows_the_last_finished_validation(tmp_path: Any
     from datetime import datetime
 
     app = _load_semantic_app(tmp_path)
-    fields = {"TOTAL_REVENUE": {"FIELD_KIND": "METRIC", "IS_CERTIFIED": True},
-              "DRAFT": {"FIELD_KIND": "METRIC", "IS_CERTIFIED": False}}
-    row = {"MODEL_NAME": "sales", "VERSION_NUMBER": 3, "VALIDATION_STATUS": "WARNING", "WARNING_COUNT": 2,
-           "FINISHED_AT": datetime(2026, 10, 23, 12, 15)}
+    fields = {
+        "TOTAL_REVENUE": {"FIELD_KIND": "METRIC", "IS_CERTIFIED": True},
+        "DRAFT": {"FIELD_KIND": "METRIC", "IS_CERTIFIED": False},
+    }
+    row = {
+        "MODEL_NAME": "sales",
+        "VERSION_NUMBER": 3,
+        "VALIDATION_STATUS": "WARNING",
+        "WARNING_COUNT": 2,
+        "FINISHED_AT": datetime(2026, 10, 23, 12, 15),
+    }
 
     strip = app._provenance_strip(row, fields)
 

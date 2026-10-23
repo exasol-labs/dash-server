@@ -92,9 +92,7 @@ class DependencyEnvironmentService:
         self.helper_package_name = helper_package_name
         # Path to the local source of the helper package — when set, we install it editable
         # rather than from PyPI. In dev installs (`pip install -e .`) this is `src/dash_server_runtime`.
-        self.helper_package_source = (
-            Path(helper_package_source) if helper_package_source else None
-        )
+        self.helper_package_source = Path(helper_package_source) if helper_package_source else None
         # Phase 5a: backend identity. Phase 1 ships only "venv" (stdlib pip). When the uv
         # backend lands, this becomes "uv". The wheel-cache GC checks this so it doesn't
         # accidentally prune a stdlib cache (where every file has st_nlink == 1).
@@ -150,9 +148,7 @@ class DependencyEnvironmentService:
             record = self._read_record(env_dir)
             if record.get("status") == "ready":
                 self._touch_last_used(env_dir, record)
-                return self._success_payload(
-                    environment_id, env_dir, record, cached=True, requirements=requirements
-                )
+                return self._success_payload(environment_id, env_dir, record, cached=True, requirements=requirements)
             # Stale or partial install — wipe and rebuild.
             shutil.rmtree(env_dir, ignore_errors=True)
 
@@ -416,9 +412,7 @@ class DependencyEnvironmentService:
         if self._env_gc_thread is not None and self._env_gc_thread.is_alive():
             return
         self._env_gc_stop.clear()
-        self._env_gc_thread = threading.Thread(
-            target=self._env_gc_loop, daemon=True, name="dash-server-env-gc"
-        )
+        self._env_gc_thread = threading.Thread(target=self._env_gc_loop, daemon=True, name="dash-server-env-gc")
         self._env_gc_thread.start()
 
     def stop_env_gc(self) -> None:
@@ -436,9 +430,7 @@ class DependencyEnvironmentService:
         if self._wheel_gc_thread is not None and self._wheel_gc_thread.is_alive():
             return
         self._wheel_gc_stop.clear()
-        self._wheel_gc_thread = threading.Thread(
-            target=self._wheel_gc_loop, daemon=True, name="dash-server-wheel-gc"
-        )
+        self._wheel_gc_thread = threading.Thread(target=self._wheel_gc_loop, daemon=True, name="dash-server-wheel-gc")
         self._wheel_gc_thread.start()
 
     def stop_wheel_cache_gc(self) -> None:
@@ -451,9 +443,7 @@ class DependencyEnvironmentService:
     def _env_gc_loop(self) -> None:
         while not self._env_gc_stop.wait(self.env_gc_interval_seconds):
             try:
-                referenced = (
-                    self.referenced_ids_provider() if self.referenced_ids_provider else set()
-                )
+                referenced = self.referenced_ids_provider() if self.referenced_ids_provider else set()
                 self.run_env_gc_once(
                     referenced_ids=referenced,
                     disk_cap_bytes=self.disk_cap_bytes,
@@ -513,9 +503,7 @@ class DependencyEnvironmentService:
             helper_target = self._helper_install_target()
             commands: list[list[str]] = []
             if helper_target:
-                commands.append(
-                    [str(python_executable), "-m", "pip", "install", "--no-build-isolation", helper_target]
-                )
+                commands.append([str(python_executable), "-m", "pip", "install", "--no-build-isolation", helper_target])
             # 3) Install user requirements with the wheel cache as the find-links source.
             commands.append(
                 [
@@ -583,9 +571,7 @@ class DependencyEnvironmentService:
                 "force_clean": force_clean,
             }
             self._write_record(env_dir, record)
-            return self._success_payload(
-                environment_id, env_dir, record, cached=False, requirements=requirements
-            )
+            return self._success_payload(environment_id, env_dir, record, cached=False, requirements=requirements)
         except Exception as exc:
             return self._failure_payload(
                 env_dir,
@@ -707,7 +693,9 @@ class DependencyEnvironmentService:
         return None
 
     def _base_python_tag(self) -> str:
-        return f"{self.base_python_executable}|{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        return (
+            f"{self.base_python_executable}|{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        )
 
     def _timestamp(self) -> str:
         return now_iso()
@@ -733,5 +721,3 @@ def _decode_stream_tail(value: bytes | str | None, *, limit: int = 4000) -> str:
     if isinstance(value, bytes):
         return value[-limit:].decode("utf-8", errors="replace")
     return value[-limit:]
-
-

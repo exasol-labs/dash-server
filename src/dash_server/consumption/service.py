@@ -105,9 +105,7 @@ class ConsumptionService:
         expired = self.cleanup_expired_artifacts()
         now = datetime.now(timezone.utc)
         job_cutoff = to_iso(now - timedelta(seconds=self.policy.job_retention_seconds))
-        audit_cutoff = (
-            to_iso(now - timedelta(seconds=self.policy.audit_retention_seconds))
-        )
+        audit_cutoff = to_iso(now - timedelta(seconds=self.policy.audit_retention_seconds))
         pruned_jobs, orphaned_artifacts = self.store.prune_expired_jobs(
             finished_before=job_cutoff,
             audit_before=audit_cutoff,

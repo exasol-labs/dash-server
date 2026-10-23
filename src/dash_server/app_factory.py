@@ -303,9 +303,7 @@ def _resolve_instance_path(test_config: dict[str, Any] | None, project_root: Pat
 
     if test_config and test_config.get("INSTANCE_PATH"):
         return str(test_config["INSTANCE_PATH"])
-    env_override = os.environ.get("DASH_SERVER_INSTANCE_PATH") or os.environ.get(
-        "FLASK_INSTANCE_PATH"
-    )
+    env_override = os.environ.get("DASH_SERVER_INSTANCE_PATH") or os.environ.get("FLASK_INSTANCE_PATH")
     if env_override:
         return env_override
     return str(project_root / "instance")
@@ -330,13 +328,10 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
         return
     if not dsn or not user:
         raise _startup_error(
-            "EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_DSN or "
-            "DASH_SERVER_EXASOL_USER is missing."
+            "EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_DSN or DASH_SERVER_EXASOL_USER is missing."
         )
     if not secret_env_var:
-        raise _startup_error(
-            "EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_SECRET_ENV_VAR is missing."
-        )
+        raise _startup_error("EXASOL bootstrap profile is enabled but DASH_SERVER_EXASOL_SECRET_ENV_VAR is missing.")
 
     settings: dict[str, Any] = {
         "name": str(profile_name),
@@ -430,12 +425,10 @@ def _resolve_roots(app: Flask) -> Roots:
         dependency_state_root=app.config["DEPENDENCY_STATE_ROOT"]
         or Config.default_dependency_state_root(instance_path),
         gitops_repo_path=app.config["GITOPS_REPO_PATH"] or Config.default_gitops_repo_path(instance_path),
-        exasol_secrets_root=app.config["EXASOL_SECRETS_ROOT"]
-        or Config.default_exasol_secrets_root(instance_path),
+        exasol_secrets_root=app.config["EXASOL_SECRETS_ROOT"] or Config.default_exasol_secrets_root(instance_path),
         app_environments_root=app.config["APP_ENVIRONMENTS_ROOT"]
         or Config.default_app_environments_root(instance_path),
-        app_wheel_cache_root=app.config["APP_WHEEL_CACHE_ROOT"]
-        or Config.default_app_wheel_cache_root(instance_path),
+        app_wheel_cache_root=app.config["APP_WHEEL_CACHE_ROOT"] or Config.default_app_wheel_cache_root(instance_path),
         app_pycache_root=app.config["APP_PYCACHE_ROOT"] or Config.default_app_pycache_root(instance_path),
     )
     # Load-bearing write-backs: downstream services read these from app.config.
@@ -469,7 +462,7 @@ def _build_dependency_layer(
         wheel_gc_interval = float(app.config["APP_WHEEL_CACHE_GC_INTERVAL_SECONDS"])
         env_retention_seconds = float(app.config["APP_ENV_GC_RETENTION_DAYS"]) * 24 * 3600
         env_disk_cap_gb = float(app.config["APP_ENVIRONMENTS_DISK_CAP_GB"])
-        env_disk_cap_bytes = int(env_disk_cap_gb * (1024 ** 3))
+        env_disk_cap_bytes = int(env_disk_cap_gb * (1024**3))
 
         dependency_environment_service = DependencyEnvironmentService(
             environments_root=roots.app_environments_root,
@@ -489,9 +482,7 @@ def _build_dependency_layer(
             disk_cap_bytes=env_disk_cap_bytes,
         )
         # Reference-set provider: env GC asks the registry which env ids are still live.
-        dependency_environment_service.referenced_ids_provider = (
-            registry.list_referenced_environment_ids
-        )
+        dependency_environment_service.referenced_ids_provider = registry.list_referenced_environment_ids
         # Background drivers respect their off-switches (default off).
         dependency_environment_service.start_env_gc()
         dependency_environment_service.start_wheel_cache_gc()
@@ -595,9 +586,7 @@ def _build_services(
     )
     if not git_repo_service.is_bootstrapped():
         runtime_service.ensure_demo_app()
-        git_repo_service.ensure_phase0_repository(
-            runtime_service.workspace_service.read_all_files("demo")
-        )
+        git_repo_service.ensure_phase0_repository(runtime_service.workspace_service.read_all_files("demo"))
     for hosted_app in registry.list_apps():
         runtime_service.workspace_service.ensure_workspace_backend(hosted_app.name)
     runtime_service.backfill_revision_git_metadata()
