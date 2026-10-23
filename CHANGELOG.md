@@ -201,6 +201,7 @@ data a dashboard depends on. It also moves to pyexasol 3 and returns typed query
   calling helpers defined on their siblings. `types-openpyxl` is added to the dev extras.
 - The test suite left worker and baseline processes running after every run of the
   isolated-runtime tests. Tests now stop every worker manager they create.
+- Share links and invitations no longer use `datetime.utcnow()`, which Python 3.12 deprecates.
 
 ## [0.1.1] - 2026-09-28
 

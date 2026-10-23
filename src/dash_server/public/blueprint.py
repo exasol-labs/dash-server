@@ -8,6 +8,7 @@ import hashlib
 from flask import Blueprint, Response, current_app, jsonify, redirect, render_template
 
 from dash_server.auth import Principal, current_auth_context
+from dash_server.timestamps import utc_now_naive
 
 
 def create_public_blueprint() -> Blueprint:
@@ -197,7 +198,7 @@ def create_public_blueprint() -> Blueprint:
 
 def _is_expired(expires_at: str) -> bool:
     try:
-        return datetime.fromisoformat(expires_at) <= datetime.utcnow()
+        return datetime.fromisoformat(expires_at) <= utc_now_naive()
     except ValueError:
         return False
 

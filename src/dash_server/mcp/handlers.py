@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from datetime import datetime, timedelta
+from datetime import timedelta
 import hashlib
 import json
 import secrets
@@ -19,6 +19,7 @@ from dash_server.exasol import ExasolDashboardService
 from dash_server.exceptions import DashServerError
 from dash_server.mailer import InvitationEmailSender
 from dash_server.registry.models import Invitation, ShareLink
+from dash_server.timestamps import utc_now_naive
 
 
 def _healthcheck_text(health: dict[str, Any]) -> str:
@@ -1373,7 +1374,7 @@ class HandlersMixin(MCPServerHost):
         app = self._require_existing_app(name, tool_name="app_share_create_one_time_link")
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-        expires_at = (datetime.utcnow() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
+        expires_at = (utc_now_naive() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
         link = self.runtime_service.registry.create_share_link(
             name,
             token_hash=token_hash,
@@ -1474,7 +1475,7 @@ class HandlersMixin(MCPServerHost):
         app = self._require_existing_app(name, tool_name="app_invite_external_user")
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-        expires_at = (datetime.utcnow() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
+        expires_at = (utc_now_naive() + timedelta(hours=ttl_hours)).replace(microsecond=0).isoformat()
         invitation = self.runtime_service.registry.create_invitation(
             name,
             token_hash=token_hash,
