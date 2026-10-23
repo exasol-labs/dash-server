@@ -363,7 +363,7 @@ class HealthProber:
                     "changed after this revision was built. The definitions may be unchanged, but the numbers move: "
                     "check the affected panels, and show coverage and unresolved keys to viewers."
                 )
-            changed = _changed_definitions(built_definitions, details_in.get("definitions") or [])
+            changed = _changed_definitions(built_definitions, details_in.get("definitions") or [], models)
             if changed:
                 layout_moved = {model for model, changes in fusion_changes.items() if any(c.startswith("layout:") for c in changes)}
                 for entry in changed:
@@ -371,9 +371,10 @@ class HealthProber:
                         entry["fusion_layout_changed"] = True
                 details["changed_since_build"] = changed
                 details["changed_since_build_note"] = (
-                    "These metric or dimension definitions changed after this revision was built. The dashboard "
-                    "queries the model live, so it already shows the new definitions; check that each panel's "
-                    "label and meaning still match."
+                    "These metric or dimension definitions changed after this revision was built (change: "
+                    "definition, renamed, missing, or not_compiled for a file that no longer compiles; see "
+                    "sql_smoke). The dashboard queries the model live, so it already shows the new definitions; "
+                    "check that each panel's label and meaning still match."
                     + (
                         " Entries with fusion_layout_changed belong to a model whose fusion layout also changed "
                         "(see fusion_changed_since_build): a partition boundary or authority change moves the hash "
@@ -648,29 +649,58 @@ def _first_issue_text(model: dict[str, Any]) -> str:
     return f": {issue['rule_code']}{where}: {str(issue['message']).rstrip('.')}"
 
 
-def _changed_definitions(built: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Fields whose definition hash differs between the build-time and the current compile."""
+def _changed_definitions(
+    built: list[dict[str, Any]], current: list[dict[str, Any]], models: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Every field used at build time whose current definition differs, or that can't be found.
 
+    ``change`` says how: ``definition`` (the hash moved), ``renamed`` (the field now answers
+    under ``renamed_to``; its old name is a synonym), ``missing`` (no longer in the compile),
+    or ``not_compiled`` (the file doesn't compile now, so its fields can't be compared).
+    """
+
+    renamed_to = {
+        (model["model"], synonym["kind"], synonym["synonym"]): synonym["field"]
+        for model in models or []
+        for synonym in model.get("synonyms") or []
+    }
     current_by_path = {entry.get("path"): entry for entry in current}
-    changed = []
+    changed: list[dict[str, Any]] = []
     for entry in built:
+        if entry.get("lane") is not None or not (entry.get("metrics") or entry.get("dimensions")):
+            continue
         now = current_by_path.get(entry.get("path"))
         if now is None:
+            changed.append(
+                {
+                    "path": entry.get("path"),
+                    "model": entry.get("model"),
+                    "change": "not_compiled",
+                    "fields": sorted([*(entry.get("metrics") or {}), *(entry.get("dimensions") or {})]),
+                }
+            )
             continue
         for kind in ("metrics", "dimensions"):
+            current_hashes = now.get(kind) or {}
             for field, built_hash in (entry.get(kind) or {}).items():
-                current_hash = (now.get(kind) or {}).get(field)
-                if current_hash is not None and current_hash != built_hash:
+                record = {
+                    "path": entry.get("path"),
+                    "model": entry.get("model"),
+                    "field": field,
+                    "kind": kind[:-1],
+                    "built_hash": built_hash,
+                }
+                if field in current_hashes:
+                    if current_hashes[field] != built_hash:
+                        changed.append({**record, "change": "definition", "current_hash": current_hashes[field]})
+                    continue
+                new_name = renamed_to.get((entry.get("model"), kind[:-1], field))
+                if new_name is not None and new_name in current_hashes:
                     changed.append(
-                        {
-                            "path": entry.get("path"),
-                            "model": entry.get("model"),
-                            "field": field,
-                            "kind": kind[:-1],
-                            "built_hash": built_hash,
-                            "current_hash": current_hash,
-                        }
+                        {**record, "change": "renamed", "renamed_to": new_name, "current_hash": current_hashes[new_name]}
                     )
+                else:
+                    changed.append({**record, "change": "missing", "current_hash": None})
     return changed
 
 

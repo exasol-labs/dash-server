@@ -268,8 +268,10 @@ Rules:
   can't leak into other apps sharing the profile.
 
 With the preprocessor active, the SQL smoke check (during builds and in `app_run_healthcheck`)
-validates Semantic SQL exactly as it runs, so a renamed or dropped metric fails the next
-healthcheck instead of waiting for a viewer. A query file that reads a published semantic model
+validates Semantic SQL exactly as it runs, so a dropped metric fails the next healthcheck
+instead of waiting for a viewer. (A query Semantic Views refuses only inside the check's nested
+`WHERE 1=0` probe, such as a renamed metric's old name in an ungrouped select, is checked through
+its `COMPILE_SQL` output instead and passes with a warning.) A query file that reads a published semantic model
 on a profile *without* the preprocessor fails the smoke check with the `session_init_sql` line
 to add. `app_run_healthcheck` also reports each model the app reads in a `semantic_models`
 probe: it fails when a model is `INVALID`, `PRECONDITION`, or `NOT_PUBLISHED`, and lists models

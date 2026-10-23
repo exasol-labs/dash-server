@@ -29,7 +29,12 @@ class _Connection:
         issues: list[tuple[Any, ...]] | None = None,
         fusion_layout: list[tuple[Any, ...]] | None = None,
         fusion_health: list[tuple[Any, ...]] | None = None,
+        synonyms: list[tuple[str, str, str, str]] | None = None,
+        refuse_nested: str | None = None,
     ) -> None:
+        self.synonyms = synonyms or []
+        # A field name Semantic Views refuses inside a nested select (but compiles top-level).
+        self.refuse_nested = refuse_nested
         self.fusion_layout = fusion_layout or []
         self.fusion_health = fusion_health or []
         self.compile_status = compile_status
@@ -60,8 +65,16 @@ class _Connection:
                 "object": "SALES",
                 "definition_hashes": {"metrics": {"total_revenue": "h-revenue"}, "dimensions": {}},
             }
-            row = (self.compile_status, json.dumps(plan))
-            return SimpleNamespace(column_names=lambda: ["STATUS", "PLAN_JSON"], fetchone=lambda: row)
+            row = (self.compile_status, json.dumps(plan), 'SELECT SUM(x) AS "TOTAL_REVENUE" FROM MART.ORDER_LINES')
+            return SimpleNamespace(column_names=lambda: ["STATUS", "PLAN_JSON", "GENERATED_SQL"], fetchone=lambda: row)
+        if "SEMANTIC_SOURCE.SYNONYMS" in sql:
+            return SimpleNamespace(fetchall=lambda: self.synonyms)
+        if self.refuse_nested and self.refuse_nested in sql and sql.startswith("SELECT * FROM ("):
+            self.statements.append(sql)
+            raise RuntimeError(
+                f"(\n    message     =>  SEMANTIC_QUERY_020: Unknown semantic field: {self.refuse_nested}. "
+                "(Session: 1)\n    dsn         =>  host:8563\n)"
+            )
         if "CHECK_FUSION_HEALTH" in sql:
             self.statements.append(sql)
             columns = ["ENTITY_NAME", "ATTRIBUTE_TYPE", "ATTRIBUTE_NAME", "FUSION_STRATEGY", "FIRST_SOURCE",
@@ -266,6 +279,7 @@ def test_semantic_models_probe_lists_definitions_changed_since_build() -> None:
             "field": "total_revenue",
             "kind": "metric",
             "built_hash": "old",
+            "change": "definition",
             "current_hash": "new",
         }
     ]
@@ -477,3 +491,78 @@ def test_read_only_semantic_checks_run_unwrapped_and_other_scripts_are_skipped()
     assert "records an unfinished validation run" in (coverage.skip_reason or "")
     assert etl.skip_reason == "not run by the smoke check: EXECUTE SCRIPT ETL.RELOAD may change data"
     assert not [sql for sql in connection.statements if "RELOAD" in sql or "PARTITION_COVERAGE" in sql]
+
+
+def test_a_query_refused_only_when_nested_is_checked_through_its_compiled_sql() -> None:
+    connection = _Connection(models=[SALES_MODEL], preprocessor=PREPROCESSOR, refuse_nested="total_revenue")
+
+    (result,) = _smoke(connection, [SEMANTIC_QUERY]).files
+
+    assert result.outcome == "passed"
+    assert connection.statements[-1] == 'SELECT * FROM (\nSELECT SUM(x) AS "TOTAL_REVENUE" FROM MART.ORDER_LINES\n) WHERE 1=0'
+    assert "SEMANTIC_QUERY_020: Unknown semantic field: total_revenue" in result.warnings[0]
+    assert "host:8563" not in result.warnings[0]
+    assert result.definitions is not None and result.definitions["metrics"] == {"total_revenue": "h-revenue"}
+
+    # A query that doesn't compile either still fails, with the original error.
+    refused = _Connection(
+        models=[SALES_MODEL], preprocessor=PREPROCESSOR, refuse_nested="total_revenue", compile_status="ERROR"
+    )
+    (failed,) = _smoke(refused, [SEMANTIC_QUERY]).files
+    assert failed.outcome == "failed"
+    assert "SEMANTIC_QUERY_020" in (failed.error_text or "")
+
+
+def test_synonyms_of_referenced_models_are_recorded() -> None:
+    connection = _Connection(
+        models=[SALES_MODEL],
+        preprocessor=PREPROCESSOR,
+        synonyms=[("sales", "METRIC", "revenue", "total_revenue"), ("sales", "DIMENSION", "region", "customer_region")],
+    )
+
+    (model,) = _smoke(connection, [SEMANTIC_QUERY]).semantic_models
+
+    assert model.synonyms == (
+        {"kind": "metric", "synonym": "revenue", "field": "total_revenue"},
+        {"kind": "dimension", "synonym": "region", "field": "customer_region"},
+    )
+
+
+def test_drift_report_keeps_renamed_missing_and_uncompiled_fields() -> None:
+    from dash_server.runtime.prober import HealthProber
+
+    model = {
+        "model": "sales",
+        "published_schema": "SEMANTIC_SALES",
+        "readiness": "VALID",
+        "synonyms": [{"kind": "metric", "synonym": "total_revenue", "field": "recognized_revenue"}],
+    }
+    built = [
+        {"path": "queries/kpis.sql", "model": "sales", "metrics": {"total_revenue": "h1", "units_sold": "h2"}},
+        {"path": "queries/broken.sql", "model": "sales", "metrics": {"units_sold": "h2"}, "dimensions": {"region": "h3"}},
+        {"path": "queries/raw.sql", "lane": "raw", "models": ["sales"]},
+    ]
+    # kpis.sql still compiles (the old name is a synonym); broken.sql no longer does.
+    current = [{"path": "queries/kpis.sql", "model": "sales", "metrics": {"recognized_revenue": "h1"}}]
+    smoke_probe = {"name": "sql_smoke", "details": {"semantic_models": [model], "definitions": current}}
+
+    probe = HealthProber(svc=None)._semantic_models_probe(smoke_probe, built_definitions=built)  # type: ignore[arg-type]
+
+    changes = {(entry["path"], entry.get("field"), entry["change"]) for entry in probe["details"]["changed_since_build"]}
+    assert changes == {
+        ("queries/kpis.sql", "total_revenue", "renamed"),
+        ("queries/kpis.sql", "units_sold", "missing"),
+        ("queries/broken.sql", None, "not_compiled"),
+    }
+    renamed = next(entry for entry in probe["details"]["changed_since_build"] if entry["change"] == "renamed")
+    assert (renamed["renamed_to"], renamed["current_hash"]) == ("recognized_revenue", "h1")
+    uncompiled = next(entry for entry in probe["details"]["changed_since_build"] if entry["change"] == "not_compiled")
+    assert uncompiled["fields"] == ["region", "units_sold"]
+
+    from dash_server.mcp.handlers import _healthcheck_text
+
+    text = _healthcheck_text({"status": "degraded", "probes": [probe]})
+    assert (
+        "definitions changed since build: queries/broken.sql no longer compiles, "
+        "sales.total_revenue renamed to recognized_revenue, sales.units_sold missing"
+    ) in text

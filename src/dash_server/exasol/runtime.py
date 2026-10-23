@@ -96,6 +96,13 @@ def error_reference(error_text: str) -> str:
     return hashlib.sha1(error_text.strip().encode("utf-8", errors="replace")).hexdigest()[:8]
 
 
+def database_message(error_text: str) -> str:
+    """The database's own message from a pyexasol error, or ``""`` for any other error text."""
+
+    match = _PYEXASOL_MESSAGE_RE.search(error_text)
+    return _SESSION_SUFFIX_RE.sub("", match.group(1)).strip() if match else ""
+
+
 def viewer_error_message(error_text: str) -> str:
     """The part of a data-layer error that is safe to show a dashboard viewer.
 
@@ -104,8 +111,7 @@ def viewer_error_message(error_text: str) -> str:
     full error goes to `dash://apps/{name}/errors`; the reference finds it there.
     """
 
-    match = _PYEXASOL_MESSAGE_RE.search(error_text)
-    message = _SESSION_SUFFIX_RE.sub("", match.group(1)).strip() if match else ""
+    message = database_message(error_text)
     if not message:
         message = "The data source could not answer this query."
     return f"{message} (error ref {error_reference(error_text)})"

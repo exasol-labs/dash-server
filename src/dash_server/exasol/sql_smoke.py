@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from .runtime import database_message
 from .semantic_models import (
     SemanticModelRef,
     governed_sources,
@@ -46,6 +47,7 @@ from .semantic_models import (
     referenced_models,
     session_preprocessor,
     with_fusion,
+    with_synonyms,
     with_validation_issues,
 )
 
@@ -178,9 +180,12 @@ def run_sql_smoke(
                 )
             )
         referenced = {name for entry in results for name in (*entry.semantic_models, *entry.governed_reads)}
-        referenced_refs = with_fusion(
+        referenced_refs = with_synonyms(
             connection,
-            with_validation_issues(connection, [ref for ref in semantic.known_models if ref.model in referenced]),
+            with_fusion(
+                connection,
+                with_validation_issues(connection, [ref for ref in semantic.known_models if ref.model in referenced]),
+            ),
         )
     finally:
         close = getattr(connection, "close", None)
@@ -272,17 +277,30 @@ def _smoke_one(
     # Wrap so the server parses and binds names without fetching rows. Strip a
     # trailing semicolon so the wrapped query parses cleanly.
     wrapped = f"SELECT * FROM (\n{stripped.rstrip(';')}\n) WHERE 1=0"
+    compiled: dict[str, Any] | None = None
     try:
         statement = connection.execute(wrapped, params)  # type: ignore[attr-defined]
     except Exception as exc:
-        return SqlSmokeFile(
-            relative_path=relative_path,
-            outcome="failed",
-            error_text=str(exc),
-            semantic_models=model_names,
-            warnings=warnings,
-            governed_reads=governed_reads,
-            frozen_semantic_sql=frozen,
+        # Semantic Views answers some query shapes at the top level but not nested, e.g. a
+        # renamed field's old name in an ungrouped select. If the query compiles, bind its
+        # compiled SQL instead: that is what the preprocessor runs for the dashboard.
+        compiled = _compile(connection, stripped.rstrip(";"), params) if semantic_models else None
+        statement = _bind_compiled(connection, compiled) if compiled is not None else None
+        if statement is None:
+            return SqlSmokeFile(
+                relative_path=relative_path,
+                outcome="failed",
+                error_text=str(exc),
+                semantic_models=model_names,
+                warnings=warnings,
+                governed_reads=governed_reads,
+                frozen_semantic_sql=frozen,
+            )
+        warnings = (
+            *warnings,
+            "Semantic Views refused this query inside the smoke check's nested probe "
+            f"(SELECT * FROM (<query>) WHERE 1=0: {database_message(str(exc)) or 'error'}), but the query "
+            "compiles and its compiled SQL binds, so it was checked that way. Avoid wrapping it in a subquery.",
         )
 
     close = getattr(statement, "close", None)
@@ -298,7 +316,11 @@ def _smoke_one(
         warnings=warnings,
         governed_reads=governed_reads,
         frozen_semantic_sql=frozen,
-        definitions=_compile_definitions(connection, stripped.rstrip(";"), params) if semantic_models else None,
+        definitions=(
+            _definitions_from_compile(compiled or _compile(connection, stripped.rstrip(";"), params))
+            if semantic_models
+            else None
+        ),
     )
 
 
@@ -326,12 +348,8 @@ def _smoke_script(
     return SqlSmokeFile(relative_path=relative_path, outcome="passed")
 
 
-def _compile_definitions(connection: object, sql_text: str, params: dict[str, Any]) -> dict[str, Any] | None:
-    """What a Semantic SQL query depends on, from the semantic layer's own compiler.
-
-    ``COMPILE_SQL``'s plan names the model and object and carries the definition hash of
-    every field the query selected. Best effort: ``None`` if the compile can't run.
-    """
+def _compile(connection: object, sql_text: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    """The semantic layer's ``COMPILE_SQL`` result row for a query, if it compiled."""
 
     try:
         if params:
@@ -340,9 +358,34 @@ def _compile_definitions(connection: object, sql_text: str, params: dict[str, An
             "EXECUTE SCRIPT SEMANTIC_ADMIN.COMPILE_SQL({sql})", {"sql": sql_text}
         )
         row = dict(zip(statement.column_names(), statement.fetchone(), strict=False))
-        if row.get("STATUS") != "OK":
-            return None
-        plan = json.loads(row["PLAN_JSON"])
+    except Exception:
+        return None
+    return row if row.get("STATUS") == "OK" else None
+
+
+def _bind_compiled(connection: object, compiled: dict[str, Any]) -> object | None:
+    """Parse and bind a compile's generated SQL without fetching rows; the statement, or None."""
+
+    generated = compiled.get("GENERATED_SQL")
+    if not generated:
+        return None
+    try:
+        return connection.execute(f"SELECT * FROM (\n{generated}\n) WHERE 1=0")  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
+def _definitions_from_compile(compiled: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What a Semantic SQL query depends on, from its compile.
+
+    ``COMPILE_SQL``'s plan names the model and object and carries the definition hash of
+    every field the query selected. Best effort: ``None`` if the query didn't compile.
+    """
+
+    if compiled is None:
+        return None
+    try:
+        plan = json.loads(compiled["PLAN_JSON"])
         hashes = plan.get("definition_hashes") or {}
         return {
             "model": str(plan["model"]),

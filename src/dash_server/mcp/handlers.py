@@ -34,8 +34,17 @@ def _healthcheck_text(health: dict[str, Any]) -> str:
     details = (semantic or {}).get("details") or {}
     review = []
     if details.get("changed_since_build"):
-        fields = sorted({f"{entry['model']}.{entry['field']}" for entry in details["changed_since_build"]})
-        review.append(f"definitions changed since build: {', '.join(fields)}")
+        changes = []
+        for entry in details["changed_since_build"]:
+            if entry.get("change") == "not_compiled":
+                changes.append(f"{entry['path']} no longer compiles")
+            elif entry.get("change") == "renamed":
+                changes.append(f"{entry['model']}.{entry['field']} renamed to {entry['renamed_to']}")
+            elif entry.get("change") == "missing":
+                changes.append(f"{entry['model']}.{entry['field']} missing")
+            else:
+                changes.append(f"{entry['model']}.{entry['field']}")
+        review.append(f"definitions changed since build: {', '.join(sorted(set(changes)))}")
     for entry in details.get("fusion_changed_since_build") or []:
         review.append(f"{entry['model']} {entry['change']}")
     for summary in details.get("fusion") or []:

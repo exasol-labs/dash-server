@@ -50,9 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Builds record which Exasol Semantic Views fields each query file uses, with each field's
   definition hash from the semantic layer's compiler (`COMPILE_SQL` plan). `app_run_healthcheck`'s
   `semantic_models` probe lists fields whose definition changed since the revision was built
-  (`changed_since_build`, including fields derived from a changed one), for review. The dashboard
+  (`changed_since_build`, including fields derived from a changed one), for review. Each entry
+  says how it changed: `definition`, `renamed` (with `renamed_to`, found through the model's
+  synonyms), `missing`, or `not_compiled` for a file that no longer compiles. The dashboard
   already shows the new definition, so this doesn't fail the probe. Needs a Semantic Views build
   with definition hashes.
+- When Semantic Views refuses a query only inside SQL smoke's nested `WHERE 1=0` probe (a renamed
+  metric's old name in an ungrouped select, in 0.5.0), smoke compiles the query with `COMPILE_SQL`
+  and binds the compiled SQL instead, passing with a warning. Before, the check failed a query
+  that works for viewers and suggested the wrong metric.
 - For fused Exasol Semantic Views models, the `semantic_models` probe reports partition coverage
   and how each reconciled attribute is answered (`fusion`, from the read-only
   `CHECK_FUSION_HEALTH`), and what changed since the build (`fusion_changed_since_build`): a moved

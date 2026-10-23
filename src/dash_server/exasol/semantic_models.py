@@ -38,6 +38,9 @@ class SemanticModelRef:
     # fused, and how its reconciled attributes are answered today. Filled in by ``with_fusion``.
     fusion_layout: tuple[FusionPart, ...] = ()
     fusion_health: tuple[FusionHealth, ...] = ()
+    # Other names the model's fields answer to, as {"kind", "synonym", "field"}: a renamed
+    # field keeps its old name as a synonym. Filled in by ``with_synonyms``.
+    synonyms: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -310,6 +313,31 @@ def _fusion_health(connection: object, model: str) -> tuple[FusionHealth, ...]:
     )
 
 
+def with_synonyms(connection: object, models: list[SemanticModelRef]) -> list[SemanticModelRef]:
+    """``models`` with their fields' synonyms (from SEMANTIC_SOURCE.SYNONYMS). Best effort."""
+
+    if not models:
+        return models
+    names = {f"m{index}": ref.model for index, ref in enumerate(models)}
+    try:
+        rows = connection.execute(  # type: ignore[attr-defined]
+            "SELECT DISTINCT f.MODEL_NAME, f.FIELD_KIND, s.SYNONYM, f.FIELD_NAME "
+            "FROM SEMANTIC_SOURCE.SYNONYMS s JOIN SEMANTIC_AGENT.FIELDS_FOR_AGENT f "
+            "ON f.MODEL_ID = s.MODEL_ID AND f.VERSION_ID = s.VERSION_ID AND f.FIELD_KIND = s.OBJECT_TYPE "
+            "AND f.FIELD_ID = s.OBJECT_ID "
+            f"WHERE f.MODEL_NAME IN ({', '.join(f'{{{key}!s}}' for key in names)}) ORDER BY 1, 2, 3",
+            names,
+        ).fetchall()
+    except Exception:
+        return models
+    synonyms: dict[str, list[dict[str, str]]] = {}
+    for model, kind, synonym, field in rows:
+        synonyms.setdefault(str(model), []).append(
+            {"kind": str(kind).lower(), "synonym": str(synonym), "field": str(field)}
+        )
+    return [replace(ref, synonyms=tuple(synonyms.get(ref.model, ()))) for ref in models]
+
+
 _ISSUES_PER_MODEL = 20
 _ISSUE_MESSAGE_CHARS = 300
 
@@ -505,5 +533,6 @@ __all__ = [
     "session_preprocessor",
     "with_finished_validation",
     "with_fusion",
+    "with_synonyms",
     "with_validation_issues",
 ]
