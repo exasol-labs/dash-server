@@ -66,6 +66,9 @@ class SqlSmokeFile:
     semantic_models: tuple[str, ...] = ()
     # Advice that doesn't fail the check, e.g. raw reads of a semantic model's source tables.
     warnings: tuple[str, ...] = ()
+    # For a Semantic SQL file that passed: the model, object, and definition hash of each
+    # metric and dimension it uses ({"model", "object", "metrics", "dimensions"}).
+    definitions: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -254,8 +257,40 @@ def _smoke_one(
         except Exception:
             pass
     return SqlSmokeFile(
-        relative_path=relative_path, outcome="passed", semantic_models=model_names, warnings=warnings
+        relative_path=relative_path,
+        outcome="passed",
+        semantic_models=model_names,
+        warnings=warnings,
+        definitions=_compile_definitions(connection, stripped.rstrip(";"), params) if semantic_models else None,
     )
+
+
+def _compile_definitions(connection: object, sql_text: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    """What a Semantic SQL query depends on, from the semantic layer's own compiler.
+
+    ``COMPILE_SQL``'s plan names the model and object and carries the definition hash of
+    every field the query selected. Best effort: ``None`` if the compile can't run.
+    """
+
+    try:
+        if params:
+            sql_text = connection.format.format(sql_text, **params)  # type: ignore[attr-defined]
+        statement = connection.execute(  # type: ignore[attr-defined]
+            "EXECUTE SCRIPT SEMANTIC_ADMIN.COMPILE_SQL({sql})", {"sql": sql_text}
+        )
+        row = dict(zip(statement.column_names(), statement.fetchone(), strict=False))
+        if row.get("STATUS") != "OK":
+            return None
+        plan = json.loads(row["PLAN_JSON"])
+        hashes = plan.get("definition_hashes") or {}
+        return {
+            "model": str(plan["model"]),
+            "object": str(plan["object"]),
+            "metrics": dict(hashes.get("metrics") or {}),
+            "dimensions": dict(hashes.get("dimensions") or {}),
+        }
+    except Exception:
+        return None
 
 
 def _governed_source_warnings(sql_text: str, semantic: _SemanticContext) -> tuple[str, ...]:

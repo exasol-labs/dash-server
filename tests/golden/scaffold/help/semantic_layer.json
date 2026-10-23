@@ -11,7 +11,9 @@
     "A query file that reads a published model on a profile without the preprocessor fails SQL smoke with the session_init_sql line to add.",
     "app_run_healthcheck's semantic_models probe reports each model the app reads. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, and lists models with warnings.",
     "SQL smoke warns (sql_smoke details.warnings) when a query file reads a table that backs a published model, naming the published schema to use instead.",
-    "app_validate warns when a query file looks like saved COMPILE_SQL / COMPILE_REQUEST_JSON output."
+    "app_validate warns when a query file looks like saved COMPILE_SQL / COMPILE_REQUEST_JSON output.",
+    "Each build records the definition hash of every metric and dimension the app's Semantic SQL uses. app_run_healthcheck's semantic_models probe then lists fields whose definition changed since the revision was built (details.changed_since_build): the dashboard already shows the new definition, so check that each panel's label and meaning still match.",
+    "dash://exasol/semantic-usage lists which live dashboards use which model fields: impact analysis before changing or dropping a metric."
   ],
   "never": [
     "Never paste the GENERATED_SQL of SEMANTIC_ADMIN.COMPILE_SQL or COMPILE_REQUEST_JSON into queries/*.sql. It freezes today's definition: a certified metric fix never reaches the dashboard, a fused model's coverage and authority stop moving with the data, and no check can tell. Query the published view live.",

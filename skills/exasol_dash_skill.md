@@ -79,6 +79,7 @@ WHERE MODEL_STATUS = 'PUBLISHED';
 - Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes today's definition and nothing detects the drift.
 - Take labels and formats from `SEMANTIC_AGENT.FIELDS_FOR_AGENT` instead of hard-coding them.
 - For a starting point, `app_scaffold_from_schema` with `schema_name` set to the model's published schema generates Semantic SQL over its certified metrics.
+- After a build, `app_run_healthcheck` reports metric definitions that changed since that revision was built (`semantic_models` → `changed_since_build`), and `dash://exasol/semantic-usage` shows which dashboards use a given metric.
 
 `dash://exasol/help/semantic-layer` has the full recipe, including grants for a non-SYS profile user and how SQL smoke and the `semantic_models` healthcheck probe treat semantic queries.
 

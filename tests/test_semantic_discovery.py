@@ -137,3 +137,36 @@ def test_validate_tool_names_published_models_in_its_text(app, client, monkeypat
     assert "Published semantic models: sales (SEMANTIC_SALES)." in result["content"][0]["text"]
     guidance = result["structuredContent"]["guidance"]
     assert "session_init_sql" in guidance["next_step"]
+
+
+
+def test_semantic_usage_lists_the_fields_each_live_dashboard_was_built_against(app, client) -> None:
+    runtime = app.extensions["runtime_service"]
+    demo_revision = runtime.registry.get_app("demo").current_revision_number
+    runtime.diagnostics_service.record_semantic_lock(
+        "demo",
+        demo_revision,
+        [{"path": "queries/kpis.sql", "model": "sales", "object": "SALES", "metrics": {"total_revenue": "h1"}, "dimensions": {}}],
+    )
+    assert runtime.diagnostics_service.semantic_lock("demo", demo_revision)[0]["metrics"] == {"total_revenue": "h1"}
+
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "resources/read", "params": {"uri": "dash://exasol/semantic-usage"}},
+    )
+    import json
+
+    usage = json.loads(response.get_json()["result"]["contents"][0]["text"])
+    assert usage["models"] == {
+        "sales": {
+            "total_revenue": [
+                {
+                    "app": "demo",
+                    "revision_number": demo_revision,
+                    "path": "queries/kpis.sql",
+                    "kind": "metric",
+                    "definition_hash": "h1",
+                }
+            ]
+        }
+    }

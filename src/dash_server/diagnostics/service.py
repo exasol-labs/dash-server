@@ -277,6 +277,23 @@ class DiagnosticsService:
         value = successes.get(_success_key(revision_number, sql_file))
         return value if isinstance(value, str) else None
 
+    def record_semantic_lock(self, app_name: str, revision_number: int, definitions: list[dict[str, Any]]) -> None:
+        """Store what a revision's Semantic SQL depended on when it was built.
+
+        ``definitions`` holds one entry per query file: path, model, object, and the
+        definition hash of each metric and dimension it uses.
+        """
+
+        path = self._app_dir(app_name) / "semantic_locks" / f"r{revision_number:06d}.json"
+        self._write_json(path, {"revision_number": revision_number, "recorded_at": self._timestamp(), "files": definitions})
+
+    def semantic_lock(self, app_name: str, revision_number: int) -> list[dict[str, Any]] | None:
+        """The definitions recorded when ``revision_number`` was built, or None."""
+
+        record = self._read_json(self._app_dir(app_name) / "semantic_locks" / f"r{revision_number:06d}.json")
+        files = record.get("files") if isinstance(record, dict) else None
+        return files if isinstance(files, list) else None
+
     def acknowledge_data_layer_errors(self, app_name: str) -> dict[str, Any]:
         """Mark every data-layer error recorded so far as acknowledged.
 

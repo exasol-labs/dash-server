@@ -70,7 +70,7 @@ _53 tools registered. Each `tools/call` request must pass the tool name and the 
 ## Main Resources
 
 <!-- BEGIN: auto-resources -->
-_19 server-wide resources plus the per-app pattern below ({{app}} matches any registered app name)._
+_20 server-wide resources plus the per-app pattern below ({{app}} matches any registered app name)._
 
 ### Server-wide
 
@@ -81,6 +81,7 @@ _19 server-wide resources plus the per-app pattern below ({{app}} matches any re
 - **`dash://exasol/help/semantic-layer`** — Check for a governed Exasol Semantic Views model before writing metric SQL, and how to build dashboards on it: profile session setup, query style, governed labels, checks.
 - **`dash://exasol/help/sql-placeholders`** — pyexasol placeholder grammar ({name!s}, {name!d}, etc.) for parameterized dashboard SQL. Replaces SQL-driver :name syntax which Exasol rejects.
 - **`dash://exasol/profiles`** — Git-tracked Exasol profile metadata without secrets.
+- **`dash://exasol/semantic-usage`** — Which live dashboards use which Exasol Semantic Views metrics and dimensions, with the definition hash each was built against. Impact analysis for a metric change.
 - **`dash://meta/app-authoring-guide`** — Recommended create_dash_app factory structure, prefix rules, and common mistakes.
 - **`dash://meta/app-create-from-files-schema`** — Required fields, common mistakes, and a working example for app_create_from_files.
 - **`dash://meta/app-create-schema`** — Required bundle shape, common mistakes, and a working example for app_create.

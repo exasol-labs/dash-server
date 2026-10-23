@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are in the `sql_smoke` probe's `details.warnings`; they don't fail the check.
 - `app_validate` warns when a query file looks like saved `COMPILE_SQL` / `COMPILE_REQUEST_JSON`
   output, which freezes today's metric definitions.
+- Builds record which Exasol Semantic Views fields each query file uses, with each field's
+  definition hash from the semantic layer's compiler (`COMPILE_SQL` plan). `app_run_healthcheck`'s
+  `semantic_models` probe lists fields whose definition changed since the revision was built
+  (`changed_since_build`, including fields derived from a changed one), for review. The dashboard
+  already shows the new definition, so this doesn't fail the probe. Needs a Semantic Views build
+  with definition hashes.
+- `dash://exasol/semantic-usage` lists which live dashboards use which model fields, with the
+  definition hash each was built against: impact analysis before changing or dropping a metric.
 
 ### Changed
 - `app_validate`'s "does not declare LIMIT or obvious aggregation" warning no longer fires for

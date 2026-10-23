@@ -369,6 +369,40 @@ class AppRuntimeService:
 
         return self.reconciler.rebuild_cache_from_git()
 
+    def semantic_usage(self) -> dict[str, Any]:
+        """Which live dashboards use which semantic model fields, from their build-time locks.
+
+        Answers a metric owner's "what breaks or changes if I edit this metric?". Covers each
+        app's current (live) revision; a revision built before definition locks existed, or
+        whose queries don't read a semantic model, contributes nothing.
+        """
+
+        models: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for app in self.registry.list_apps():
+            revision_number = app.current_revision_number
+            if revision_number is None:
+                continue
+            for entry in self.diagnostics_service.semantic_lock(app.name, revision_number) or []:
+                for kind in ("metrics", "dimensions"):
+                    for field, definition_hash in (entry.get(kind) or {}).items():
+                        models.setdefault(str(entry.get("model")), {}).setdefault(field, []).append(
+                            {
+                                "app": app.name,
+                                "revision_number": revision_number,
+                                "path": entry.get("path"),
+                                "kind": kind[:-1],
+                                "definition_hash": definition_hash,
+                            }
+                        )
+        return {
+            "models": models,
+            "note": (
+                "Fields used by each app's live revision, recorded when it was built. definition_hash is the "
+                "field's hash at that time; compare it with SEMANTIC_AGENT.DEFINITION_HASHES_FOR_AGENT to see "
+                "which dashboards a definition change has reached."
+            ),
+        }
+
     def git_drift_report(self) -> dict[str, Any]:
         """Return a comparison between desired Git state and the observed runtime state."""
 
@@ -1129,7 +1163,10 @@ class AppRuntimeService:
         sql_smoke_probe = self._sql_smoke_probe(name, revision)
         probes.append(sql_smoke_probe)
         overall_status = self.prober._downgrade(overall_status, sql_smoke_probe)
-        semantic_models_probe = self.prober._semantic_models_probe(sql_smoke_probe)
+        semantic_models_probe = self.prober._semantic_models_probe(
+            sql_smoke_probe,
+            built_definitions=self.diagnostics_service.semantic_lock(name, revision.revision_number),
+        )
         probes.append(semantic_models_probe)
         overall_status = self.prober._downgrade(overall_status, semantic_models_probe)
 
@@ -1221,6 +1258,9 @@ class AppRuntimeService:
             # or no queries/*.sql files, so this doesn't affect non-Exasol apps.
             sql_smoke_probe = self._sql_smoke_probe(name, revision)
             probes.append(sql_smoke_probe)
+            definitions = sql_smoke_probe.get("details", {}).get("definitions")
+            if definitions:
+                self.diagnostics_service.record_semantic_lock(name, revision.revision_number, definitions)
             overall_status = (
                 "passed"
                 if all(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import json
 from typing import Any
 
 from dash_server.exasol.models import ExasolProfile, ExasolSecretRef
@@ -22,7 +23,9 @@ class _Connection:
         preprocessor: str | None = None,
         model_columns: list[str] | None = None,
         governed: list[tuple[str, str, str]] | None = None,
+        compile_status: str = "OK",
     ) -> None:
+        self.compile_status = compile_status
         self.models = models
         self.governed = governed or []
         self.preprocessor = preprocessor
@@ -41,6 +44,14 @@ class _Connection:
         self.catalog_lookups = 0
 
     def execute(self, sql: str, params: Any = None) -> Any:
+        if "COMPILE_SQL" in sql:
+            plan = {
+                "model": "sales",
+                "object": "SALES",
+                "definition_hashes": {"metrics": {"total_revenue": "h-revenue"}, "dimensions": {}},
+            }
+            row = (self.compile_status, json.dumps(plan))
+            return SimpleNamespace(column_names=lambda: ["STATUS", "PLAN_JSON"], fetchone=lambda: row)
         if "FUSION_FOR_AGENT" in sql:
             columns = ["SOURCE_OBJECT", "MODEL_NAME", "PUBLISHED_SCHEMA"]
             return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.governed)
@@ -194,3 +205,43 @@ def test_raw_reads_of_a_governed_table_pass_with_a_warning() -> None:
     assert "query SEMANTIC_SALES instead" in margin.warnings[0]
     assert lookalike.warnings == ()
     assert semantic.warnings == ()
+
+
+def test_semantic_queries_record_the_definitions_they_use() -> None:
+    connection = _Connection(models=[SALES_MODEL], preprocessor=PREPROCESSOR)
+    semantic, raw = _smoke(connection, [SEMANTIC_QUERY, RAW_QUERY]).files
+    assert semantic.definitions == {
+        "model": "sales",
+        "object": "SALES",
+        "metrics": {"total_revenue": "h-revenue"},
+        "dimensions": {},
+    }
+    assert raw.definitions is None
+
+    refused = _Connection(models=[SALES_MODEL], preprocessor=PREPROCESSOR, compile_status="ERROR")
+    assert _smoke(refused, [SEMANTIC_QUERY]).files[0].definitions is None
+
+
+def test_semantic_models_probe_lists_definitions_changed_since_build() -> None:
+    from dash_server.runtime.prober import HealthProber
+
+    model = {"model": "sales", "published_schema": "SEMANTIC_SALES", "readiness": "VALID"}
+    built = [{"path": "queries/kpis.sql", "model": "sales", "metrics": {"total_revenue": "old", "total_cost": "same"}}]
+    current = [{"path": "queries/kpis.sql", "model": "sales", "metrics": {"total_revenue": "new", "total_cost": "same"}}]
+    smoke_probe = {"name": "sql_smoke", "details": {"semantic_models": [model], "definitions": current}}
+
+    probe = HealthProber(svc=None)._semantic_models_probe(smoke_probe, built_definitions=built)  # type: ignore[arg-type]
+
+    assert probe["status"] == "passed"
+    assert probe["details"]["changed_since_build"] == [
+        {
+            "path": "queries/kpis.sql",
+            "model": "sales",
+            "field": "total_revenue",
+            "kind": "metric",
+            "built_hash": "old",
+            "current_hash": "new",
+        }
+    ]
+    unchanged = HealthProber(svc=None)._semantic_models_probe(smoke_probe, built_definitions=current)  # type: ignore[arg-type]
+    assert "changed_since_build" not in unchanged["details"]

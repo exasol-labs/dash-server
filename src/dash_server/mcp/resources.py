@@ -237,6 +237,15 @@ class ResourcesMixin(MCPServerHost):
                 ),
             ),
             (
+                "dash://exasol/semantic-usage",
+                lambda _m: runtime.semantic_usage(),
+                _ServerResource(
+                    "exasol-semantic-usage",
+                    "Semantic model usage",
+                    "Which live dashboards use which Exasol Semantic Views metrics and dimensions, with the definition hash each was built against. Impact analysis for a metric change.",
+                ),
+            ),
+            (
                 "dash://exasol/profiles",
                 lambda _m: self._exasol_service().list_profiles(),
                 _ServerResource(

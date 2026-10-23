@@ -247,6 +247,11 @@ class HealthProber:
         extra: dict[str, Any] = {}
         if semantic_models:
             extra["semantic_models"] = semantic_models
+        definitions = [
+            {"path": f.relative_path, **f.definitions} for f in report.files if f.definitions is not None
+        ]
+        if definitions:
+            extra["definitions"] = definitions
         if warnings:
             extra["warnings"] = warnings
         if report.overall_status == "passed":
@@ -295,20 +300,39 @@ class HealthProber:
             },
         }
 
-    def _semantic_models_probe(self, sql_smoke_probe: dict[str, Any]) -> dict[str, Any]:
+    def _semantic_models_probe(
+        self,
+        sql_smoke_probe: dict[str, Any],
+        *,
+        built_definitions: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         """Report the readiness of the Exasol Semantic Views models the app's queries read.
 
         Derived from the `sql_smoke` probe, whose session already looked the models up.
         Fails when a model is unusable (INVALID, PRECONDITION, or NOT_PUBLISHED): its
         numbers can't be trusted even if today's queries still run. WARNING passes, as in
         the semantic layer's own agent views, but is listed so it stays visible.
+
+        With the definitions recorded when the revision was built, also lists every field
+        whose definition has changed since. The dashboard already shows the new definition
+        (it queries the model live), so this is for review, not a failure.
         """
 
-        models = sql_smoke_probe.get("details", {}).get("semantic_models")
+        details_in = sql_smoke_probe.get("details", {})
+        models = details_in.get("semantic_models")
         if not models:
             return {"name": "semantic_models", "status": "not_applicable", "details": {"reason": "no_semantic_queries"}}
         unusable = [model for model in models if model.get("readiness") in _UNUSABLE_SEMANTIC_READINESS]
         details: dict[str, Any] = {"models": models}
+        if built_definitions is not None:
+            changed = _changed_definitions(built_definitions, details_in.get("definitions") or [])
+            if changed:
+                details["changed_since_build"] = changed
+                details["changed_since_build_note"] = (
+                    "These metric or dimension definitions changed after this revision was built. The dashboard "
+                    "queries the model live, so it already shows the new definitions; check that each panel's "
+                    "label and meaning still match."
+                )
         warnings = [model["model"] for model in models if model.get("readiness") == "WARNING"]
         if warnings:
             details["models_with_warnings"] = warnings
@@ -470,6 +494,32 @@ class HealthProber:
                 "rss_bytes": rss,
             },
         }
+
+
+def _changed_definitions(built: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fields whose definition hash differs between the build-time and the current compile."""
+
+    current_by_path = {entry.get("path"): entry for entry in current}
+    changed = []
+    for entry in built:
+        now = current_by_path.get(entry.get("path"))
+        if now is None:
+            continue
+        for kind in ("metrics", "dimensions"):
+            for field, built_hash in (entry.get(kind) or {}).items():
+                current_hash = (now.get(kind) or {}).get(field)
+                if current_hash is not None and current_hash != built_hash:
+                    changed.append(
+                        {
+                            "path": entry.get("path"),
+                            "model": entry.get("model"),
+                            "field": field,
+                            "kind": kind[:-1],
+                            "built_hash": built_hash,
+                            "current_hash": current_hash,
+                        }
+                    )
+    return changed
 
 
 def _data_layer_record_resolved(diagnostics: Any, app_name: str, record: dict[str, Any]) -> bool:
