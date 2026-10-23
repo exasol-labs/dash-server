@@ -66,3 +66,23 @@ def test_query_rows_records_the_full_error_under_the_viewer_reference(tmp_path: 
     [record] = diagnostics.list_errors("kpis")["errors"]
     assert record["details"]["error"] == PYEXASOL_ERROR
     assert record["details"]["error_ref"] == error_reference(PYEXASOL_ERROR)
+
+
+def test_literal_braces_explain_the_placeholder_problem() -> None:
+    import string
+
+    from dash_server.exasol.runtime import describe_query_error
+
+    # pyexasol's formatter is a string.Formatter; JSON in an EXECUTE SCRIPT argument trips it.
+    try:
+        string.Formatter().format("""EXECUTE SCRIPT SEMANTIC_ADMIN.COMPILE_REQUEST_JSON('{"model": "sales"}')""")
+    except KeyError as exc:
+        message = describe_query_error(exc)
+    assert message.startswith("The SQL text could not be formatted (KeyError: '\"model\"')")
+    assert "write literal braces as {{ and }}" in message
+
+    # Errors raised anywhere else keep their own text.
+    try:
+        {}["TOTAL_REVENUE"]
+    except KeyError as exc:
+        assert describe_query_error(exc) == "'TOTAL_REVENUE'"

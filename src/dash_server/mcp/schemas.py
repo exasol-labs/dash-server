@@ -14,6 +14,14 @@ from dash_server.dash_apps.factory import (
 class SchemasMixin(MCPServerHost):
     """The ``_*_schema()`` builders referenced by ``ToolSpec.input_schema``."""
 
+    def _profile_name_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "Exasol profile name."}},
+            "required": ["name"],
+            "additionalProperties": False,
+        }
+
     def _name_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
@@ -54,12 +62,12 @@ class SchemasMixin(MCPServerHost):
                 "backend": {
                     "type": "string",
                     "enum": ["onprem", "saas"],
-                    "description": "Backend type. onprem supports password/access/refresh token; saas supports saas_pat.",
+                    "description": "Backend type. onprem supports password/access/refresh token; saas supports saas_pat. Required to create a profile.",
                 },
                 "credential_mode": {
                     "type": "string",
                     "enum": ["password", "access_token", "refresh_token", "saas_pat"],
-                    "description": "Credential mode for the bound secret.",
+                    "description": "Credential mode for the bound secret. Required to create a profile.",
                 },
                 "dsn": {
                     "type": "string",
@@ -67,12 +75,12 @@ class SchemasMixin(MCPServerHost):
                         "pyexasol DSN: host[/FINGERPRINT][:port], comma-separated for multiple hosts "
                         "(e.g. localhost:8563). For a remote self-signed server, pin its certificate "
                         "with the SHA-256 fingerprint before the port (db.example.com/ABC123…:8563); "
-                        "the pin then replaces CA verification."
+                        "the pin then replaces CA verification. Required to create a profile."
                     ),
                 },
                 "user": {
                     "type": "string",
-                    "description": "Database username for the profile.",
+                    "description": "Database username for the profile. Required to create a profile.",
                 },
                 "description": {
                     "type": "string",
@@ -88,11 +96,11 @@ class SchemasMixin(MCPServerHost):
                 },
                 "secret_value": {
                     "type": "string",
-                    "description": "Secret to persist in the local secret store. Provide exactly one of secret_value or secret_env_var.",
+                    "description": "Secret to persist in the local secret store. Provide exactly one of secret_value or secret_env_var to create a profile; leave both out with overwrite: true to keep the current secret.",
                 },
                 "secret_env_var": {
                     "type": "string",
-                "description": "Environment variable containing the secret. Provide exactly one of secret_value or secret_env_var.",
+                "description": "Environment variable containing the secret. Provide exactly one of secret_value or secret_env_var to create a profile; leave both out with overwrite: true to keep the current secret.",
                 },
                 "statement_timeout_seconds": {"type": "integer", "minimum": 1},
                 "row_limit": {"type": "integer", "minimum": 1},
@@ -113,14 +121,19 @@ class SchemasMixin(MCPServerHost):
                     "type": "boolean",
                     "description": (
                         "When false (default), the call fails with `exasol_profile_already_exists` "
-                        "if a profile with this name is already on disk. Pass `true` to rewrite "
-                        "the metadata (the response will set `was_already_present: true`). This "
-                        "matches the persona-1 expectation that the same name isn't silently clobbered."
+                        "if a profile with this name is already on disk. Pass `true` to rewrite it "
+                        "(the response sets `was_already_present: true`): settings you leave out keep "
+                        "their current values, including the secret, so `{name, overwrite: true, "
+                        "session_init_sql}` adds session setup. A new DSN gets its own TLS default "
+                        "unless you pass tls_verify. Creating a profile needs backend, "
+                        "credential_mode, dsn, user, and secret_value or secret_env_var."
                     ),
                     "default": False,
                 },
             },
-            "required": ["name", "backend", "credential_mode", "dsn", "user"],
+            # backend, credential_mode, dsn, user and a secret are required to create a profile;
+            # with overwrite: true on an existing one, anything left out keeps its value.
+            "required": ["name"],
             "additionalProperties": False,
             "examples": [
                 {

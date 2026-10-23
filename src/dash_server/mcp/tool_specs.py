@@ -91,11 +91,15 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         title='List Exasol profiles',
         description='Return Git-tracked Exasol profile metadata without secret values.',
         input_schema={'type': 'object', 'properties': {}, 'additionalProperties': False},
-        guidance={'next_step': 'Validate a profile or create a new one, then generate a dashboard from it.',
+        guidance={'next_step': 'Validate a profile or create a new one. exasol_profile_validate also lists '
+                      'the published Exasol Semantic Views models the profile can see: build on one '
+                      'when it covers the question (dash://exasol/help/semantic-layer), otherwise '
+                      'create the dashboard with app_create_from_files.',
          'suggested_tools': ['exasol_profile_validate',
                              'exasol_profile_create_local',
-                             'app_create_exasol_dashboard'],
+                             'app_create_from_files'],
          'related_resources': ['dash://exasol/profiles',
+                               'dash://exasol/help/semantic-layer',
                                'dash://exasol/help/connection-modes',
                                'dash://exasol/help/dashboard-patterns',
                                'dash://exasol/help/agent-workflow']},
@@ -106,11 +110,14 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         title='Create a local Exasol profile',
         description='Create one local Exasol profile for a single-user workflow. Provide either secret_value or secret_env_var so secrets stay outside Git.',
         input_schema='_exasol_profile_create_local_schema',
-        guidance={'next_step': 'Validate the profile before generating a live Exasol dashboard. If an '
-                      'external Exasol MCP server is available, use it for schema discovery only '
-                      'and keep hosted runtime access on the validated dash-server profile.',
-         'suggested_tools': ['exasol_profile_validate', 'app_create_exasol_dashboard'],
-         'related_resources': ['dash://exasol/help/connection-modes',
+        guidance={'next_step': 'Validate the profile before building a dashboard on it: '
+                      'exasol_profile_validate checks the connection and session_init_sql, and lists '
+                      'published semantic models to build on. If an external Exasol MCP server is '
+                      'available, use it for schema discovery only and keep hosted runtime access on '
+                      'the validated dash-server profile.',
+         'suggested_tools': ['exasol_profile_validate', 'app_create_from_files'],
+         'related_resources': ['dash://exasol/help/semantic-layer',
+                               'dash://exasol/help/connection-modes',
                                'dash://exasol/help/dashboard-patterns',
                                'dash://exasol/help/agent-workflow',
                                'dash://exasol/profiles']},
@@ -119,13 +126,16 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name='exasol_profile_validate',
         handler='_tool_exasol_profile_validate',
         title='Validate an Exasol profile',
-        description='Resolve the configured secret, load pyexasol, and run a connection test.',
-        input_schema='_name_schema',
-        guidance={'next_step': 'If validation passed, create a dashboard scaffold. Use an external Exasol '
-                      'MCP server only for discovery and SQL authoring; do not write '
+        description='Resolve the configured secret, load pyexasol, and run a connection test. Also runs the profile\'s session_init_sql and lists the published Exasol Semantic Views models the profile can see (semantic_layer).',
+        input_schema='_profile_name_schema',
+        guidance={'next_step': 'If validation passed and semantic_layer lists a model that covers the '
+                      'question, build on it (dash://exasol/help/semantic-layer). Otherwise create the '
+                      'dashboard with app_create_from_files (template=exasol-analytics). Use an external '
+                      'Exasol MCP server only for discovery and SQL authoring; do not write '
                       'pyexasol.connect(...) or Exasol credentials into app.py.',
-         'suggested_tools': ['app_create_exasol_dashboard', 'exasol_profile_create_local'],
-         'related_resources': ['dash://exasol/help/connection-modes',
+         'suggested_tools': ['app_create_from_files', 'app_scaffold_from_schema', 'exasol_profile_create_local'],
+         'related_resources': ['dash://exasol/help/semantic-layer',
+                               'dash://exasol/help/connection-modes',
                                'dash://exasol/help/dashboard-patterns',
                                'dash://exasol/help/agent-workflow',
                                'dash://exasol/profiles']},

@@ -80,7 +80,8 @@ the `DASH_SERVER_EXASOL_*` settings, startup logs a warning listing each differi
 apply the settings, either:
 
 - set `DASH_SERVER_EXASOL_OVERWRITE=true` and restart, or
-- call `exasol_profile_create_local` with the new values and `overwrite=true`.
+- call `exasol_profile_create_local` with `overwrite=true` and the changed values; settings you
+  leave out, including the secret, keep their current values.
 
 That avoids two manual steps:
 

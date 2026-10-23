@@ -74,10 +74,12 @@ WHERE MODEL_STATUS = 'PUBLISHED';
 
 `exasol_profile_validate` also lists them (`semantic_layer.models`). If a model covers the question:
 
-- Give the profile `session_init_sql = ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"]` and confirm `session_init.status == "applied"` with `exasol_profile_validate`.
+- Give the profile `session_init_sql = ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"]` (for an existing profile: `exasol_profile_create_local` with `name`, `overwrite: true` and `session_init_sql`; other settings are kept) and confirm `session_init.status == "applied"` with `exasol_profile_validate`. `EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL()`, the form `INSTRUCTIONS_FOR_AGENT` names, works too.
 - Query the published views from `queries/*.sql`: `SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region`. Metrics are already aggregated; don't wrap them in `SUM()`.
 - Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes today's definition. `app_run_healthcheck` degrades on such files (`semantic_models` → `frozen_files`).
 - Take labels and formats from `SEMANTIC_AGENT.FIELDS_FOR_AGENT` instead of hard-coding them.
+- Live Semantic SQL in `queries/*.sql` is the lane dash-server hosts; Semantic Views' per-request compile lane (`COMPILE_REQUEST_JSON` on every request) isn't supported.
+- Prototyping through the Exasol MCP server: run Semantic SQL calls one at a time. A pooled session without the preprocessor fails with `not a valid GROUP BY expression`; set the preprocessor again and rerun.
 - For a starting point, `app_scaffold_from_schema` with `schema_name` set to the model's published schema generates a dashboard over its certified metrics. It reads labels, formats and certification from the model at runtime and shows the model's validation state; keep its query columns unaliased so they match `FIELDS_FOR_AGENT.SQL_COLUMN_NAME`.
 - After a build, `app_run_healthcheck` reports metric definitions that changed since that revision was built (`semantic_models` → `changed_since_build`), and `dash://exasol/semantic-usage` shows which dashboards use a given metric, plus the ones that bypass the model (`bypasses`).
 

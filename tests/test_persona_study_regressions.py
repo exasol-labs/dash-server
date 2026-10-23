@@ -870,3 +870,59 @@ def test_data_layer_probe_clears_once_the_failing_file_succeeds_again(tmp_path: 
         "demo", sql_file="queries/trend.sql", profile_name="kit", error_text="broken again", revision_number=1
     ) is not None
     assert data_layer_status() == "failed"
+
+
+def test_r2_p1_10_overwrite_keeps_the_settings_a_call_leaves_out(tmp_path: Path) -> None:
+    """Adding session_init_sql to an existing profile takes just the name, overwrite and the new setting."""
+
+    app = create_app({"INSTANCE_PATH": str(tmp_path / "instance"), "TESTING": True})
+    server = app.extensions["mcp_server"]
+
+    def create(arguments: dict[str, Any]) -> dict[str, Any]:
+        response, _ = server.handle_jsonrpc(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "exasol_profile_create_local", "arguments": arguments},
+            }
+        )
+        return response["result"]
+
+    created = create(
+        {
+            "name": "kit",
+            "backend": "onprem",
+            "credential_mode": "password",
+            "dsn": "localhost:8563",
+            "user": "analyst",
+            "secret_env_var": "EXA_PASSWORD",
+            "row_limit": 500,
+        }
+    )
+    assert created["isError"] is False
+    statement = "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
+
+    updated = create({"name": "kit", "overwrite": True, "session_init_sql": [statement]})
+
+    assert updated["isError"] is False, updated["content"][0]["text"]
+    profile = app.extensions["exasol_dashboard_service"].profile_store.get_profile("kit")
+    assert (profile.dsn, profile.user, profile.tls_verify) == ("localhost:8563", "analyst", False)
+    assert profile.secret_ref.to_dict() == {"provider": "env", "key": "EXA_PASSWORD"}
+    assert profile.query_defaults == {
+        "statement_timeout_seconds": 30,
+        "row_limit": 500,
+        "session_init_sql": [statement],
+    }
+
+    # A new DSN gets its own TLS default instead of the localhost exemption.
+    moved = create({"name": "kit", "overwrite": True, "dsn": "warehouse.example.com:8563"})
+    assert moved["isError"] is False
+    profile = app.extensions["exasol_dashboard_service"].profile_store.get_profile("kit")
+    assert (profile.dsn, profile.tls_verify) == ("warehouse.example.com:8563", True)
+    assert profile.query_defaults["session_init_sql"] == [statement]
+
+    # Creating a profile still needs the connection settings.
+    missing = create({"name": "other", "session_init_sql": [statement]})
+    assert missing["isError"] is True
+    assert "backend" in missing["content"][0]["text"]

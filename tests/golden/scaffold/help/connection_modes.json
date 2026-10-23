@@ -48,7 +48,8 @@
   "recommended_workflow": [
     "Create a local Exasol profile with exasol_profile_create_local.",
     "Validate the profile with exasol_profile_validate.",
-    "Create a hosted dashboard with app_create_exasol_dashboard.",
+    "If exasol_profile_validate lists a published semantic model that covers the question, build on it (dash://exasol/help/semantic-layer).",
+    "Otherwise create the dashboard with app_create_from_files (template=exasol-analytics), or app_create_exasol_dashboard for a prebuilt system-monitoring pattern.",
     "Inspect or patch the generated SQL and deploy revisions as usual.",
     "Do not rewrite the generated app to own Exasol credentials in app.py."
   ],
@@ -66,7 +67,7 @@
     "field": "session_init_sql",
     "rules": [
       "One statement per entry, at most 10; only ALTER SESSION, EXECUTE SCRIPT, and OPEN SCHEMA are accepted.",
-      "Set it with exasol_profile_create_local (overwrite: true for an existing profile) and confirm session_init.status == \"applied\" with exasol_profile_validate.",
+      "Set it with exasol_profile_create_local (for an existing profile, name, overwrite: true and session_init_sql; other settings are kept) and confirm session_init.status == \"applied\" with exasol_profile_validate.",
       "Do not put session setup in queries/*.sql: changes made by a query file are discarded so they can't leak into other apps on the profile."
     ],
     "summary": "Session statements a profile runs on every new connection (dashboards, SQL smoke, exports, validation) before use, like a BI tool's initial SQL.",

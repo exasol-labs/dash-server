@@ -702,20 +702,6 @@ class ResourcesMixin(MCPServerHost):
                     "steps": ["app_create_from_files", "app_validate", "app_deploy_draft"],
                 },
                 {
-                    "name": "create_exasol_dashboard",
-                    # PS27-BUG-011: this used to stop at app_create_exasol_dashboard, so
-                    # an agent that trusted this list alone as the canonical recipe would
-                    # ship the generator's placeholder SQL live without ever validating
-                    # or building it - confirmed directly in the round-2 persona study.
-                    "steps": [
-                        "exasol_profile_create_local",
-                        "exasol_profile_validate",
-                        "app_create_exasol_dashboard",
-                        "app_validate",
-                        "app_deploy_draft",
-                    ],
-                },
-                {
                     "name": "create_exasol_dashboard_on_semantic_model",
                     "steps": [
                         "Read dash://exasol/help/semantic-layer",
@@ -729,8 +715,24 @@ class ResourcesMixin(MCPServerHost):
                     ],
                 },
                 {
+                    "name": "create_exasol_dashboard",
+                    # PS27-BUG-011: this used to stop at app_create_exasol_dashboard, so
+                    # an agent that trusted this list alone as the canonical recipe would
+                    # ship the generator's placeholder SQL live without ever validating
+                    # or building it - confirmed directly in the round-2 persona study.
+                    "steps": [
+                        "exasol_profile_create_local",
+                        "exasol_profile_validate (if semantic_layer lists a model that covers the question, "
+                        "follow create_exasol_dashboard_on_semantic_model instead)",
+                        "app_create_from_files with template=exasol-analytics (or app_create_exasol_dashboard "
+                        "for a prebuilt system-monitoring pattern)",
+                        "app_validate",
+                        "app_deploy_draft",
+                    ],
+                },
+                {
                     "name": "create_exasol_dashboard_with_external_mcp",
-                    "steps": ["Read dash://exasol/help/agent-workflow", "Use external Exasol MCP for schema discovery and SQL prototyping", "exasol_profile_validate", "app_create_exasol_dashboard", "app_validate", "app_deploy_draft"],
+                    "steps": ["Read dash://exasol/help/agent-workflow", "Use external Exasol MCP for schema discovery and SQL prototyping (for Semantic SQL: one call at a time, see dash://exasol/help/semantic-layer)", "exasol_profile_validate", "app_create_from_files", "app_validate", "app_deploy_draft"],
                 },
                 {
                     "name": "edit_existing_app",

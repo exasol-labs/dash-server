@@ -48,9 +48,9 @@ def _semantic_layer_guidance(semantic_layer: Any) -> dict[str, Any] | None:
         return {
             "next_step": (
                 f"Published semantic models are available: {names}. This profile's sessions don't activate "
-                "their preprocessor, so Semantic SQL against them would fail. Re-create the profile with "
-                f'session_init_sql ["{statement}"] (exasol_profile_create_local, overwrite: true), validate '
-                "again, then build metrics on the published views instead of the raw tables behind them. "
+                "their preprocessor, so Semantic SQL against them would fail. Add it to the profile: "
+                f'exasol_profile_create_local with name, overwrite: true and session_init_sql ["{statement}"] '
+                "(other settings are kept), validate again, then build metrics on the published views instead of the raw tables behind them. "
                 "Read dash://exasol/help/semantic-layer first."
             ),
             "suggested_tools": ["exasol_profile_create_local", "exasol_profile_validate"],

@@ -172,81 +172,66 @@ class HandlersMixin(MCPServerHost):
 
 
     def _tool_exasol_profile_create_local(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tool = "exasol_profile_create_local"
         name = self._require_name(arguments)
-        backend = self._require_choice(
-            arguments.get("backend"),
-            field_name="backend",
-            allowed={"onprem", "saas"},
-            tool_name="exasol_profile_create_local",
-        )
-        credential_mode = self._require_choice(
-            arguments.get("credential_mode"),
-            field_name="credential_mode",
-            allowed={"password", "access_token", "refresh_token", "saas_pat"},
-            tool_name="exasol_profile_create_local",
-        )
-        dsn = self._require_non_empty_string(
-            arguments.get("dsn"),
-            field_name="dsn",
-            tool_name="exasol_profile_create_local",
-        )
-        user = self._require_non_empty_string(
-            arguments.get("user"),
-            field_name="user",
-            tool_name="exasol_profile_create_local",
-        )
-        tls_verify = arguments.get("tls_verify")
-        if tls_verify is not None and not isinstance(tls_verify, bool):
-            raise self._field_error("exasol_profile_create_local", "tls_verify", "must be a boolean.")
-        secret_value = arguments.get("secret_value")
-        if secret_value is not None and not isinstance(secret_value, str):
-            raise self._field_error("exasol_profile_create_local", "secret_value", "must be a string.")
-        secret_env_var = arguments.get("secret_env_var")
-        if secret_env_var is not None and not isinstance(secret_env_var, str):
-            raise self._field_error("exasol_profile_create_local", "secret_env_var", "must be a string.")
         # BUG-011 fix: opt-in upsert. Without this, calling the tool twice with the
         # same name silently rewrites the profile (different DSN → silent clobber).
         overwrite = arguments.get("overwrite", False)
         if not isinstance(overwrite, bool):
-            raise self._field_error("exasol_profile_create_local", "overwrite", "must be a boolean.")
-
+            raise self._field_error(tool, "overwrite", "must be a boolean.")
         existing = self._exasol_service().profile_store.profile_exists(name)
         if existing and not overwrite:
             raise DashServerError(
                 category="exasol_profile_already_exists",
                 summary=(
-                    f"Exasol profile {name} already exists. Pass overwrite=true to rewrite it, "
-                    "or call exasol_profile_validate to inspect the current configuration."
+                    f"Exasol profile {name} already exists. Pass overwrite=true to rewrite it (settings you "
+                    "leave out are kept), or call exasol_profile_validate to inspect the current configuration."
                 ),
                 details={"profile": name, "overwrite": False},
             )
 
-        payload = self._exasol_service().create_local_profile(
-            name=name,
-            backend=backend,
-            credential_mode=credential_mode,
-            dsn=dsn,
-            user=user,
-            description=arguments.get("description") if isinstance(arguments.get("description"), str) else None,
+        changes: dict[str, Any] = {}
+        for field_name, allowed in (
+            ("backend", {"onprem", "saas"}),
+            ("credential_mode", {"password", "access_token", "refresh_token", "saas_pat"}),
+        ):
+            if arguments.get(field_name) is not None or not existing:
+                changes[field_name] = self._require_choice(
+                    arguments.get(field_name), field_name=field_name, allowed=allowed, tool_name=tool
+                )
+        for field_name in ("dsn", "user"):
+            if arguments.get(field_name) is not None or not existing:
+                changes[field_name] = self._require_non_empty_string(
+                    arguments.get(field_name), field_name=field_name, tool_name=tool
+                )
+        tls_verify = arguments.get("tls_verify")
+        if tls_verify is not None and not isinstance(tls_verify, bool):
+            raise self._field_error(tool, "tls_verify", "must be a boolean.")
+        for field_name in ("secret_value", "secret_env_var"):
+            if arguments.get(field_name) is not None and not isinstance(arguments.get(field_name), str):
+                raise self._field_error(tool, field_name, "must be a string.")
+        changes.update(
             tls_verify=tls_verify,
-            secret_value=secret_value,
-            secret_env_var=secret_env_var,
+            description=arguments.get("description") if isinstance(arguments.get("description"), str) else None,
+            secret_value=arguments.get("secret_value"),
+            secret_env_var=arguments.get("secret_env_var"),
             statement_timeout_seconds=self._optional_positive_int(
-                arguments.get("statement_timeout_seconds"),
-                tool_name="exasol_profile_create_local",
-                field_name="statement_timeout_seconds",
+                arguments.get("statement_timeout_seconds"), tool_name=tool, field_name="statement_timeout_seconds"
             ),
-            row_limit=self._optional_positive_int(
-                arguments.get("row_limit"),
-                tool_name="exasol_profile_create_local",
-                field_name="row_limit",
-            ),
+            row_limit=self._optional_positive_int(arguments.get("row_limit"), tool_name=tool, field_name="row_limit"),
             session_init_sql=arguments.get("session_init_sql"),
         )
+
+        if existing:
+            # A rewrite keeps whatever the call leaves out, so adding session_init_sql (or
+            # changing the DSN) doesn't mean restating the whole profile.
+            payload = self._exasol_service().update_local_profile(name=name, changes=changes)
+        else:
+            payload = self._exasol_service().create_local_profile(name=name, **changes)
         payload["was_already_present"] = existing
         verb = "Rewrote" if existing else "Created"
         return self._tool_result(
-            "exasol_profile_create_local",
+            tool,
             text=f"{verb} local Exasol profile {payload['profile']['name']}.",
             structured_content=payload,
         )

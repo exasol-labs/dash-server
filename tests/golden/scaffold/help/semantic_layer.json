@@ -34,15 +34,19 @@
     "session_init_sql": [
       "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
     ],
+    "setup_statements": "Either statement activates the preprocessor and either works in session_init_sql: ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR (names the preprocessor), or EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL() (the form SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT names). MODELS_FOR_AGENT.PREPROCESSOR_QUALIFIED_NAME says which preprocessor a model needs.",
     "steps": [
-      "exasol_profile_create_local with session_init_sql (overwrite: true to add it to an existing profile).",
+      "exasol_profile_create_local with session_init_sql. To add it to an existing profile, pass just name, overwrite: true and session_init_sql; the profile's other settings are kept.",
       "exasol_profile_validate and confirm session_init.status == \"applied\"."
     ],
     "summary": "Semantic SQL needs the model's SQL preprocessor active in every session. Declare it once on the profile; dash-server runs it on every connection it opens (dashboards, SQL smoke, exports)."
   },
   "prototyping": [
     "The fastest reliable check of a semantic query is the dashboard's own: put it in queries/*.sql, deploy a preview, and run app_run_healthcheck.",
-    "The external Exasol MCP server can run Semantic SQL after set_exasol_preprocessor(SEMANTIC_ADMIN, SEMANTIC_PREPROCESSOR), if its user has the model grant. In exasol-mcp-server 2.2.0, any failed query resets its session: check list_exasol_preprocessors and set the preprocessor again after an error. Don't pass row_limit for a semantic query; put LIMIT in the SQL."
+    "The external Exasol MCP server can run Semantic SQL after set_exasol_preprocessor(SEMANTIC_ADMIN, SEMANTIC_PREPROCESSOR), if its user has the model grant.",
+    "The preprocessor is a session setting, and exasol-mcp-server 2.2.0 pools sessions: run Semantic SQL calls one at a time, never in parallel, since a concurrent call can land on a session without it. Any failed query also resets its session: after an error, check list_exasol_preprocessors and set the preprocessor again.",
+    "A semantic query failing with 'not a valid GROUP BY expression' (or SEMANTIC_SURFACE_001) means its session didn't have the preprocessor, not that the query is wrong: set it again and rerun.",
+    "row_limit works for semantic queries on Semantic Views 0.5.0 and later."
   ],
   "provenance": [
     "Show the model's validation state next to its numbers. Readiness (VALID, WARNING, INVALID, PRECONDITION) is MODELS_FOR_AGENT.AGENT_READINESS; VALIDATION_STATUS is the validation run's own OK, WARNING or ERROR. Take it from the newest finished run (SEMANTIC_SOURCE.VALIDATION_RUNS with STATUS <> 'RUNNING'): some Semantic Views checks leave a run unfinished, and MODELS_FOR_AGENT then reports VALID. The semantic scaffold's queries/business/provenance.sql does this; the issues are in SEMANTIC_SOURCE.VALIDATION_RESULTS.",
@@ -68,6 +72,7 @@
     "Select dimensions and metrics directly and group by the dimensions: SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region. A metric is already aggregated; don't wrap it in SUM() or AVG().",
     "One statement per queries/*.sql file, as for any dashboard SQL. Put LIMIT in the SQL when you need a bounded result.",
     "Result columns are named as SQL names them: upper-case unless aliased (TOTAL_REVENUE). Read rows by those names.",
-    "Values are typed: DECIMAL metrics arrive as int or decimal.Decimal; numbers with more than 15 significant digits stay strings."
+    "Values are typed: DECIMAL metrics arrive as int or decimal.Decimal; numbers with more than 15 significant digits stay strings.",
+    "Live Semantic SQL in queries/*.sql is the lane dash-server hosts. Semantic Views' per-request compile lane (EXECUTE SCRIPT SEMANTIC_ADMIN.COMPILE_REQUEST_JSON on every request) isn't supported: a query file runs as written, so the compiled SQL would need a second, server-side step. Don't save compiled SQL in queries/*.sql either (see never)."
   ]
 }

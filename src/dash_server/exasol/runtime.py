@@ -96,6 +96,35 @@ def error_reference(error_text: str) -> str:
     return hashlib.sha1(error_text.strip().encode("utf-8", errors="replace")).hexdigest()[:8]
 
 
+def describe_query_error(exc: Exception) -> str:
+    """The text of an error from running a query file, explaining pyexasol formatting failures.
+
+    pyexasol formats query text before sending it, reading every ``{...}`` as a parameter
+    placeholder. Literal braces (JSON in an ``EXECUTE SCRIPT`` argument, say) then fail with a
+    bare ``KeyError: '"model"'`` that names neither the cause nor the fix.
+    """
+
+    if isinstance(exc, (KeyError, IndexError, ValueError)) and _raised_while_formatting(exc):
+        return (
+            f"The SQL text could not be formatted ({type(exc).__name__}: {exc}). pyexasol reads {{...}} in "
+            "query text as a parameter placeholder: write literal braces as {{ and }} (for example JSON in an "
+            "EXECUTE SCRIPT argument), or pass a value for the placeholder. See dash://exasol/help/sql-placeholders."
+        )
+    return str(exc)
+
+
+def _raised_while_formatting(exc: Exception) -> bool:
+    """True when ``exc`` came out of ``str.format``-style formatting (pyexasol's ExaFormatter)."""
+
+    traceback = exc.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_name in {"format", "vformat", "_vformat", "get_value", "get_field"}:
+            return True
+        traceback = traceback.tb_next
+    # str.format's C implementation leaves no Python frame for a malformed format string.
+    return isinstance(exc, ValueError) and "format string" in str(exc)
+
+
 def database_message(error_text: str) -> str:
     """The database's own message from a pyexasol error, or ``""`` for any other error text."""
 

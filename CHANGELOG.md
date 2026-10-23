@@ -73,6 +73,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   definition hash each was built against: impact analysis before changing or dropping a metric.
 
 ### Changed
+- `exasol_profile_create_local` with `overwrite: true` on an existing profile keeps every setting
+  the call leaves out, including the secret: `{name, overwrite: true, session_init_sql}` adds
+  session setup without restating the connection. A new DSN gets its own TLS default unless
+  `tls_verify` is given. Creating a profile still needs the connection settings and a secret.
+- Agent guidance routes semantic-first. The profile tools, `dash://meta/workflows`, and
+  `dash://exasol/help/connection-modes` suggest `app_create_from_files` and point to
+  `dash://exasol/help/semantic-layer` when `exasol_profile_validate` lists a published model,
+  instead of `app_create_exasol_dashboard`; the semantic workflow is listed first, and
+  `dashboard-patterns` and `docs/getting-started.md` say the prebuilt patterns don't read a
+  semantic model. `exasol_profile_validate`'s `name` is described as the profile name.
+- `dash://exasol/help/semantic-layer` covers both session setup statements
+  (`ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT` and `ENABLE_SEMANTIC_SQL()`), says to run Semantic
+  SQL through the Exasol MCP server one call at a time and what `not a valid GROUP BY expression`
+  means there, drops the outdated "don't pass `row_limit`" advice, and says the per-request
+  compile lane isn't supported. `dash://exasol/help/sql-placeholders` says to write literal
+  braces as `{{ }}`, and a query that fails on one now says so instead of reporting a bare
+  `KeyError`.
 - `app_validate`'s "does not declare LIMIT or obvious aggregation" warning no longer fires for
   Semantic SQL against a `SEMANTIC_*` schema (its metrics aggregate implicitly), and "Prefer one
   statement per Exasol SQL file" ignores semicolons inside comments and string literals.

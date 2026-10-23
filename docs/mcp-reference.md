@@ -59,7 +59,7 @@ _53 tools registered. Each `tools/call` request must pass the tool name and the 
 - **`app_validate`** — Run manifest, dependency, lint, syntax, import, callback, and credential-safety validation on the current draft workspace. Use this before app_build or app_deploy_draft. This is a static/offline check: it does not verify that SQL in queries/*.sql references real schemas, tables, or columns against a live Exasol connection. A nonexistent-column typo passes app_validate as is_valid: true and is only caught later, by app_build's sql_smoke preflight - run app_build early if you want that check sooner.
 - **`apps_list`** — Return the current hosted app inventory from the SQLite registry.
 - **`exasol_profile_create_local`** — Create one local Exasol profile for a single-user workflow. Provide either secret_value or secret_env_var so secrets stay outside Git.
-- **`exasol_profile_validate`** — Resolve the configured secret, load pyexasol, and run a connection test.
+- **`exasol_profile_validate`** — Resolve the configured secret, load pyexasol, and run a connection test. Also runs the profile's session_init_sql and lists the published Exasol Semantic Views models the profile can see (semantic_layer).
 - **`exasol_profiles_list`** — Return Git-tracked Exasol profile metadata without secret values.
 - **`export_cancel`** — Request cancellation of the caller's queued or running export.
 - **`export_download_link_create`** — Create a short-lived authenticated URL for a completed export artifact.

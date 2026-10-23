@@ -50,13 +50,12 @@ def test_mcp_exposes_app_create_schema_help_for_llm_clients(client):
     assert app_create_exasol_dashboard["inputSchema"]["properties"]["pattern"]["default"] == "analytics-hub"
     assert "analytics-hub" in app_create_exasol_dashboard["inputSchema"]["properties"]["pattern"]["enum"]
     assert app_scaffold_from_schema["inputSchema"]["required"] == ["name", "profile_name"]
-    assert exasol_profile_create_local["inputSchema"]["required"] == [
-        "name",
-        "backend",
-        "credential_mode",
-        "dsn",
-        "user",
-    ]
+    # Only name is required by the schema: a rewrite (overwrite: true) keeps what it leaves out.
+    # Each field a new profile needs says so.
+    profile_schema = exasol_profile_create_local["inputSchema"]
+    assert profile_schema["required"] == ["name"]
+    for field_name in ("backend", "credential_mode", "dsn", "user"):
+        assert "Required to create a profile." in profile_schema["properties"][field_name]["description"]
     assert app_read_file["inputSchema"]["required"] == ["name", "path"]
     assert "compact line-context preview" in app_patch_file["description"]
     assert app_diff_draft_vs_artifact["inputSchema"]["required"] == ["name"]

@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from .runtime import database_message
+from .runtime import database_message, describe_query_error
 from .semantic_models import (
     SemanticModelRef,
     governed_sources,
@@ -266,7 +266,8 @@ def _smoke_one(
                 f"sessions opened by Exasol profile {profile_name!r} don't activate it. Without it the "
                 "dashboard fails at runtime (SEMANTIC_SURFACE_001 or 'not a valid GROUP BY expression'). "
                 "Add this statement to the profile's session_init_sql (exasol_profile_create_local with "
-                f"overwrite: true): ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {ref.preprocessor}"
+                f"name, overwrite: true and session_init_sql; other settings are kept): "
+                f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {ref.preprocessor}"
             ),
         )
 
@@ -290,7 +291,7 @@ def _smoke_one(
             return SqlSmokeFile(
                 relative_path=relative_path,
                 outcome="failed",
-                error_text=str(exc),
+                error_text=describe_query_error(exc),
                 semantic_models=model_names,
                 warnings=warnings,
                 governed_reads=governed_reads,
@@ -338,7 +339,7 @@ def _smoke_script(
     try:
         statement = connection.execute(sql_text.rstrip(";"), params)  # type: ignore[attr-defined]
     except Exception as exc:
-        return SqlSmokeFile(relative_path=relative_path, outcome="failed", error_text=str(exc))
+        return SqlSmokeFile(relative_path=relative_path, outcome="failed", error_text=describe_query_error(exc))
     close = getattr(statement, "close", None)
     if callable(close):
         try:

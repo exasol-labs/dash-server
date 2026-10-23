@@ -13,6 +13,7 @@ from .dsn import default_tls_verify, dsn_parse_error
 from .fetch_mappers import dashboard_fetch_mapper
 from .models import ExasolProfile, ExasolSecretRef
 from .profiles import ExasolProfileStore
+from .runtime import describe_query_error
 from .scaffold import (
     EXASOL_DASHBOARD_PATTERNS,
     build_exasol_dashboard_bundle,
@@ -168,6 +169,7 @@ class ExasolDashboardService:
         statement_timeout_seconds: int | None = None,
         row_limit: int | None = None,
         session_init_sql: list[str] | None = None,
+        existing_secret_ref: ExasolSecretRef | None = None,
     ) -> dict[str, Any]:
         self._validate_app_name(name, field_name="name")
         self._validate_backend_mode(backend, credential_mode)
@@ -183,13 +185,16 @@ class ExasolDashboardService:
                 session_init_sql = normalize_session_init_sql(session_init_sql)
             except ValueError as exc:
                 raise self._field_error("session_init_sql", str(exc)) from exc
-        if bool(secret_value) == bool(secret_env_var):
+        if (secret_value and secret_env_var) or not (secret_value or secret_env_var or existing_secret_ref):
             raise DashServerError(
                 category="exasol_profile_validation_error",
                 summary="Provide exactly one of secret_value or secret_env_var.",
                 details={"field": "secret_value"},
             )
-        if secret_value:
+        if not (secret_value or secret_env_var):
+            assert existing_secret_ref is not None
+            secret_ref = existing_secret_ref
+        elif secret_value:
             secret_ref = self.secret_store.store_local_secret(name, secret_value)
         else:
             assert secret_env_var is not None
@@ -216,6 +221,38 @@ class ExasolDashboardService:
                 "key": stored.secret_ref.key,
             },
         }
+
+    def update_local_profile(self, *, name: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Rewrite an existing profile, keeping every setting ``changes`` doesn't give.
+
+        The stored secret reference is kept unless a new secret is given. ``tls_verify`` is
+        kept only while the DSN stays the same: a new DSN gets its own default unless the
+        call sets it, so a localhost exemption doesn't carry over to a remote host.
+        """
+
+        current = self.profile_store.get_profile(name)
+        defaults = current.query_defaults or {}
+
+        def pick(key: str, fallback: Any) -> Any:
+            return changes[key] if changes.get(key) is not None else fallback
+
+        dsn = pick("dsn", current.dsn)
+        new_secret = bool(changes.get("secret_value") or changes.get("secret_env_var"))
+        return self.create_local_profile(
+            name=name,
+            backend=pick("backend", current.backend),
+            credential_mode=pick("credential_mode", current.credential_mode),
+            dsn=dsn,
+            user=pick("user", current.user),
+            description=pick("description", current.description),
+            tls_verify=pick("tls_verify", current.tls_verify if dsn == current.dsn else None),
+            secret_value=changes.get("secret_value"),
+            secret_env_var=changes.get("secret_env_var"),
+            existing_secret_ref=None if new_secret else current.secret_ref,
+            statement_timeout_seconds=pick("statement_timeout_seconds", defaults.get("statement_timeout_seconds")),
+            row_limit=pick("row_limit", defaults.get("row_limit")),
+            session_init_sql=pick("session_init_sql", defaults.get("session_init_sql")),
+        )
 
     def local_profile_differences(
         self,
@@ -626,7 +663,7 @@ class ExasolDashboardService:
                 return {
                     "status": "error",
                     "profile": profile.name,
-                    "error": str(exc),
+                    "error": describe_query_error(exc),
                     "summary": f"Exasol query failed for profile {profile.name}.",
                 }
         # Unreachable — the loop returns on success or after the second attempt's
