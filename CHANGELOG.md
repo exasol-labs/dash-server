@@ -98,6 +98,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variable is already set.
 
 ### Fixed
+- Isolated-mode app workers ignored `SIGTERM`. The worker's handler called `httpd.shutdown()` on
+  the thread running `serve_forever()`, which deadlocks, so only the manager's `SIGKILL` fallback
+  stopped them. Workers forked from the forkserver baseline also inherited the baseline's signal
+  handlers and listening socket: on `SIGTERM` they unlinked the baseline's socket file.
+- The forkserver baseline outlived its server: nothing stopped it when the server process ended,
+  and it was never adopted by the next one. It now exits when its parent process does.
+- The test suite left worker and baseline processes running after every run of the isolated-runtime
+  tests. Tests now stop every worker manager they create.
 - XLSX exports now write `DECIMAL`, `DATE`, and `TIMESTAMP` columns as number and date cells.
   Before, pyexasol delivered those values as strings, so they landed in the workbook as text
   that couldn't be summed or sorted, despite what the docs said. The XLSX export connection

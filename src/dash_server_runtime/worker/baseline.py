@@ -54,6 +54,9 @@ from .protocol import (
     KEY_EVENT,
 )
 
+# How often the accept loop wakes up to check whether its parent is still alive.
+_PARENT_CHECK_INTERVAL_SECONDS = 1.0
+
 # Imports the baseline pre-warms before it starts accepting fork requests.
 # Children inherit this state via copy-on-write.
 DEFAULT_PREWARM_PACKAGES: tuple[str, ...] = (
@@ -86,7 +89,7 @@ def _serve_in_child(request: dict[str, Any]) -> int:
     return serve(Namespace(**args_dict))
 
 
-def _handle_request(conn: socket.socket) -> None:
+def _handle_request(conn: socket.socket, listen_sock: socket.socket | None = None) -> None:
     """Read one fork request, fork, ack the parent."""
 
     # Single recv_fds — fork requests are small (<64 KiB).
@@ -135,16 +138,27 @@ def _handle_request(conn: socket.socket) -> None:
             os.dup2(stderr_fd, 2)
         except OSError:
             pass
+        # Drop the baseline's signal handlers: its SIGTERM handler would close the
+        # baseline's socket, unlink its socket file, and raise SystemExit inside the
+        # worker's serving thread, where it is swallowed. serve() installs its own.
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGCHLD):
+            try:
+                signal.signal(signum, signal.SIG_DFL)
+            except (ValueError, OSError):
+                pass
         # Close inherited socket/fds so we don't keep listening or leak refs.
         for fd in (stdout_fd, stderr_fd):
             try:
                 os.close(fd)
             except OSError:
                 pass
-        try:
-            conn.close()
-        except OSError:
-            pass
+        for inherited in (conn, listen_sock):
+            if inherited is None:
+                continue
+            try:
+                inherited.close()
+            except OSError:
+                pass
         try:
             exit_code = _serve_in_child(request)
         except Exception:
@@ -259,13 +273,22 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, AttributeError):
         pass
 
+    # A baseline serves only the manager that started it and is never adopted by a
+    # restarted server, so it exits once that parent is gone instead of lingering.
+    parent_pid = os.getppid()
+    sock.settimeout(_PARENT_CHECK_INTERVAL_SECONDS)
     while True:
         try:
             conn, _ = sock.accept()
+        except TimeoutError:
+            if os.getppid() != parent_pid:
+                break
+            continue
         except OSError:
             break
+        conn.settimeout(None)
         try:
-            _handle_request(conn)
+            _handle_request(conn, sock)
         except Exception:
             try:
                 conn.sendall(
@@ -286,6 +309,13 @@ def main(argv: list[str] | None = None) -> int:
             except OSError:
                 pass
 
+    try:
+        sock.close()
+    finally:
+        try:
+            os.unlink(socket_path)
+        except FileNotFoundError:
+            pass
     return 0
 
 

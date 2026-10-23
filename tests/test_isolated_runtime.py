@@ -1128,3 +1128,108 @@ def test_worker_wire_events_are_single_sourced_in_protocol():
     assert '"event" in' not in manager_src
     for symbol in ("KEY_EVENT", "EVENT_READY", "EVENT_FORKED", "EVENT_RESPONSE", "READY_READ_EVENTS"):
         assert symbol in manager_src, symbol
+
+
+# --- Worker and baseline shutdown (process leak regressions) ---
+
+
+def _wait_pid_gone(pid: int, timeout: float = 10.0) -> bool:
+    """True once ``pid`` has exited (reaping it if it is our own child)."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                return True
+        except ChildProcessError:
+            pass  # not our child: whoever owns it reaps it
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _start_tiny_worker(tmp_path, *, enable_forkserver: bool):
+    manager = AppWorkerManager(
+        workers_root=str(tmp_path / "workers"),
+        enable_forkserver=enable_forkserver,
+        prewarm_packages=("dash_server_runtime",),
+    )
+    record = manager.start(
+        app_name="tiny",
+        revision_number=1,
+        mount_path="/apps/tiny",
+        app_source=_write_tiny_app(tmp_path) / "app.py",
+        manifest={"name": "tiny", "title": "Tiny", "route": "/apps/tiny"},
+    )
+    return manager, record
+
+
+def test_spawned_worker_exits_on_sigterm(tmp_path):
+    """The worker's SIGTERM handler used to call httpd.shutdown() on the thread running
+    serve_forever(), which deadlocks: the worker ignored SIGTERM and only a SIGKILL
+    fallback stopped it."""
+
+    import signal
+
+    manager, record = _start_tiny_worker(tmp_path, enable_forkserver=False)
+    try:
+        os.kill(record.pid, signal.SIGTERM)
+        assert _wait_pid_gone(record.pid), "worker ignored SIGTERM"
+    finally:
+        manager.stop_all()
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
+)
+def test_forked_worker_exits_on_sigterm_and_leaves_the_baseline_intact(tmp_path):
+    """A worker forked from the baseline used to inherit the baseline's SIGTERM handler,
+    which unlinked the baseline's socket and raised a swallowed SystemExit in the worker."""
+
+    import signal
+
+    from dash_server.runtime.worker_manager import PidHandle
+
+    manager, record = _start_tiny_worker(tmp_path, enable_forkserver=True)
+    try:
+        assert isinstance(record.handle, PidHandle)
+        (baseline,) = manager.baseline_status()
+        os.kill(record.pid, signal.SIGTERM)
+        assert _wait_pid_gone(record.pid), "forked worker ignored SIGTERM"
+        assert os.path.exists(baseline["socket_path"]), "the worker removed the baseline's socket"
+    finally:
+        manager.stop_all()
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="Unix-socket-based forkserver is POSIX-only"
+)
+def test_baseline_exits_when_its_parent_dies():
+    """Nothing adopts a baseline after its manager's process ends, so it must not linger."""
+
+    import tempfile
+    import uuid
+
+    socket_path = str(Path(tempfile.gettempdir()) / f"dssrv-test-{uuid.uuid4().hex[:8]}.sock")
+    launcher = (
+        "import subprocess, sys\n"
+        "p = subprocess.Popen([sys.executable, '-m', 'dash_server_runtime.worker.baseline', sys.argv[1],"
+        " 'dash_server_runtime'], stdout=subprocess.PIPE, text=True)\n"
+        "p.stdout.readline()\n"
+        "print(p.pid, flush=True)\n"
+    )
+    output = subprocess.run(
+        [sys.executable, "-c", launcher, socket_path], capture_output=True, text=True, timeout=60, check=True
+    )
+    baseline_pid = int(output.stdout.strip())
+    try:
+        assert _wait_pid_gone(baseline_pid), "orphaned baseline kept running"
+        assert not os.path.exists(socket_path)
+    finally:
+        try:
+            os.kill(baseline_pid, 9)
+        except ProcessLookupError:
+            pass

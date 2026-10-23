@@ -29,6 +29,7 @@ from .protocol import (
 
 def serve(args: argparse.Namespace) -> int:
     import signal
+    import threading
     from wsgiref.simple_server import WSGIRequestHandler
 
     try:
@@ -201,7 +202,10 @@ def serve(args: argparse.Namespace) -> int:
     bound_host, bound_port = httpd.server_address[:2]
 
     def _terminate(_signum, _frame):
-        httpd.shutdown()
+        # The handler runs on the main thread, which is inside serve_forever(); calling
+        # shutdown() here would wait for serve_forever() to return and deadlock, leaving
+        # the worker immune to SIGTERM. Shut down from another thread instead.
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     try:
         signal.signal(signal.SIGTERM, _terminate)
