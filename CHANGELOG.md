@@ -33,11 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   see (`semantic_layer`), including whether each model's preprocessor is active in the profile's
   sessions. Its text names the models, and its next step says to build on them, or first to add
   the `session_init_sql` they need.
-- `app_scaffold_from_schema` scaffolds Semantic SQL from a published semantic model: pass the
-  model's published schema as `schema_name` (and an object as `table_name`). The summary selects
-  certified metrics labelled with their display names, the trend uses a time dimension, and the
-  detail uses a category dimension, all from valid metric/dimension combinations. Without
-  `schema_name`, the scaffold prefers a usable published model over raw tables.
+- `app_scaffold_from_schema` scaffolds a dashboard on a published semantic model: pass the
+  model's published schema as `schema_name` (and an object as `table_name`). Its Semantic SQL
+  selects certified metrics, a trend over a time dimension, and a breakdown by a category
+  dimension, all from valid metric/dimension combinations. The generated app reads labels,
+  formats (`FORMAT_HINT`, `UNIT_HINT`), and certification from the model at runtime, so changes
+  made there reach the dashboard, and shows a provenance strip: model version, last finished
+  validation, and how many metrics are certified. It has no Exasol system tabs (pattern
+  `semantic-model`). Without `schema_name`, the scaffold prefers a usable published model over
+  raw tables.
 - SQL smoke (build preflight and `app_run_healthcheck`) warns when a query file reads a table that
   backs a published semantic model, naming the published schema to query instead. The warnings
   are in the `sql_smoke` probe's `details.warnings`; they don't fail the check.

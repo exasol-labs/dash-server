@@ -120,7 +120,33 @@ def build_schema_scaffold_bundle(
             }
         },
     }
-    files = [
+    if blueprint.get("kind") == "semantic":
+        files = [
+            {"path": "dash-app.json", "content": json.dumps(manifest, indent=2) + "\n"},
+            {"path": "app.py", "content": _render_semantic_app_py(title, blueprint)},
+            {"path": "dash_server_exasol.py", "content": render_exasol_helper_py()},
+            *_business_files(blueprint),
+            {"path": "requirements.txt", "content": EXASOL_SCAFFOLD_REQUIREMENTS},
+        ]
+        pattern = "semantic-model"
+    else:
+        files = _schema_scaffold_files(manifest, title, blueprint)
+        pattern = "analytics-hub"
+    return {
+        "name": app_name,
+        "title": title,
+        "route": route,
+        "description": description,
+        "template": "exasol-analytics",
+        "data_sources": manifest["data_sources"],
+        "pattern": pattern,
+        "schema_blueprint": blueprint,
+        "files": files,
+    }
+
+
+def _schema_scaffold_files(manifest: dict[str, Any], title: str, blueprint: dict[str, Any]) -> list[dict[str, str]]:
+    return [
         {"path": "dash-app.json", "content": json.dumps(manifest, indent=2) + "\n"},
         {
             "path": "app.py",
@@ -145,17 +171,6 @@ def build_schema_scaffold_bundle(
             "content": EXASOL_SCAFFOLD_REQUIREMENTS,
         },
     ]
-    return {
-        "name": app_name,
-        "title": title,
-        "route": route,
-        "description": description,
-        "template": "exasol-analytics",
-        "data_sources": manifest["data_sources"],
-        "pattern": "analytics-hub",
-        "schema_blueprint": blueprint,
-        "files": files,
-    }
 
 
 def exasol_connection_modes_help() -> dict[str, Any]:
@@ -240,6 +255,20 @@ def _render_analytics_hub_app_py(title: str, business_context: dict[str, str] | 
     )
 
 
+def _render_semantic_app_py(title: str, blueprint: dict[str, Any]) -> str:
+    trend_dimension = blueprint.get("time_dimension") or blueprint.get("category_dimension")
+    detail_dimension = blueprint.get("detail_dimension")
+    return _template_text("semantic_app.py.tmpl").format(
+        title=title,
+        model=blueprint["model"],
+        object_ref=f"{blueprint['schema_name']}.{blueprint['table_name']}",
+        trend_x=trend_dimension["column"] if trend_dimension else None,
+        trend_y=blueprint["primary_metric"]["column"],
+        trend_is_time=bool(blueprint.get("time_dimension")),
+        detail_dimension=detail_dimension["column"] if detail_dimension else None,
+    )
+
+
 def _render_overview_app_py(title: str) -> str:
     return _template_text("overview_app.py.tmpl").format(title=title)
 
@@ -312,6 +341,8 @@ def _business_files(blueprint: dict[str, Any]) -> list[dict[str, str]]:
             {"path": "queries/business/summary.sql", "content": _semantic_summary_sql(blueprint)},
             {"path": "queries/business/trend.sql", "content": _semantic_trend_sql(blueprint)},
             {"path": "queries/business/detail.sql", "content": _semantic_detail_sql(blueprint)},
+            {"path": "queries/business/fields.sql", "content": _semantic_fields_sql(blueprint)},
+            {"path": "queries/business/provenance.sql", "content": _semantic_provenance_sql(blueprint)},
             {"path": "SCHEMA_NOTES.md", "content": _semantic_notes_md(blueprint)},
         ]
     return [
@@ -326,12 +357,11 @@ def _semantic_object_ref(blueprint: dict[str, Any]) -> str:
     return _qualified_table_name(blueprint["schema_name"], blueprint["table_name"])
 
 
+# Semantic SQL selects the model's columns by their SQL names, unaliased: the app reads labels,
+# formats, and certification from the model at runtime (fields.sql), so they follow changes made
+# there. Metrics are already aggregated, so they are selected bare and grouped by dimensions.
 def _semantic_summary_sql(blueprint: dict[str, Any]) -> str:
-    # Metrics are already aggregated: select them bare, labelled with their governed names.
-    columns = ",\n       ".join(
-        f"{_quoted_identifier(metric['column'])} AS {_quoted_identifier(metric['label'])}"
-        for metric in blueprint["summary_metrics"]
-    )
+    columns = ",\n       ".join(_quoted_identifier(metric["column"]) for metric in blueprint["summary_metrics"])
     return f"SELECT {columns}\nFROM {_semantic_object_ref(blueprint)}\n"
 
 
@@ -340,18 +370,18 @@ def _semantic_trend_sql(blueprint: dict[str, Any]) -> str:
     time_dimension = blueprint.get("time_dimension")
     category_dimension = blueprint.get("category_dimension")
     if time_dimension:
-        label = _quoted_identifier(time_dimension["column"])
-        order = f"ORDER BY {label}\n"
+        dimension = _quoted_identifier(time_dimension["column"])
+        order = f"ORDER BY {dimension}\n"
     elif category_dimension:
-        label = _quoted_identifier(category_dimension["column"])
+        dimension = _quoted_identifier(category_dimension["column"])
         order = f"ORDER BY {metric} DESC\nLIMIT 15\n"
     else:
-        return f"SELECT 'Overall' AS \"LABEL\", {metric} AS \"VALUE\"\nFROM {_semantic_object_ref(blueprint)}\n"
+        return f"SELECT {metric}\nFROM {_semantic_object_ref(blueprint)}\n"
     return (
-        f"SELECT {label} AS \"LABEL\",\n"
-        f"       {metric} AS \"VALUE\"\n"
+        f"SELECT {dimension},\n"
+        f"       {metric}\n"
         f"FROM {_semantic_object_ref(blueprint)}\n"
-        f"GROUP BY {label}\n" + order
+        f"GROUP BY {dimension}\n" + order
     )
 
 
@@ -361,16 +391,44 @@ def _semantic_detail_sql(blueprint: dict[str, Any]) -> str:
     if dimension is None or not metrics:
         return _semantic_summary_sql(blueprint)
     dimension_ref = _quoted_identifier(dimension["column"])
-    columns = ",\n       ".join(
-        [dimension_ref]
-        + [f"{_quoted_identifier(metric['column'])} AS {_quoted_identifier(metric['label'])}" for metric in metrics]
-    )
+    columns = ",\n       ".join([dimension_ref] + [_quoted_identifier(metric["column"]) for metric in metrics])
     return (
         f"SELECT {columns}\n"
         f"FROM {_semantic_object_ref(blueprint)}\n"
         f"GROUP BY {dimension_ref}\n"
         f"ORDER BY {_quoted_identifier(metrics[0]['column'])} DESC\n"
         "LIMIT 25\n"
+    )
+
+
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _semantic_fields_sql(blueprint: dict[str, Any]) -> str:
+    return (
+        "SELECT SQL_COLUMN_NAME, FIELD_KIND, DISPLAY_NAME, FORMAT_HINT, UNIT_HINT, IS_CERTIFIED\n"
+        "FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT\n"
+        f"WHERE PUBLISHED_SCHEMA = {_sql_string(blueprint['schema_name'])}\n"
+        f"  AND PUBLISHED_OBJECT_NAME = {_sql_string(blueprint['table_name'])}\n"
+        "ORDER BY ORDINAL_POSITION\n"
+    )
+
+
+def _semantic_provenance_sql(blueprint: dict[str, Any]) -> str:
+    # The newest *finished* validation run: an unfinished one (some Semantic Views checks
+    # leave one behind) has no issues recorded yet and would read as passing.
+    return (
+        "SELECT m.MODEL_NAME, m.VERSION_NUMBER, vr.VALIDATION_RUN_ID, vr.STATUS AS VALIDATION_STATUS,\n"
+        "       vr.ERROR_COUNT, vr.WARNING_COUNT, vr.FINISHED_AT\n"
+        "FROM SEMANTIC_AGENT.MODELS_FOR_AGENT m\n"
+        "LEFT JOIN (SELECT MODEL_ID, VERSION_ID, MAX(VALIDATION_RUN_ID) AS VALIDATION_RUN_ID\n"
+        "           FROM SEMANTIC_SOURCE.VALIDATION_RUNS\n"
+        "           WHERE STATUS <> 'RUNNING'\n"
+        "           GROUP BY MODEL_ID, VERSION_ID) latest\n"
+        "  ON latest.MODEL_ID = m.MODEL_ID AND latest.VERSION_ID = m.VERSION_ID\n"
+        "LEFT JOIN SEMANTIC_SOURCE.VALIDATION_RUNS vr ON vr.VALIDATION_RUN_ID = latest.VALIDATION_RUN_ID\n"
+        f"WHERE m.MODEL_NAME = {_sql_string(blueprint['model'])}\n"
     )
 
 
@@ -404,7 +462,10 @@ def _semantic_notes_md(blueprint: dict[str, Any]) -> str:
         "`SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT`.",
         "- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes "
         "today's definition.",
-        "- Labels and formats come from `SEMANTIC_AGENT.FIELDS_FOR_AGENT`; see `dash://exasol/help/semantic-layer`.",
+        "- `app.py` reads labels, formats (`FORMAT_HINT`, `UNIT_HINT`; a percentage is a fraction), and "
+        "certification from `SEMANTIC_AGENT.FIELDS_FOR_AGENT` at runtime (`queries/business/fields.sql`), and "
+        "shows the model's last finished validation (`queries/business/provenance.sql`). Keep query columns "
+        "unaliased so they match `SQL_COLUMN_NAME`; see `dash://exasol/help/semantic-layer`.",
     ]
     return "\n".join(lines) + "\n"
 

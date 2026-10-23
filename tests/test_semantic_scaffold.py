@@ -133,3 +133,91 @@ def test_raw_scaffold_skips_semantic_internals_but_not_lookalike_user_schemas() 
     candidates = {(c["schema_name"], c["table_name"]) for c in blueprint["table_candidates"]}
     assert ("SEMANTIC_SALES", "SALES") not in candidates
     assert blueprint["table_name"] == "BOOKINGS"
+
+
+def _bundle(service: _Service, **kwargs: Any) -> dict[str, Any]:
+    return service.build_schema_scaffold_bundle(app_name="demo", profile_name="kit", **kwargs)
+
+
+def test_semantic_scaffold_reads_presentation_from_the_model_at_runtime() -> None:
+    bundle = _bundle(_Service(models=True), schema_name="SEMANTIC_SALES")
+    files = {entry["path"]: entry["content"] for entry in bundle["files"]}
+
+    assert bundle["pattern"] == "semantic-model"
+    # No Exasol system tabs: a viewer of governed metrics doesn't need them.
+    assert not [path for path in files if path.startswith("queries/system/")]
+    # Columns keep their SQL names so the app can match them to FIELDS_FOR_AGENT.SQL_COLUMN_NAME.
+    assert " AS " not in files["queries/business/summary.sql"]
+    assert " AS " not in files["queries/business/trend.sql"]
+    assert "FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT" in files["queries/business/fields.sql"]
+    assert "PUBLISHED_SCHEMA = 'SEMANTIC_SALES'" in files["queries/business/fields.sql"]
+    assert "WHERE STATUS <> 'RUNNING'" in files["queries/business/provenance.sql"]
+    assert "WHERE m.MODEL_NAME = 'sales'" in files["queries/business/provenance.sql"]
+
+
+def _load_semantic_app(tmp_path: Any) -> Any:
+    import importlib.util
+
+    bundle = _bundle(_Service(models=True), schema_name="SEMANTIC_SALES")
+    for entry in bundle["files"]:
+        path = tmp_path / entry["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(entry["content"])
+    spec = importlib.util.spec_from_file_location("generated_semantic_app", tmp_path / "app.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_generated_semantic_app_formats_and_labels_by_the_model(tmp_path: Any) -> None:
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    app = _load_semantic_app(tmp_path)
+    fields = app._fields_by_column(
+        [
+            {"SQL_COLUMN_NAME": "TOTAL_REVENUE", "FIELD_KIND": "METRIC", "DISPLAY_NAME": "Total Revenue",
+             "FORMAT_HINT": "currency", "UNIT_HINT": "EUR", "IS_CERTIFIED": True},
+            {"SQL_COLUMN_NAME": "GROSS_MARGIN_PCT", "FIELD_KIND": "METRIC", "DISPLAY_NAME": "Gross Margin %",
+             "FORMAT_HINT": "percentage", "UNIT_HINT": None, "IS_CERTIFIED": False},
+            {"SQL_COLUMN_NAME": "ORDER_MONTH", "FIELD_KIND": "DIMENSION", "DISPLAY_NAME": "Order Month",
+             "FORMAT_HINT": "month", "UNIT_HINT": None, "IS_CERTIFIED": True},
+        ]
+    )
+
+    assert app._format_value(Decimal("5270"), fields["TOTAL_REVENUE"]) == "5,270.00 EUR"
+    assert app._format_value(0.32827324478178366, fields["GROSS_MARGIN_PCT"]) == "32.8 %"
+    assert app._format_value(datetime(2026, 3, 1), fields["ORDER_MONTH"]) == "2026-03"
+    assert app._format_value(date(2026, 3, 1), None) == "2026-03-01"
+    assert app._format_value(1234, None) == "1,234"
+    assert app._format_value(None, None) == "-"
+    # An unknown column (or no field metadata at all) falls back to its SQL name.
+    assert app._label("TOTAL_REVENUE", fields) == "Total Revenue"
+    assert app._label("UNIT_PRICE_AVG", fields) == "UNIT_PRICE_AVG"
+    assert app._fields_by_column([{"_error": "no access"}]) == {}
+
+    cards = app._metric_cards({"TOTAL_REVENUE": Decimal("5270"), "GROSS_MARGIN_PCT": 0.328}, fields)
+    assert [card.children[0].children for card in cards] == ["Total Revenue (certified)", "Gross Margin %"]
+    assert [card.children[1].children for card in cards] == ["5,270.00 EUR", "32.8 %"]
+
+
+def test_generated_semantic_app_shows_the_last_finished_validation(tmp_path: Any) -> None:
+    from datetime import datetime
+
+    app = _load_semantic_app(tmp_path)
+    fields = {"TOTAL_REVENUE": {"FIELD_KIND": "METRIC", "IS_CERTIFIED": True},
+              "DRAFT": {"FIELD_KIND": "METRIC", "IS_CERTIFIED": False}}
+    row = {"MODEL_NAME": "sales", "VERSION_NUMBER": 3, "VALIDATION_STATUS": "WARNING", "WARNING_COUNT": 2,
+           "FINISHED_AT": datetime(2026, 10, 23, 12, 15)}
+
+    strip = app._provenance_strip(row, fields)
+
+    assert strip.children == (
+        "Semantic model sales v3 · validation WARNING (2 warning(s)) · last validated 2026-10-23 12:15 · "
+        "1 of 2 metrics certified"
+    )
+    invalid = app._provenance_strip({**row, "VALIDATION_STATUS": "ERROR"}, fields)
+    assert "validation INVALID" in invalid.children
+    assert invalid.style["color"] == "#991b1b"
+    assert "validation NOT VALIDATED" in app._provenance_strip({**row, "VALIDATION_STATUS": None}, fields).children
