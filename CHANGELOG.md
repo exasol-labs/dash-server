@@ -169,9 +169,11 @@ data a dashboard depends on. It also moves to pyexasol 3 and returns typed query
 - pyexasol 3 sends anonymized usage telemetry to Exasol on every connection. dash-server turns
   this off by setting `EXASOL_TELEMETRY_DISABLE=1` before it loads pyexasol, unless the
   variable is already set.
-- CI fails on mypy errors (before, it only reported them), as it already did on `ruff check`, and
-  installs from `uv.lock` with `uv sync --locked`. This pins mypy and ruff to the locked versions
-  and fails the build if the lock has drifted from `pyproject.toml`.
+- CI gates on mypy and `ruff format --check` (before, both only reported), as it already did on
+  `ruff check`, and runs the whole test suite, including the slow tests that start real apps and
+  worker processes. The codebase is formatted with `ruff format`; golden fixtures are excluded.
+  CI installs from `uv.lock` with `uv sync --locked`, which pins mypy and ruff to the locked
+  versions and fails the build if the lock has drifted from `pyproject.toml`.
 
 ### Fixed
 - With shared dependencies (the default), an app's `requirements.txt` could change the versions

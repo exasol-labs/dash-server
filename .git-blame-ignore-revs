@@ -1,0 +1,2 @@
+# Bulk reformat with `ruff format`; skip it in `git blame` (git config blame.ignoreRevsFile .git-blame-ignore-revs).
+1d8378bcce6aba0749f597cd7dc8c1543b4aae64

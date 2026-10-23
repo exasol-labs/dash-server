@@ -10,12 +10,14 @@ jobs:
   test:
     name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # The full suite starts real apps and worker processes; this bounds a hung one.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up uv and Python ${{ matrix.python-version }}
         uses: astral-sh/setup-uv@v10.2.0
@@ -34,14 +36,15 @@ jobs:
         run: uv run ruff check src tests
 
       - name: Ruff format check
-        # Advisory only (see pyproject.toml's ruff section) — the codebase has pre-existing
-        # formatting drift that isn't auto-formatted yet, so this doesn't block CI.
+        # `uv run ruff format src tests` fixes a failure. Golden fixtures are excluded
+        # (pyproject.toml's [tool.ruff.format]): they must match generator output.
         run: uv run ruff format --check src tests
-        continue-on-error: true
 
       - name: mypy
         # Paths come from `[tool.mypy] files` in pyproject.toml.
         run: uv run mypy
 
       - name: pytest
-        run: uv run pytest -m "not slow"
+        # The whole suite, including the `slow` tests that start real apps, subprocess
+        # workers, and background jobs. `pytest -m "not slow"` is the fast local loop.
+        run: uv run pytest
