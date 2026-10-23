@@ -12,7 +12,7 @@ DASH_SERVER_APP_RUNTIME_MODE         = in_process | isolated # default: in_proce
 
 | Flag                          | Effect                                                                                                                                                                                |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `APP_DEPENDENCY_ISOLATION`    | Where dashboard `requirements.txt` is installed. `shared` → into the server's interpreter. `per_app` → into a per-(dependency_lock_hash) venv under `instance/app_envs/`.              |
+| `APP_DEPENDENCY_ISOLATION`    | Where dashboard `requirements.txt` is installed. `shared` → into the server's interpreter, adding packages only (an app can't change the version of one the server already has). `per_app` → into a per-(dependency_lock_hash) venv under `instance/app_envs/`.              |
 | `APP_RUNTIME_MODE`            | Where dashboard callbacks execute. `in_process` → in the control-plane Flask instance. `isolated` → in a subprocess that serves on a loopback port behind a WSGI proxy.                |
 
 ## The matrix

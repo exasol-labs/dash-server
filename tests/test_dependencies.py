@@ -90,15 +90,67 @@ def test_dependency_installer_skips_install_when_server_env_already_satisfies(tm
     assert satisfied["status"] == "already_satisfied"
     assert calls == []
 
-    # Anything missing, version-mismatched, or forced still goes through the installer.
-    installer.ensure_requirements("demo", ["dash<1.0"])
+    # Anything missing or forced still goes through the installer.
     installer.ensure_requirements("demo", ["definitely-not-installed-pkg-xyz"])
     installer.ensure_requirements("demo", ["dash>=4.0,<5.0"], force_clean=True)
-    assert len(calls) == 3
+    assert len(calls) == 2
 
     # A marker packaging cannot evaluate falls through to the installer instead of raising.
     installer.ensure_requirements("demo", ['dash; python_version ~= "3"'])
-    assert len(calls) == 4
+    assert len(calls) == 3
+
+
+def test_dependency_installer_never_changes_the_servers_own_packages(tmp_path: Path, monkeypatch):
+    from importlib import metadata
+
+    installer = DependencyInstaller(
+        str(tmp_path / "dependency_state"),
+        enabled=True,
+        python_executable=sys.executable,
+        timeout_seconds=30,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        installer,
+        "_run_install_command",
+        lambda command: calls.append(command) or {"status": "succeeded", "stdout_tail": "", "stderr_tail": ""},
+    )
+    monkeypatch.setattr(installer, "_has_pip", lambda: True)
+
+    # A version the server doesn't run is refused before anything is installed, even when forced.
+    for force_clean in (False, True):
+        refused = installer.ensure_requirements("old-app", ["pyexasol>=2.2.2,<3.0"], force_clean=force_clean)
+        assert refused["status"] == "failed"
+        assert refused["conflicts"] == [f"pyexasol>=2.2.2,<3.0 (the server has pyexasol {metadata.version('pyexasol')})"]
+        assert "DASH_SERVER_APP_DEPENDENCY_ISOLATION=per_app" in refused["notes"]
+    assert calls == []
+
+    # A new package is installed with every installed package pinned, so its own
+    # dependencies can't change the server's either.
+    installer.ensure_requirements("new-app", ["definitely-not-installed-pkg-xyz"])
+    (command,) = calls
+    constraint = Path(command[command.index("--constraint") + 1])
+    assert f"pyexasol=={metadata.version('pyexasol')}" in constraint.read_text().splitlines()
+    assert command[-1] == "definitely-not-installed-pkg-xyz"
+
+
+def test_dependency_installer_leaves_other_environments_unconstrained(tmp_path: Path, monkeypatch):
+    installer = DependencyInstaller(
+        str(tmp_path / "dependency_state"),
+        enabled=True,
+        python_executable="/tmp/fake-python",
+        timeout_seconds=30,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        installer,
+        "_run_install_command",
+        lambda command: calls.append(command) or {"status": "succeeded", "stdout_tail": "", "stderr_tail": ""},
+    )
+    monkeypatch.setattr(installer, "_has_pip", lambda: True)
+
+    assert installer.ensure_requirements("sales", ["pyexasol>=2.2.2,<3.0"])["status"] == "succeeded"
+    assert calls == [["/tmp/fake-python", "-m", "pip", "install", "pyexasol>=2.2.2,<3.0"]]
 
 
 def test_dependency_installer_falls_back_to_uv_when_pip_is_missing(tmp_path: Path, monkeypatch):

@@ -124,6 +124,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variable is already set.
 
 ### Fixed
+- With shared dependencies (the default), an app's `requirements.txt` could change the versions
+  of packages in the server's own environment, including dash-server's dependencies, which broke
+  the server for every app. Installs now only add packages: a requirement that excludes an
+  installed version fails with `conflicts` naming it, and installs run with every installed version
+  pinned as a constraint.
 - Scaffolded Exasol apps (`app_create_exasol_dashboard`, `app_scaffold_from_schema`) still
   declared `pyexasol>=2.2.2,<3.0` in `requirements.txt` after the server moved to pyexasol 3.
   With shared dependencies, building such an app installed pyexasol 2 into the server's own
