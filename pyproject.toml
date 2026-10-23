@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dash-server"
-version = "0.1.1"
+version = "0.2.0"
 description = "Agent-controlled Dash hosting server for Exasol."
 readme = "README.md"
 license = "MIT"
