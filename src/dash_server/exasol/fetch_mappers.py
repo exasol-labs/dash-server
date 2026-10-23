@@ -29,8 +29,8 @@ def typed_fetch_mapper(value: Any, data_type: Mapping[str, Any]) -> Any:
     """Convert DECIMAL/DATE/TIMESTAMP values to ``int``/``Decimal``/``date``/``datetime``.
 
     Everything else passes through unchanged. In particular INTERVAL values stay
-    strings: pyexasol 3.0's interval parser expects a 9-digit day field and raises on
-    Exasol's default ``INTERVAL DAY(2) TO SECOND`` rendering. A value that doesn't parse
+    strings: JSON, and so a Dash callback, has no duration type, and Exasol's own
+    rendering (``+02 03:04:05.500``) reads better than a converted number. A value that doesn't parse
     (for example a session with a non-ISO ``NLS_DATE_FORMAT``) also stays the raw
     string, so an unusual session format degrades to text instead of failing the export.
     TIMESTAMP precision beyond microseconds is truncated, as Python's ``datetime`` can't

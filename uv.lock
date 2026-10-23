@@ -532,7 +532,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.1" },
     { name = "openpyxl", specifier = ">=3.1,<4.0" },
     { name = "packaging", specifier = ">=26.3,<27.0" },
-    { name = "pyexasol", specifier = ">=3.0,<4.0" },
+    { name = "pyexasol", specifier = ">=3.0.1,<4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1,<10.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.8" },
     { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.26.0.20260518" },
@@ -1271,7 +1271,7 @@ wheels = [
 
 [[package]]
 name = "pyexasol"
-version = "3.0.0"
+version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -1280,9 +1280,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "websocket-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8c/0e/8b287a13bc96c70a737a7194a44801b38be40129bb289fe7c9220946f476/pyexasol-3.0.0.tar.gz", hash = "sha256:4fedec37b9a05088184f208b842f1d5f3e525a3167b8c38a2f050be228fc15cb", size = 73443, upload-time = "2026-10-16T08:35:55.481Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/71/badf999fcd0b25859662183cf656e8220cd2d92316cf1f9c7f86e4757afe/pyexasol-3.0.1.tar.gz", hash = "sha256:59407accc766efc27ac7d4d4f20aab8b308931e61299a59f1d7b9ad8a3bfd3d2", size = 73494, upload-time = "2026-10-22T15:21:17.041Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/8b/d043f4a3b60cec5e87cb9da2424998bebcc132be3591855a304b9eb77741/pyexasol-3.0.0-py3-none-any.whl", hash = "sha256:56eba07d144f8a2704782018ef76a6cf6989deb15df4b255eaebe8ecec40d390", size = 90476, upload-time = "2026-10-16T08:35:56.519Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/2b/ff9c21339c4f5f4c5245883a5ee50c31d30fd59a81b0d7f03449ca25c8ba/pyexasol-3.0.1-py3-none-any.whl", hash = "sha256:9365dab62ddf07940e6357ed114262a8c4f47a823823a90bfda60e4efea72f5b", size = 90524, upload-time = "2026-10-22T15:21:18.047Z" },
 ]
 
 [[package]]

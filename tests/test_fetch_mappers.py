@@ -55,7 +55,7 @@ def test_typed_fetch_mapper_converts_real_pyexasol_values() -> None:
         date(2026, 7, 1),
         datetime(2026, 7, 1, 12, 34, 56, 789000),
         datetime(2026, 7, 1, 12, 34, 56),
-        # pyexasol 3.0's interval parser raises on Exasol's default DAY(2) rendering.
+        # Intervals stay as Exasol renders them (JSON has no duration type).
         "+02 03:04:05.500",
         "+01-06",
         0.125,
