@@ -8,7 +8,7 @@ can't read its agent views, simply has no published models.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 from typing import Any
 
@@ -28,6 +28,22 @@ class SemanticModelRef:
     validation_error_count: int | None = None
     latest_validation_run_id: int | None = None
     description: str | None = None
+    # Set when the model's newest validation run never finished (it says RUNNING): the
+    # fields above then describe the newest finished run instead.
+    unfinished_validation_run_id: int | None = None
+    # Issues the validation run behind ``readiness`` recorded; filled in by
+    # ``with_validation_issues`` for models that aren't VALID.
+    issues: tuple[ValidationIssue, ...] = ()
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    """One finding of a Semantic Views validation run."""
+
+    severity: str
+    rule_code: str
+    object_name: str | None
+    message: str
 
 
 MODELS_COLUMNS = [
@@ -62,7 +78,156 @@ def published_semantic_models(connection: object) -> list[SemanticModelRef]:
         rows = statement.fetchall()
     except Exception:
         return []
-    return models_from_rows(rows)
+    return with_finished_validation(connection, models_from_rows(rows))
+
+
+# A validation run that never finished reads as VALID in MODELS_FOR_AGENT (it has no
+# errors or warnings yet), and Semantic Views' read-only CHECK_* scripts can leave such
+# runs behind. Readiness is therefore taken from the newest *finished* run, using the
+# same rules as MODELS_FOR_AGENT.AGENT_READINESS.
+_UNFINISHED_VALIDATION_STATUS = "RUNNING"
+FINISHED_RUNS_COLUMNS = [
+    "MODEL_NAME",
+    "VALIDATION_RUN_ID",
+    "STATUS",
+    "ERROR_COUNT",
+    "WARNING_COUNT",
+    "PRECONDITION_COUNT",
+]
+FINISHED_RUNS_QUERY = (
+    "SELECT m.MODEL_NAME, vr.VALIDATION_RUN_ID, vr.STATUS, vr.ERROR_COUNT, vr.WARNING_COUNT, "
+    "COALESCE(pc.PRECONDITION_COUNT, 0) AS PRECONDITION_COUNT "
+    "FROM SEMANTIC_AGENT.MODELS_FOR_AGENT m "
+    "JOIN (SELECT MODEL_ID, VERSION_ID, MAX(VALIDATION_RUN_ID) AS VALIDATION_RUN_ID "
+    "FROM SEMANTIC_SOURCE.VALIDATION_RUNS WHERE STATUS <> 'RUNNING' GROUP BY MODEL_ID, VERSION_ID) latest "
+    "ON latest.MODEL_ID = m.MODEL_ID AND latest.VERSION_ID = m.VERSION_ID "
+    "JOIN SEMANTIC_SOURCE.VALIDATION_RUNS vr ON vr.VALIDATION_RUN_ID = latest.VALIDATION_RUN_ID "
+    "LEFT JOIN (SELECT VALIDATION_RUN_ID, COUNT(*) AS PRECONDITION_COUNT FROM SEMANTIC_SOURCE.VALIDATION_RESULTS "
+    "WHERE SEVERITY = 'PRECONDITION' GROUP BY VALIDATION_RUN_ID) pc ON pc.VALIDATION_RUN_ID = vr.VALIDATION_RUN_ID "
+    "WHERE m.MODEL_STATUS = 'PUBLISHED'"
+)
+
+
+def with_finished_validation(connection: object, models: list[SemanticModelRef]) -> list[SemanticModelRef]:
+    """``models`` with readiness from each model's newest finished validation run.
+
+    Only models whose newest run is unfinished change. When the finished runs can't be
+    read (no access to ``SEMANTIC_SOURCE``), their readiness becomes ``UNKNOWN`` rather
+    than the unfinished run's misleading ``VALID``.
+    """
+
+    if not has_unfinished_validation(models):
+        return models
+    try:
+        statement = connection.execute(FINISHED_RUNS_QUERY)  # type: ignore[attr-defined]
+        if list(statement.column_names()) != FINISHED_RUNS_COLUMNS:
+            raise ValueError("unexpected columns")
+        rows = statement.fetchall()
+    except Exception:
+        rows = None
+    return apply_finished_runs(models, rows)
+
+
+def has_unfinished_validation(models: list[SemanticModelRef]) -> bool:
+    return any(ref.validation_status == _UNFINISHED_VALIDATION_STATUS for ref in models)
+
+
+def apply_finished_runs(models: list[SemanticModelRef], rows: Any) -> list[SemanticModelRef]:
+    """``models`` with readiness from ``FINISHED_RUNS_QUERY`` rows (None: the runs couldn't be read)."""
+
+    finished = {str(row[0]): tuple(row[1:]) for row in rows} if rows is not None else None
+    resolved = []
+    for ref in models:
+        if ref.validation_status != _UNFINISHED_VALIDATION_STATUS:
+            resolved.append(ref)
+            continue
+        run = finished.get(ref.model) if finished is not None else None
+        if run is None:
+            resolved.append(
+                replace(
+                    ref,
+                    readiness="UNKNOWN" if finished is None else "NEEDS_VALIDATION",
+                    validation_status=None,
+                    validation_warning_count=None,
+                    validation_error_count=None,
+                    latest_validation_run_id=None,
+                    unfinished_validation_run_id=ref.latest_validation_run_id,
+                )
+            )
+            continue
+        run_id, status, errors, warnings, preconditions = run
+        resolved.append(
+            replace(
+                ref,
+                readiness=_readiness(_optional_int(errors), _optional_int(preconditions), _optional_int(warnings)),
+                validation_status=status,
+                validation_warning_count=_optional_int(warnings),
+                validation_error_count=_optional_int(errors),
+                latest_validation_run_id=_optional_int(run_id),
+                unfinished_validation_run_id=ref.latest_validation_run_id,
+            )
+        )
+    return resolved
+
+
+def _readiness(errors: int | None, preconditions: int | None, warnings: int | None) -> str:
+    if errors:
+        return "INVALID"
+    if preconditions:
+        return "PRECONDITION"
+    if warnings:
+        return "WARNING"
+    return "VALID"
+
+
+_ISSUES_PER_MODEL = 20
+_ISSUE_MESSAGE_CHARS = 300
+
+
+def with_validation_issues(connection: object, models: list[SemanticModelRef]) -> list[SemanticModelRef]:
+    """``models`` with the issues behind each non-VALID readiness (rule code, object, message).
+
+    Read from ``SEMANTIC_SOURCE.VALIDATION_RESULTS`` by run id, so the issues match the
+    run the readiness came from. Best effort: models keep no issues if they can't be read.
+    """
+
+    run_ids = {
+        ref.latest_validation_run_id
+        for ref in models
+        if ref.readiness not in (None, "VALID") and ref.latest_validation_run_id is not None
+    }
+    if not run_ids:
+        return models
+    try:
+        statement = connection.execute(  # type: ignore[attr-defined]
+            "SELECT VALIDATION_RUN_ID, SEVERITY, RULE_CODE, OBJECT_NAME, MESSAGE "
+            "FROM SEMANTIC_SOURCE.VALIDATION_RESULTS "
+            f"WHERE VALIDATION_RUN_ID IN ({', '.join(str(int(run_id)) for run_id in sorted(run_ids))}) "
+            "ORDER BY VALIDATION_RUN_ID, CASE SEVERITY WHEN 'ERROR' THEN 0 WHEN 'PRECONDITION' THEN 1 ELSE 2 END, "
+            "VALIDATION_RESULT_ID"
+        )
+        rows = statement.fetchall()
+    except Exception:
+        return models
+    issues: dict[int, list[ValidationIssue]] = {}
+    for run_id, severity, rule_code, object_name, message in rows:
+        bucket = issues.setdefault(int(run_id), [])
+        if len(bucket) < _ISSUES_PER_MODEL:
+            text = str(message or "")
+            bucket.append(
+                ValidationIssue(
+                    severity=str(severity),
+                    rule_code=str(rule_code),
+                    object_name=str(object_name) if object_name else None,
+                    message=text if len(text) <= _ISSUE_MESSAGE_CHARS else text[: _ISSUE_MESSAGE_CHARS - 1] + "…",
+                )
+            )
+    return [
+        replace(ref, issues=tuple(issues.get(ref.latest_validation_run_id, ())))
+        if ref.latest_validation_run_id is not None
+        else ref
+        for ref in models
+    ]
 
 
 GOVERNED_SOURCES_COLUMNS = ["SOURCE_OBJECT", "MODEL_NAME", "PUBLISHED_SCHEMA"]
@@ -150,6 +315,25 @@ def session_preprocessor(connection: object) -> str | None:
     return normalize_identifier(value) if value else None
 
 
+# Marks of SQL compiled by Exasol Semantic Views (COMPILE_SQL / COMPILE_REQUEST_JSON). Fused
+# models emit "__esv_*" CTEs and f4_/f5_ representation aliases; every compile re-aliases its
+# canonical lower-case field names to upper case in the outer projection.
+_COMPILED_SEMANTIC_SQL_RE = re.compile(r'"__esv_|"F5_SEMANTIC_KEY"|\bf[45]_(?:rep|map|src)_\d+\b')
+_COMPILED_PROJECTION_RE = re.compile(r'"([a-z][a-z0-9_]*)"\s+AS\s+"([A-Z][A-Z0-9_]*)"')
+
+
+def looks_like_compiled_semantic_sql(sql: str) -> bool:
+    """True for SQL saved from the semantic layer's compiler rather than written against a model.
+
+    Such SQL is a frozen copy of the definitions at compile time: it keeps running, with
+    the old numbers, after the model's owner changes a metric.
+    """
+
+    if _COMPILED_SEMANTIC_SQL_RE.search(sql):
+        return True
+    return any(alias == name.upper() for name, alias in _COMPILED_PROJECTION_RE.findall(sql))
+
+
 def normalize_identifier(name: str) -> str:
     return name.replace('"', "").upper()
 
@@ -169,16 +353,24 @@ def referenced_models(sql_text: str, models: list[SemanticModelRef]) -> list[Sem
 
 
 __all__ = [
+    "FINISHED_RUNS_COLUMNS",
+    "FINISHED_RUNS_QUERY",
     "GOVERNED_SOURCES_COLUMNS",
     "GOVERNED_SOURCES_QUERY",
     "MODELS_COLUMNS",
     "MODELS_QUERY",
     "SemanticModelRef",
+    "ValidationIssue",
+    "apply_finished_runs",
     "governed_sources",
+    "has_unfinished_validation",
+    "looks_like_compiled_semantic_sql",
     "models_from_rows",
     "normalize_identifier",
     "published_semantic_models",
     "referenced_governed_sources",
     "referenced_models",
     "session_preprocessor",
+    "with_finished_validation",
+    "with_validation_issues",
 ]

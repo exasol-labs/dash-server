@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from types import SimpleNamespace
 import json
 from typing import Any
@@ -24,8 +25,13 @@ class _Connection:
         model_columns: list[str] | None = None,
         governed: list[tuple[str, str, str]] | None = None,
         compile_status: str = "OK",
+        finished_runs: list[tuple[Any, ...]] | None = None,
+        issues: list[tuple[Any, ...]] | None = None,
     ) -> None:
         self.compile_status = compile_status
+        # None: SEMANTIC_SOURCE isn't readable.
+        self.finished_runs = finished_runs
+        self.issues = issues or []
         self.models = models
         self.governed = governed or []
         self.preprocessor = preprocessor
@@ -52,6 +58,13 @@ class _Connection:
             }
             row = (self.compile_status, json.dumps(plan))
             return SimpleNamespace(column_names=lambda: ["STATUS", "PLAN_JSON"], fetchone=lambda: row)
+        if "SEMANTIC_SOURCE.VALIDATION_RUNS" in sql:
+            if self.finished_runs is None:
+                raise RuntimeError("insufficient privileges: SELECT on SEMANTIC_SOURCE")
+            columns = ["MODEL_NAME", "VALIDATION_RUN_ID", "STATUS", "ERROR_COUNT", "WARNING_COUNT", "PRECONDITION_COUNT"]
+            return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.finished_runs)
+        if "SEMANTIC_SOURCE.VALIDATION_RESULTS" in sql:
+            return SimpleNamespace(fetchall=lambda: self.issues)
         if "FUSION_FOR_AGENT" in sql:
             columns = ["SOURCE_OBJECT", "MODEL_NAME", "PUBLISHED_SCHEMA"]
             return SimpleNamespace(column_names=lambda: columns, fetchall=lambda: self.governed)
@@ -245,3 +258,102 @@ def test_semantic_models_probe_lists_definitions_changed_since_build() -> None:
     ]
     unchanged = HealthProber(svc=None)._semantic_models_probe(smoke_probe, built_definitions=current)  # type: ignore[arg-type]
     assert "changed_since_build" not in unchanged["details"]
+
+
+# The newest run never finished (as Semantic Views' CHECK_PARTITION_COVERAGE leaves it): no
+# errors yet, so MODELS_FOR_AGENT says VALID.
+UNFINISHED_FUSION = ("fusion", "SEMANTIC_FUSION", PREPROCESSOR, "VALID", "RUNNING", 0, 0, 101, None)
+FUSION_QUERY = ("queries/fusion.sql", "SELECT total_revenue FROM SEMANTIC_FUSION.ORDERS")
+
+
+def test_readiness_comes_from_the_newest_finished_validation_run() -> None:
+    connection = _Connection(
+        models=[UNFINISHED_FUSION],
+        preprocessor=PREPROCESSOR,
+        finished_runs=[("fusion", 98, "ERROR", 1, 1, 0)],
+        issues=[
+            (98, "ERROR", "SEMANTIC_MODEL_049", "customer", "Identity map CUSTOMER_XREF lost a key."),
+            (98, "WARNING", "SEMANTIC_MODEL_074", "order", "Rows fall outside every partition."),
+        ],
+    )
+
+    (model,) = _smoke(connection, [FUSION_QUERY]).semantic_models
+
+    assert (model.readiness, model.validation_status, model.latest_validation_run_id) == ("INVALID", "ERROR", 98)
+    assert model.unfinished_validation_run_id == 101
+    assert [issue.rule_code for issue in model.issues] == ["SEMANTIC_MODEL_049", "SEMANTIC_MODEL_074"]
+    probe = _semantic_probe([asdict(model)])
+    assert probe["status"] == "failed"
+    assert probe["details"]["latest_error"] == (
+        "Semantic model 'fusion' (SEMANTIC_FUSION) is INVALID: SEMANTIC_MODEL_049 on customer: Identity map "
+        "CUSTOMER_XREF lost a key. Check SEMANTIC_AGENT.MODELS_FOR_AGENT and SEMANTIC_SOURCE.VALIDATION_RESULTS."
+    )
+
+
+def test_unfinished_validation_without_access_to_runs_is_unknown_not_valid() -> None:
+    connection = _Connection(models=[UNFINISHED_FUSION], preprocessor=PREPROCESSOR, finished_runs=None)
+
+    (model,) = _smoke(connection, [FUSION_QUERY]).semantic_models
+
+    assert model.readiness == "UNKNOWN"
+    probe = _semantic_probe([asdict(model)])
+    assert probe["status"] == "passed"
+    assert probe["details"]["models_not_assessed"] == ["fusion"]
+
+
+def test_unfinished_validation_without_a_finished_run_needs_validation() -> None:
+    connection = _Connection(models=[UNFINISHED_FUSION], preprocessor=PREPROCESSOR, finished_runs=[])
+
+    (model,) = _smoke(connection, [FUSION_QUERY]).semantic_models
+
+    assert model.readiness == "NEEDS_VALIDATION"
+
+
+COMPILED_QUERY = (
+    "queries/frozen.sql",
+    'SELECT "customer_region" AS "CUSTOMER_REGION", SUM(ol.net_amount) AS "TOTAL_REVENUE" '
+    'FROM "MART"."ORDER_LINES" ol GROUP BY 1',
+)
+
+
+def test_saved_compiled_sql_fails_the_semantic_models_probe() -> None:
+    connection = _Connection(
+        models=[SALES_MODEL],
+        preprocessor=PREPROCESSOR,
+        governed=[("MART.ORDER_LINES", "sales", "SEMANTIC_SALES")],
+    )
+
+    report = _smoke(connection, [COMPILED_QUERY, ("queries/raw.sql", "SELECT SUM(qty) FROM MART.ORDER_LINES")])
+
+    frozen, raw = report.files
+    assert (frozen.frozen_semantic_sql, frozen.governed_reads) == (True, ("sales",))
+    assert "saved from the semantic layer's compiler for 'sales' (SEMANTIC_SALES)" in frozen.warnings[0]
+    assert (raw.frozen_semantic_sql, raw.governed_reads) == (False, ("sales",))
+    # A model read only through its source tables is still reported.
+    assert [model.model for model in report.semantic_models] == ["sales"]
+
+    bypasses = [
+        {"path": "queries/frozen.sql", "lane": "frozen", "models": ["sales"]},
+        {"path": "queries/raw.sql", "lane": "raw", "models": ["sales"]},
+    ]
+    details = {"semantic_models": [asdict(model) for model in report.semantic_models], "semantic_bypasses": bypasses}
+    probe = _probe_from_details(details)
+    assert probe["status"] == "failed"
+    assert probe["details"]["frozen_files"] == bypasses[:1]
+    assert probe["details"]["raw_governed_reads"] == bypasses[1:]
+    assert probe["details"]["latest_error"].startswith("queries/frozen.sql is SQL saved from the semantic layer's compiler")
+
+
+def test_raw_governed_reads_alone_pass_the_semantic_models_probe() -> None:
+    raw = [{"path": "queries/raw.sql", "lane": "raw", "models": ["sales"]}]
+
+    probe = _probe_from_details({"semantic_bypasses": raw})
+
+    assert probe["status"] == "passed"
+    assert probe["details"]["raw_governed_reads"] == raw
+
+
+def _probe_from_details(details: dict[str, Any]) -> dict[str, Any]:
+    from dash_server.runtime.prober import HealthProber
+
+    return HealthProber(svc=None)._semantic_models_probe({"name": "sql_smoke", "details": details})  # type: ignore[arg-type]

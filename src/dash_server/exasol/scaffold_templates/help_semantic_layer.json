@@ -28,7 +28,7 @@
     "Values are typed: DECIMAL metrics arrive as int or decimal.Decimal; numbers with more than 15 significant digits stay strings."
   ],
   "never": [
-    "Never paste the GENERATED_SQL of SEMANTIC_ADMIN.COMPILE_SQL or COMPILE_REQUEST_JSON into queries/*.sql. It freezes today's definition: a certified metric fix never reaches the dashboard, a fused model's coverage and authority stop moving with the data, and no check can tell. Query the published view live.",
+    "Never paste the GENERATED_SQL of SEMANTIC_ADMIN.COMPILE_SQL or COMPILE_REQUEST_JSON into queries/*.sql. It freezes today's definition: a certified metric fix never reaches the dashboard, a fused model's coverage and authority stop moving with the data. app_run_healthcheck's semantic_models probe fails on such files (details.frozen_files). Query the published view live.",
     "Never put session setup (ALTER SESSION, EXECUTE SCRIPT ...ENABLE_SEMANTIC_SQL()) in queries/*.sql. It belongs in the profile's session_init_sql; a query file's session change is discarded so it can't leak into other apps."
   ],
   "presentation": {
@@ -47,11 +47,11 @@
   "checks": [
     "SQL smoke (app_build preflight, app_run_healthcheck) runs Semantic SQL exactly as the dashboard will, so an unknown field, an invalid combination or a dropped metric fails the check instead of waiting for a viewer.",
     "A query file that reads a published model on a profile without the preprocessor fails SQL smoke with the session_init_sql line to add.",
-    "app_run_healthcheck's semantic_models probe reports each model the app reads. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, and lists models with warnings.",
+    "app_run_healthcheck's semantic_models probe reports each model the app reads, through its published schema or its source tables. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, or when a query file is saved compiled SQL (details.frozen_files). Each model that isn't VALID carries the rule codes and messages behind its status (issues). Readiness comes from the newest finished validation run, so a run left unfinished doesn't read as VALID. Hand-written SQL over a model's source tables is listed under details.raw_governed_reads without failing.",
     "SQL smoke warns (sql_smoke details.warnings) when a query file reads a table that backs a published model, naming the published schema to use instead.",
     "app_validate warns when a query file looks like saved COMPILE_SQL / COMPILE_REQUEST_JSON output.",
     "Each build records the definition hash of every metric and dimension the app's Semantic SQL uses. app_run_healthcheck's semantic_models probe then lists fields whose definition changed since the revision was built (details.changed_since_build): the dashboard already shows the new definition, so check that each panel's label and meaning still match.",
-    "dash://exasol/semantic-usage lists which live dashboards use which model fields: impact analysis before changing or dropping a metric."
+    "dash://exasol/semantic-usage lists which live dashboards use which model fields: impact analysis before changing or dropping a metric. Its bypasses section lists dashboards that a metric change never reaches: saved compiled SQL (lane frozen) and SQL over the model's source tables (lane raw)."
   ],
   "prototyping": [
     "The fastest reliable check of a semantic query is the dashboard's own: put it in queries/*.sql, deploy a preview, and run app_run_healthcheck.",

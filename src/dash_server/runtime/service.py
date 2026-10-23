@@ -374,15 +374,29 @@ class AppRuntimeService:
 
         Answers a metric owner's "what breaks or changes if I edit this metric?". Covers each
         app's current (live) revision; a revision built before definition locks existed, or
-        whose queries don't read a semantic model, contributes nothing.
+        whose queries don't touch a semantic model, contributes nothing. Query files that
+        bypass a model (saved compiler output, or SQL over its source tables) are listed
+        under ``bypasses``: a definition change never reaches them.
         """
 
         models: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        bypasses: dict[str, list[dict[str, Any]]] = {}
         for app in self.registry.list_apps():
             revision_number = app.current_revision_number
             if revision_number is None:
                 continue
             for entry in self.diagnostics_service.semantic_lock(app.name, revision_number) or []:
+                if entry.get("lane") in ("frozen", "raw"):
+                    for model in entry.get("models") or ["(unknown model)"]:
+                        bypasses.setdefault(str(model), []).append(
+                            {
+                                "app": app.name,
+                                "revision_number": revision_number,
+                                "path": entry.get("path"),
+                                "lane": entry["lane"],
+                            }
+                        )
+                    continue
                 for kind in ("metrics", "dimensions"):
                     for field, definition_hash in (entry.get(kind) or {}).items():
                         models.setdefault(str(entry.get("model")), {}).setdefault(field, []).append(
@@ -396,10 +410,13 @@ class AppRuntimeService:
                         )
         return {
             "models": models,
+            "bypasses": bypasses,
             "note": (
                 "Fields used by each app's live revision, recorded when it was built. definition_hash is the "
                 "field's hash at that time; compare it with SEMANTIC_AGENT.DEFINITION_HASHES_FOR_AGENT to see "
-                "which dashboards a definition change has reached."
+                "which dashboards a definition change has reached. bypasses lists query files that don't follow "
+                "definition changes at all: lane 'frozen' is SQL saved from the compiler, lane 'raw' computes "
+                "from the model's source tables. A metric change never reaches them; review them by hand."
             ),
         }
 
@@ -1258,9 +1275,12 @@ class AppRuntimeService:
             # or no queries/*.sql files, so this doesn't affect non-Exasol apps.
             sql_smoke_probe = self._sql_smoke_probe(name, revision)
             probes.append(sql_smoke_probe)
-            definitions = sql_smoke_probe.get("details", {}).get("definitions")
-            if definitions:
-                self.diagnostics_service.record_semantic_lock(name, revision.revision_number, definitions)
+            smoke_details = sql_smoke_probe.get("details", {})
+            # What the revision's queries depend on: Semantic SQL fields with their definition
+            # hashes, plus files that bypass the model (frozen compiler output, raw table reads).
+            lock_entries = [*(smoke_details.get("definitions") or []), *(smoke_details.get("semantic_bypasses") or [])]
+            if lock_entries:
+                self.diagnostics_service.record_semantic_lock(name, revision.revision_number, lock_entries)
             overall_status = (
                 "passed"
                 if all(

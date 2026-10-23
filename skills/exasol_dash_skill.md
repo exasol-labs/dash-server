@@ -76,10 +76,10 @@ WHERE MODEL_STATUS = 'PUBLISHED';
 
 - Give the profile `session_init_sql = ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"]` and confirm `session_init.status == "applied"` with `exasol_profile_validate`.
 - Query the published views from `queries/*.sql`: `SELECT customer_region, total_revenue FROM SEMANTIC_SALES.SALES GROUP BY customer_region`. Metrics are already aggregated; don't wrap them in `SUM()`.
-- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes today's definition and nothing detects the drift.
+- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes today's definition. `app_run_healthcheck` degrades on such files (`semantic_models` → `frozen_files`).
 - Take labels and formats from `SEMANTIC_AGENT.FIELDS_FOR_AGENT` instead of hard-coding them.
 - For a starting point, `app_scaffold_from_schema` with `schema_name` set to the model's published schema generates Semantic SQL over its certified metrics.
-- After a build, `app_run_healthcheck` reports metric definitions that changed since that revision was built (`semantic_models` → `changed_since_build`), and `dash://exasol/semantic-usage` shows which dashboards use a given metric.
+- After a build, `app_run_healthcheck` reports metric definitions that changed since that revision was built (`semantic_models` → `changed_since_build`), and `dash://exasol/semantic-usage` shows which dashboards use a given metric, plus the ones that bypass the model (`bypasses`).
 
 `dash://exasol/help/semantic-layer` has the full recipe, including grants for a non-SYS profile user and how SQL smoke and the `semantic_models` healthcheck probe treat semantic queries.
 

@@ -254,6 +254,19 @@ class HealthProber:
             extra["definitions"] = definitions
         if warnings:
             extra["warnings"] = warnings
+        # Query files that bypass the semantic layer: saved compiler output ("frozen") or
+        # hand-written SQL over a model's source tables ("raw").
+        bypasses = [
+            {
+                "path": f.relative_path,
+                "lane": "frozen" if f.frozen_semantic_sql else "raw",
+                "models": list(f.governed_reads),
+            }
+            for f in report.files
+            if f.frozen_semantic_sql or f.governed_reads
+        ]
+        if bypasses:
+            extra["semantic_bypasses"] = bypasses
         if report.overall_status == "passed":
             return {
                 "name": "sql_smoke",
@@ -319,11 +332,22 @@ class HealthProber:
         """
 
         details_in = sql_smoke_probe.get("details", {})
-        models = details_in.get("semantic_models")
-        if not models:
+        models = details_in.get("semantic_models") or []
+        bypasses = details_in.get("semantic_bypasses") or []
+        if not models and not bypasses:
             return {"name": "semantic_models", "status": "not_applicable", "details": {"reason": "no_semantic_queries"}}
         unusable = [model for model in models if model.get("readiness") in _UNUSABLE_SEMANTIC_READINESS]
         details: dict[str, Any] = {"models": models}
+        frozen = [entry for entry in bypasses if entry["lane"] == "frozen"]
+        raw = [entry for entry in bypasses if entry["lane"] == "raw"]
+        if frozen:
+            details["frozen_files"] = frozen
+        if raw:
+            details["raw_governed_reads"] = raw
+            details["raw_governed_reads_note"] = (
+                "These files compute numbers from tables a semantic model governs instead of querying the model. "
+                "They don't follow certified definition changes and can disagree with governed dashboards."
+            )
         if built_definitions is not None:
             changed = _changed_definitions(built_definitions, details_in.get("definitions") or [])
             if changed:
@@ -336,11 +360,27 @@ class HealthProber:
         warnings = [model["model"] for model in models if model.get("readiness") == "WARNING"]
         if warnings:
             details["models_with_warnings"] = warnings
+        unknown = [model["model"] for model in models if model.get("readiness") == "UNKNOWN"]
+        if unknown:
+            details["models_not_assessed"] = unknown
+            details["models_not_assessed_note"] = (
+                "The newest validation run of these models never finished, and this profile can't read "
+                "SEMANTIC_SOURCE.VALIDATION_RUNS to find the last finished one. Grant the profile's user "
+                "SEMANTIC_USER, or run SEMANTIC_ADMIN.VALIDATE_MODEL."
+            )
         if unusable:
             first = unusable[0]
             details["latest_error"] = (
-                f"Semantic model {first['model']!r} ({first['published_schema']}) is {first['readiness']}. "
-                "Check SEMANTIC_AGENT.MODELS_FOR_AGENT and SEMANTIC_CATALOG.CURRENT_VALIDATION_ISSUES."
+                f"Semantic model {first['model']!r} ({first['published_schema']}) is {first['readiness']}"
+                + _first_issue_text(first)
+                + ". Check SEMANTIC_AGENT.MODELS_FOR_AGENT and SEMANTIC_SOURCE.VALIDATION_RESULTS."
+            )
+            return {"name": "semantic_models", "status": "failed", "details": details}
+        if frozen:
+            details["latest_error"] = (
+                f"{frozen[0]['path']} is SQL saved from the semantic layer's compiler: it keeps the metric "
+                "definitions of the day it was compiled and won't follow certified changes. Query the model's "
+                "published schema with Semantic SQL instead (dash://exasol/help/semantic-layer)."
             )
             return {"name": "semantic_models", "status": "failed", "details": details}
         return {"name": "semantic_models", "status": "passed", "details": details}
@@ -494,6 +534,17 @@ class HealthProber:
                 "rss_bytes": rss,
             },
         }
+
+
+def _first_issue_text(model: dict[str, Any]) -> str:
+    """``": RULE_CODE on object: message"`` for a model's first validation issue, or ``""``."""
+
+    issues = model.get("issues") or []
+    if not issues:
+        return ""
+    issue = issues[0]
+    where = f" on {issue['object_name']}" if issue.get("object_name") else ""
+    return f": {issue['rule_code']}{where}: {str(issue['message']).rstrip('.')}"
 
 
 def _changed_definitions(built: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:

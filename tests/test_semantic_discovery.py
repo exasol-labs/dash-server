@@ -146,7 +146,11 @@ def test_semantic_usage_lists_the_fields_each_live_dashboard_was_built_against(a
     runtime.diagnostics_service.record_semantic_lock(
         "demo",
         demo_revision,
-        [{"path": "queries/kpis.sql", "model": "sales", "object": "SALES", "metrics": {"total_revenue": "h1"}, "dimensions": {}}],
+        [
+            {"path": "queries/kpis.sql", "model": "sales", "object": "SALES", "metrics": {"total_revenue": "h1"}, "dimensions": {}},
+            {"path": "queries/frozen.sql", "lane": "frozen", "models": ["sales"]},
+            {"path": "queries/raw.sql", "lane": "raw", "models": ["sales"]},
+        ],
     )
     assert runtime.diagnostics_service.semantic_lock("demo", demo_revision)[0]["metrics"] == {"total_revenue": "h1"}
 
@@ -170,3 +174,27 @@ def test_semantic_usage_lists_the_fields_each_live_dashboard_was_built_against(a
             ]
         }
     }
+    assert usage["bypasses"] == {
+        "sales": [
+            {"app": "demo", "revision_number": demo_revision, "path": "queries/frozen.sql", "lane": "frozen"},
+            {"app": "demo", "revision_number": demo_revision, "path": "queries/raw.sql", "lane": "raw"},
+        ]
+    }
+
+
+def test_scaffold_model_lookup_ignores_an_unfinished_validation_run(app) -> None:
+    from dash_server.exasol.semantic_models import FINISHED_RUNS_COLUMNS, FINISHED_RUNS_QUERY, MODELS_COLUMNS
+
+    service = app.extensions["exasol_dashboard_service"]
+    unfinished = ["fusion", "SEMANTIC_FUSION", "SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR", "VALID", "RUNNING", 0, 0, 101, None]
+
+    def execute(profile_name, sql_text, *, params=None):
+        if sql_text == FINISHED_RUNS_QUERY:
+            return {"status": "ok", "columns": FINISHED_RUNS_COLUMNS, "rows": [["fusion", 98, "ERROR", 1, 0, 0]]}
+        return {"status": "ok", "columns": MODELS_COLUMNS, "rows": [unfinished]}
+
+    service.execute_profile_query = execute
+
+    (model,) = service._published_semantic_models("kit")
+
+    assert (model.readiness, model.latest_validation_run_id, model.unfinished_validation_run_id) == ("INVALID", 98, 101)

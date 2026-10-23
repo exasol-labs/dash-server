@@ -24,7 +24,16 @@ from .scaffold import (
     exasol_sql_placeholders_help,
 )
 from .secrets import ExasolSecretStore
-from .semantic_models import MODELS_COLUMNS, MODELS_QUERY, SemanticModelRef, models_from_rows
+from .semantic_models import (
+    FINISHED_RUNS_COLUMNS,
+    FINISHED_RUNS_QUERY,
+    MODELS_COLUMNS,
+    MODELS_QUERY,
+    SemanticModelRef,
+    apply_finished_runs,
+    has_unfinished_validation,
+    models_from_rows,
+)
 from .session_init import normalize_session_init_sql
 
 _APP_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -385,7 +394,12 @@ class ExasolDashboardService:
         result = self.execute_profile_query(profile_name, MODELS_QUERY)
         if result.get("status") != "ok" or result.get("columns") != MODELS_COLUMNS:
             return []
-        return models_from_rows(result.get("rows") or [])
+        models = models_from_rows(result.get("rows") or [])
+        if not has_unfinished_validation(models):
+            return models
+        finished = self.execute_profile_query(profile_name, FINISHED_RUNS_QUERY)
+        ok = finished.get("status") == "ok" and finished.get("columns") == FINISHED_RUNS_COLUMNS
+        return apply_finished_runs(models, (finished.get("rows") or []) if ok else None)
 
     def _discover_semantic_blueprint(
         self,

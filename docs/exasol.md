@@ -273,7 +273,20 @@ healthcheck instead of waiting for a viewer. A query file that reads a published
 on a profile *without* the preprocessor fails the smoke check with the `session_init_sql` line
 to add. `app_run_healthcheck` also reports each model the app reads in a `semantic_models`
 probe: it fails when a model is `INVALID`, `PRECONDITION`, or `NOT_PUBLISHED`, and lists models
-with validation warnings.
+with validation warnings. Each model that isn't `VALID` carries the rule codes and messages behind
+its status (`issues`). Readiness comes from the model's newest *finished* validation run, read
+from `SEMANTIC_SOURCE` (granted with `SEMANTIC_USER`), so a run left unfinished doesn't make an
+invalid model read as `VALID`. Without that access such a model is reported as `UNKNOWN`.
+
+The probe also covers query files that bypass the model:
+- **Saved compiled SQL** (`COMPILE_SQL` / `COMPILE_REQUEST_JSON` output) fails the probe
+  (`details.frozen_files`), which degrades the app's health: it keeps the definitions of the day
+  it was compiled.
+- **Hand-written SQL over a model's source tables** is listed under
+  `details.raw_governed_reads` without failing.
+
+`dash://exasol/semantic-usage` lists both kinds under `bypasses`, so a metric owner sees the
+dashboards a definition change won't reach.
 
 ## pyexasol Telemetry
 

@@ -242,7 +242,7 @@ class ResourcesMixin(MCPServerHost):
                 _ServerResource(
                     "exasol-semantic-usage",
                     "Semantic model usage",
-                    "Which live dashboards use which Exasol Semantic Views metrics and dimensions, with the definition hash each was built against. Impact analysis for a metric change.",
+                    "Which live dashboards use which Exasol Semantic Views metrics and dimensions, with the definition hash each was built against, plus dashboards that bypass a model (saved compiled SQL, or SQL over its source tables). Impact analysis for a metric change.",
                 ),
             ),
             (

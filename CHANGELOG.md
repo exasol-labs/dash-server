@@ -75,6 +75,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows instead of failing with "Attempt to fetch from statement without result set". The
   cached connection is still discarded afterwards, so a session change can't leak into other
   apps sharing the profile.
+- The `semantic_models` healthcheck probe takes a model's readiness from its newest *finished*
+  validation run. A run left unfinished (Exasol Semantic Views 0.5.0's `CHECK_PARTITION_COVERAGE`
+  leaves one behind on every call) made an `INVALID` model read as `VALID`. Without read access to
+  `SEMANTIC_SOURCE`, such a model is reported as `UNKNOWN`. Each model that isn't `VALID` now
+  carries the rule codes and messages behind its status (`issues`), and a failure names the first.
+- The `semantic_models` probe covers query files that bypass a semantic model. Saved compiled
+  Semantic SQL fails the probe (`frozen_files`), so the app reports `degraded` instead of
+  `healthy` while it serves frozen definitions. Hand-written SQL over a model's source tables is
+  listed under `raw_governed_reads`. `dash://exasol/semantic-usage` lists both under `bypasses`.
 - Data-layer errors shown in dashboards (the `_error` envelope that `render_error_panel`
   displays) carry only the database's own message plus an `(error ref …)` suffix. The DSN,
   database user, session id and SQL text no longer reach viewers; the full error stays on

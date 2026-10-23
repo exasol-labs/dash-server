@@ -39,11 +39,13 @@ from typing import TYPE_CHECKING, Any, Literal
 from .semantic_models import (
     SemanticModelRef,
     governed_sources,
+    looks_like_compiled_semantic_sql,
     normalize_identifier,
     published_semantic_models,
     referenced_governed_sources,
     referenced_models,
     session_preprocessor,
+    with_validation_issues,
 )
 
 if TYPE_CHECKING:
@@ -66,6 +68,10 @@ class SqlSmokeFile:
     semantic_models: tuple[str, ...] = ()
     # Advice that doesn't fail the check, e.g. raw reads of a semantic model's source tables.
     warnings: tuple[str, ...] = ()
+    # Published models whose source tables the query reads directly instead of through the
+    # model, and whether the query is saved compiler output (a frozen copy of the definitions).
+    governed_reads: tuple[str, ...] = ()
+    frozen_semantic_sql: bool = False
     # For a Semantic SQL file that passed: the model, object, and definition hash of each
     # metric and dimension it uses ({"model", "object", "metrics", "dimensions"}).
     definitions: dict[str, Any] | None = None
@@ -86,7 +92,8 @@ class SqlSmokeReport:
     overall_status: SmokeOutcome
     files: list[SqlSmokeFile] = field(default_factory=list)
     connection_error: str | None = None
-    # The published semantic models the files read, with their readiness.
+    # The published semantic models the files read (through the model or its source tables),
+    # with their readiness and, unless VALID, the issues behind it.
     semantic_models: list[SemanticModelRef] = field(default_factory=list)
 
     @property
@@ -142,6 +149,7 @@ def run_sql_smoke(
 
     results: list[SqlSmokeFile] = []
     semantic = _SemanticContext(connection)
+    referenced_refs: list[SemanticModelRef] = []
     try:
         for relative_path, sql_text in sql_files:
             results.append(
@@ -154,6 +162,10 @@ def run_sql_smoke(
                     profile_name=profile.name,
                 )
             )
+        referenced = {name for entry in results for name in (*entry.semantic_models, *entry.governed_reads)}
+        referenced_refs = with_validation_issues(
+            connection, [ref for ref in semantic.known_models if ref.model in referenced]
+        )
     finally:
         close = getattr(connection, "close", None)
         if callable(close):
@@ -172,11 +184,10 @@ def run_sql_smoke(
         overall = "skipped"
     else:
         overall = "passed"
-    referenced = {name for entry in results for name in entry.semantic_models}
     return SqlSmokeReport(
         overall_status=overall,
         files=results,
-        semantic_models=[ref for ref in semantic.known_models if ref.model in referenced],
+        semantic_models=referenced_refs,
     )
 
 
@@ -214,7 +225,9 @@ def _smoke_one(
 
     semantic_models = referenced_models(stripped, semantic.models) if semantic is not None else []
     model_names = tuple(ref.model for ref in semantic_models)
-    warnings = _governed_source_warnings(stripped, semantic) if semantic is not None else ()
+    frozen = semantic is not None and bool(semantic.models) and looks_like_compiled_semantic_sql(stripped)
+    governed_reads = _governed_reads(stripped, semantic) if semantic is not None else ()
+    warnings = _governed_source_warnings(stripped, semantic, frozen=frozen) if semantic is not None else ()
     inactive = [
         ref
         for ref in semantic_models
@@ -248,6 +261,8 @@ def _smoke_one(
             error_text=str(exc),
             semantic_models=model_names,
             warnings=warnings,
+            governed_reads=governed_reads,
+            frozen_semantic_sql=frozen,
         )
 
     close = getattr(statement, "close", None)
@@ -261,6 +276,8 @@ def _smoke_one(
         outcome="passed",
         semantic_models=model_names,
         warnings=warnings,
+        governed_reads=governed_reads,
+        frozen_semantic_sql=frozen,
         definitions=_compile_definitions(connection, stripped.rstrip(";"), params) if semantic_models else None,
     )
 
@@ -293,15 +310,33 @@ def _compile_definitions(connection: object, sql_text: str, params: dict[str, An
         return None
 
 
-def _governed_source_warnings(sql_text: str, semantic: _SemanticContext) -> tuple[str, ...]:
-    """One warning when the query reads tables that published semantic models govern."""
+def _governed_models(sql_text: str, semantic: _SemanticContext) -> tuple[list[str], list[tuple[str, str]]]:
+    """The governed tables ``sql_text`` reads, and the (model, published schema) pairs behind them."""
 
     sources = referenced_governed_sources(sql_text, semantic.governed_sources)
-    if not sources:
-        return ()
     models: list[tuple[str, str]] = []
     for source in sources:
         models.extend(model for model in semantic.governed_sources[source] if model not in models)
+    return sources, models
+
+
+def _governed_reads(sql_text: str, semantic: _SemanticContext) -> tuple[str, ...]:
+    return tuple(model for model, _ in _governed_models(sql_text, semantic)[1])
+
+
+def _governed_source_warnings(sql_text: str, semantic: _SemanticContext, *, frozen: bool = False) -> tuple[str, ...]:
+    """One warning when the query reads tables that published semantic models govern."""
+
+    sources, models = _governed_models(sql_text, semantic)
+    if frozen:
+        named = _join_names([f"{model!r} ({schema})" for model, schema in models]) if models else "a semantic model"
+        return (
+            f"This query is SQL saved from the semantic layer's compiler for {named}. It keeps today's metric "
+            "definitions and won't follow certified changes; query the published schema with Semantic SQL "
+            "instead. See dash://exasol/help/semantic-layer.",
+        )
+    if not sources:
+        return ()
     tables = _join_names(sources)
     named = _join_names([f"{model!r} ({schema})" for model, schema in models])
     plural = len(models) > 1
