@@ -630,6 +630,11 @@ wrappers) **never raise on data-layer failure**. They always return:
 - on failure: a single-row envelope `[{"_error": "<message>"}]` (or the dict
   `{"_error": "..."}` from `query_one`).
 
+The message is written for viewers: the database's own error message plus an
+`(error ref …)` suffix. The DSN, database user, session id and SQL text are
+left out; the full error is recorded on `dash://apps/{name}/errors`, where
+`details.error_ref` matches the reference.
+
 This shape is intentional — Dash callbacks shouldn't surface raw 500s for
 upstream-data failures; they should render a friendly error panel. But the
 shape also means **`row["AGENT_ID"]` will `KeyError` on the error envelope** if

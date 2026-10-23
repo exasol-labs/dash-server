@@ -227,6 +227,8 @@ class DiagnosticsService:
                 "profile": profile_name,
                 "error": error_text,
                 "fingerprint": fingerprint,
+                # The "error ref" viewers see (`exasol.runtime.error_reference`).
+                "error_ref": fingerprint[:8],
             },
             revision_number=revision_number,
         )

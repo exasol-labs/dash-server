@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -75,11 +77,38 @@ def query_rows(
         params=params,
     )
     if result.get("status") != "ok":
-        error_text = result.get("error", "Unknown Exasol error")
+        error_text = str(result.get("error", "Unknown Exasol error"))
         _record_data_layer_error(server, metadata, sql_relative_path, error_text)
-        return [{"_error": error_text}]
+        return [{"_error": viewer_error_message(error_text)}]
     _record_data_layer_success(server, metadata, sql_relative_path)
     return _records_from_result(result)
+
+
+# pyexasol renders errors as a block of `key => value` lines. Only the `message` line is
+# meant for people; the rest (dsn, user, session_id, query) is connection detail.
+_PYEXASOL_MESSAGE_RE = re.compile(r"^\s*message\s*=>\s*(.*?)(?=^\s*\w+\s*=>|^\)|\Z)", re.MULTILINE | re.DOTALL)
+_SESSION_SUFFIX_RE = re.compile(r"\s*\(Session: \d+\)")
+
+
+def error_reference(error_text: str) -> str:
+    """Short id tying a viewer-facing message to its full diagnostics record."""
+
+    return hashlib.sha1(error_text.strip().encode("utf-8", errors="replace")).hexdigest()[:8]
+
+
+def viewer_error_message(error_text: str) -> str:
+    """The part of a data-layer error that is safe to show a dashboard viewer.
+
+    Keeps the database's own message (an Exasol or Semantic Views error, which is what
+    tells someone what went wrong) and drops the DSN, user, session id and SQL text. The
+    full error goes to `dash://apps/{name}/errors`; the reference finds it there.
+    """
+
+    match = _PYEXASOL_MESSAGE_RE.search(error_text)
+    message = _SESSION_SUFFIX_RE.sub("", match.group(1)).strip() if match else ""
+    if not message:
+        message = "The data source could not answer this query."
+    return f"{message} (error ref {error_reference(error_text)})"
 
 
 def _record_data_layer_error(

@@ -75,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows instead of failing with "Attempt to fetch from statement without result set". The
   cached connection is still discarded afterwards, so a session change can't leak into other
   apps sharing the profile.
+- Data-layer errors shown in dashboards (the `_error` envelope that `render_error_panel`
+  displays) carry only the database's own message plus an `(error ref …)` suffix. The DSN,
+  database user, session id and SQL text no longer reach viewers; the full error stays on
+  `dash://apps/{name}/errors`, whose `details.error_ref` matches the reference.
 - A cached Exasol connection is replaced when its profile's settings change (for example a
   rewrite with `overwrite: true`). Before, a busy thread kept using a connection opened from the
   old DSN, user, or session setup until it went idle.
