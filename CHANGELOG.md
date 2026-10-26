@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-26
+
+dash-server 0.2.1 is a maintenance release: it updates the CI toolchain and changes no
+server behavior.
+
 ### Changed
 - CI uses uv 0.13.5 (from 0.9.24) through `astral-sh/setup-uv` v10.3.2. `uv.lock` is unchanged:
   uv 0.13 accepts it as written. Use uv 0.13 locally, too, so `uv sync --locked` judges the lock
@@ -336,7 +341,8 @@ database questions into live, query-backed dashboards through MCP. This release 
 - Agent-facing skills for building Exasol-backed Dash dashboards and using PyExasol
   directly, under [skills/](skills/).
 
-[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/exasol-labs/dash-server/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/exasol-labs/dash-server/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/exasol-labs/dash-server/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/exasol-labs/dash-server/releases/tag/v0.1.0
