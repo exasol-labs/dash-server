@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- CI uses uv 0.13.5 (from 0.9.24) through `astral-sh/setup-uv` v10.3.2. `uv.lock` is unchanged:
+  uv 0.13 accepts it as written. Use uv 0.13 locally, too, so `uv sync --locked` judges the lock
+  the same way.
+
 ## [0.2.0] - 2026-10-23
 
 dash-server 0.2.0 builds dashboards on governed metrics: Exasol Semantic Views models can be used
