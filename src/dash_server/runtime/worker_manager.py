@@ -263,8 +263,18 @@ class AppWorkerManager:
 
         with self._lock:
             existing = self._records.get(mount_path)
-            if existing is not None and self._record_is_alive(existing):
+            alive = existing is not None and self._record_is_alive(existing)
+            if (
+                existing is not None
+                and alive
+                and existing.app_name == app_name
+                and existing.revision_number == revision_number
+            ):
                 return existing
+            if existing is not None and alive:
+                # Another revision is mounted here, as after a deploy: it must not keep serving the
+                # old code. Stop it before the new revision's worker takes the mount path.
+                self.stop(mount_path)
             # Stale record — drop it before we start the replacement.
             self._records.pop(mount_path, None)
 

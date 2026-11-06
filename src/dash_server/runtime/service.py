@@ -32,6 +32,7 @@ from dash_server.dash_apps.factory import (
 from dash_server.dependencies import DependencyInstaller
 from dash_server.diagnostics import DiagnosticsService
 from dash_server.exceptions import DashServerError
+from dash_server.live_routes import is_live_route, live_path_prefix
 from dash_server.gitops import GitRepoService, GitWorktreeService
 from dash_server.registry.models import AppManifest, AppRevision, HostedApp
 from dash_server.registry.sqlite_registry import SQLiteAppRegistry
@@ -2823,10 +2824,10 @@ class AppRuntimeService:
         )
 
     def _normalize_live_route(self, mount_path: str) -> str:
-        if not isinstance(mount_path, str) or not mount_path.startswith("/apps/"):
+        if not is_live_route(mount_path):
             raise DashServerError(
                 category="exposure_validation_error",
-                summary="Live mount paths must start with /apps/.",
+                summary=f"Live mount paths must start with {live_path_prefix()}.",
                 details={"mount_path": mount_path},
             )
         normalized = mount_path.rstrip("/") or mount_path

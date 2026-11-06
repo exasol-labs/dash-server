@@ -15,13 +15,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from dash_server.live_routes import live_path_prefix
+
 # ---------------------------------------------------------------------------
 # Transport
 # ---------------------------------------------------------------------------
 
 #: URL prefix the control-plane blueprint is mounted under. App names match
 #: ``^[a-z][a-z0-9-]*$`` (``dash_apps/factory.py``), so a leading double
-#: underscore can never collide with an ``/apps/<name>`` or ``/preview/<name>``
+#: underscore can never collide with an live ``<prefix><name>`` or ``/preview/<name>``
 #: mount prefix — the dispatcher falls through to the control plane for these.
 BLUEPRINT_URL_PREFIX = "/__dash-server/session"
 
@@ -104,7 +106,11 @@ CATEGORY_PROTOCOL = "session_channel_protocol_error"
 #: Diagnostics channel every dispatched command is appended to.
 DIAGNOSTICS_CHANNEL = "session.commands"
 
-_MOUNT_APPS_RE = re.compile(r"^/apps/([a-z][a-z0-9-]*)(?:/.*)?$")
+
+def _live_mount_pattern() -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(live_path_prefix())}([a-z][a-z0-9-]*)(?:/.*)?$")
+
+
 _MOUNT_PREVIEW_RE = re.compile(r"^/preview/([a-z][a-z0-9-]*)/(?:r0*)?(\d+)(?:/.*)?$")
 
 
@@ -119,7 +125,7 @@ def app_name_from_mount_path(mount_path: str) -> str | None:
     if not isinstance(mount_path, str) or not mount_path.startswith("/"):
         return None
     normalized = "/" + mount_path.strip("/")
-    live = _MOUNT_APPS_RE.match(normalized)
+    live = _live_mount_pattern().match(normalized)
     if live is not None:
         return live.group(1)
     preview = _MOUNT_PREVIEW_RE.match(normalized)
@@ -134,7 +140,7 @@ def mount_kind_from_mount_path(mount_path: str) -> str:
     if not isinstance(mount_path, str):
         return "unknown"
     normalized = "/" + mount_path.strip("/")
-    if _MOUNT_APPS_RE.match(normalized) is not None:
+    if _live_mount_pattern().match(normalized) is not None:
         return "live"
     if _MOUNT_PREVIEW_RE.match(normalized) is not None:
         return "preview"

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A container image (`Dockerfile`, [docs/container-image.md](docs/container-image.md)) with hosted-ready
+  defaults, a non-root user, the instance directory on a volume, and a pip cache that holds the wheels
+  of `dash-server`, `dash`, `plotly`, `pandas`, and `pyexasol`.
+- `DASH_SERVER_DEMO_APP_ENABLED=false` starts a new instance without the built-in `demo` dashboard.
+- `DASH_SERVER_APP_HELPER_PACKAGE` names the `dash-server` wheel or source checkout that per-app
+  environments install to get `dash_server_runtime`.
+- `DASH_SERVER_EXASOL_PROFILE_CREATION_ENABLED=false` turns off `exasol_profile_create_local`: the
+  tool leaves `tools/list`, its calls fail with `tool_disabled`, and guidance no longer suggests it,
+  so the profiles an operator configured are the only ones.
+- `DASH_SERVER_LIVE_PATH_PREFIX` serves live dashboards under another path than `/apps/`, such as
+  `/dashboards/`, in default routes, manifest validation, live mounts, and the texts of tools and
+  help resources.
+
+### Fixed
+- Per-app environments (`DASH_SERVER_APP_DEPENDENCY_ISOLATION=per_app`) build again: they install the
+  whole `dash-server` distribution, which `dash_server_runtime` imports, from a wheel or source checkout,
+  instead of the bare `dash_server_runtime` directory, which pip cannot install; and their directories
+  are named `sha256-<digest>`, because `venv` refuses paths that hold `:`.
+- Dashboards served by isolated workers (`DASH_SERVER_APP_RUNTIME_MODE=isolated`) load their scripts and
+  callbacks under their mount path: the worker passes the mount path to `create_dash_app` as
+  `url_base_pathname`, as in-process mounts do, instead of `/`, which sent the browser outside the mount.
+- Validating an app in a per-app environment no longer fails on a callback with a single `Output`, which
+  Dash keeps as the object rather than a list, and reads the IDs of inputs and state, which Dash keeps as
+  dicts, so missing-component checks cover them.
+- Isolated workers record the exceptions their dashboards raise, so a failing callback reaches
+  `app_inspect_traceback` and `dash://apps/{name}/callback-failures` with its traceback, as in-process mounts do.
+- The `overview` pattern of `app_create_exasol_dashboard` quotes its aliases `CURRENT_USER` and
+  `CURRENT_SCHEMA`, reserved words in Exasol, so its summary query passes the SQL smoke test.
+- Deploying a new revision in isolated mode replaces the worker at the dashboard's mount path. The running
+  worker of the previous revision used to keep serving the old code, so a redeployed dashboard did not change.
+
 ## [0.2.1] - 2026-10-26
 
 dash-server 0.2.1 is a maintenance release: it updates the CI toolchain and changes no

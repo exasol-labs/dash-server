@@ -42,9 +42,9 @@ def describe_callbacks(dash_app: Any) -> dict[str, Any]:
     callback_map = getattr(dash_app, "callback_map", {}) or {}
     layout_ids = collect_layout_ids(dash_app)
     for output_key, spec in callback_map.items():
-        inputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("inputs", []) or []]
-        outputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("output", []) or []]
-        state = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("state", []) or []]
+        inputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in _deps(spec.get("inputs"))]
+        outputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in _deps(spec.get("output"))]
+        state = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in _deps(spec.get("state"))]
         referenced_ids = {dep["id"] for dep in inputs + outputs + state}
         missing = sorted(referenced_ids - layout_ids)
         callbacks.append(
@@ -89,9 +89,24 @@ def collect_layout_ids(dash_app: Any) -> set[str]:
     return seen
 
 
+def _deps(value: Any) -> list[Any]:
+    """A callback's dependencies as a list: Dash keeps a single ``Output`` as the object itself."""
+
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 def _dep_id(dep: Any) -> str:
+    # Dash keeps outputs as `Output` objects and inputs and state as `{"id": ..., "property": ...}` dicts.
+    if isinstance(dep, dict):
+        return str(dep.get("id", ""))
     return str(getattr(dep, "component_id", getattr(dep, "id", "")))
 
 
 def _dep_property(dep: Any) -> str:
+    if isinstance(dep, dict):
+        return str(dep.get("property", ""))
     return str(getattr(dep, "component_property", getattr(dep, "property", "")))

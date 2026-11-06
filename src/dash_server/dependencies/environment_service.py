@@ -139,7 +139,7 @@ class DependencyEnvironmentService:
             }
 
         environment_id = self.compute_environment_id(requirements)
-        env_dir = self.environments_root / environment_id
+        env_dir = self._env_dir(environment_id)
 
         if force_clean and env_dir.exists():
             shutil.rmtree(env_dir, ignore_errors=True)
@@ -177,8 +177,13 @@ class DependencyEnvironmentService:
         ).hexdigest()
         return f"sha256:{digest[:32]}"  # short prefix is fine; collisions vanishingly unlikely
 
+    def _env_dir(self, environment_id: str) -> Path:
+        # `venv` refuses directories whose path holds the PATH separator, so `sha256:<digest>`
+        # is stored as `sha256-<digest>`.
+        return self.environments_root / environment_id.replace(":", "-")
+
     def lookup(self, environment_id: str) -> dict[str, Any] | None:
-        env_dir = self.environments_root / environment_id
+        env_dir = self._env_dir(environment_id)
         if not env_dir.exists():
             return None
         record = self._read_record(env_dir)
@@ -209,7 +214,7 @@ class DependencyEnvironmentService:
     def invalidate(self, environment_id: str) -> bool:
         """Phase 4f: mark an env for removal on next GC pass. Returns True if it existed."""
 
-        env_dir = self.environments_root / environment_id
+        env_dir = self._env_dir(environment_id)
         if not env_dir.exists():
             return False
         record = self._read_record(env_dir)
@@ -278,7 +283,7 @@ class DependencyEnvironmentService:
                 continue
             env_id = record["environment_id"]
             size_before = int(record.get("bytes_on_disk") or 0)
-            if not self._remove_env_dir(self.environments_root / env_id):
+            if not self._remove_env_dir(self._env_dir(env_id)):
                 continue
             evicted.append(env_id)
             current_bytes -= size_before
@@ -503,7 +508,17 @@ class DependencyEnvironmentService:
             helper_target = self._helper_install_target()
             commands: list[list[str]] = []
             if helper_target:
-                commands.append([str(python_executable), "-m", "pip", "install", "--no-build-isolation", helper_target])
+                commands.append(
+                    [
+                        str(python_executable),
+                        "-m",
+                        "pip",
+                        "install",
+                        "--cache-dir",
+                        str(self.wheel_cache_root),
+                        helper_target,
+                    ]
+                )
             # 3) Install user requirements with the wheel cache as the find-links source.
             commands.append(
                 [
@@ -682,14 +697,20 @@ class DependencyEnvironmentService:
                 return "0.0.0"
 
     def _helper_install_target(self) -> str | None:
-        """Return a `pip install` target for the helper package, or None to skip."""
+        """Return a `pip install` target for the helper package, or None to skip.
 
-        # If we have a local source path, install editable from it. This is the dev path.
-        if self.helper_package_source and self.helper_package_source.exists():
-            return f"-e{self.helper_package_source}"  # pip accepts -e<path> as one arg
-        # In a future hosted release we'd `return self.helper_package_name` (PyPI). For now
-        # the package is not on PyPI; if no source path is given, skip the helper install and
-        # let validation flag any missing imports.
+        Workers import `dash_server_runtime`, which imports `dash_server`, so the helper is the
+        whole dash-server distribution: a built wheel (container images and other installs), or
+        a source checkout, installed editable so the worker sees exactly what the control plane
+        does.
+        """
+
+        source = self.helper_package_source
+        if source is not None and source.is_file():
+            return str(source)
+        if source is not None and (source / "pyproject.toml").is_file():
+            return f"-e{source}"  # pip accepts -e<path> as one arg
+        # Without either, skip the helper install and let validation flag the missing import.
         return None
 
     def _base_python_tag(self) -> str:

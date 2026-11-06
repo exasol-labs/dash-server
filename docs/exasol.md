@@ -71,6 +71,7 @@ export DASH_SERVER_EXASOL_SECRETS_ROOT='/path/to/exasol-secrets'   # default: <i
 | `DASH_SERVER_EXASOL_SESSION_INIT_SQL` | unset | `;`-separated session statements run on every new connection; see [Session setup statements](#session-setup-statements). |
 | `DASH_SERVER_EXASOL_SECRETS_ROOT` | `<instance>/exasol-secrets` | Where secrets passed as `secret_value` are stored. |
 | `DASH_SERVER_EXASOL_OVERWRITE` | `false` | Rewrite an existing profile when it differs from these settings (see below). |
+| `DASH_SERVER_EXASOL_PROFILE_CREATION_ENABLED` | `true` | `false` removes `exasol_profile_create_local` from `tools/list` and rejects its calls with `tool_disabled`, so the operator's profiles are the only ones. |
 
 When these are set, `dash-server` will create the profile automatically on startup if it does not already exist.
 
@@ -715,6 +716,7 @@ For a shared environment, the recommended pattern is:
 2. the operator provides the secret via environment variable or `instance/exasol-secrets/{name}.json`
 3. agents only receive the profile name
 4. agents use `app_create_exasol_dashboard` and normal app-editing tools
+5. the operator sets `DASH_SERVER_EXASOL_PROFILE_CREATION_ENABLED=false`, so agents cannot add or rewrite profiles
 
 That keeps:
 

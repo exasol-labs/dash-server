@@ -195,6 +195,140 @@ def test_worker_manager_uses_provided_python_executable_argument(tmp_path, monke
         manager.stop_all()
 
 
+def test_worker_app_shell_loads_its_assets_under_the_mount_path(tmp_path):
+    """The page a worker serves asks the browser for scripts under its mount path, not under `/`."""
+
+    app_dir = _write_tiny_app(tmp_path)
+    manager = AppWorkerManager(workers_root=str(tmp_path / "workers"))
+    try:
+        manager.start(
+            app_name="tiny",
+            revision_number=1,
+            mount_path="/dashboards/tiny",
+            app_source=app_dir / "app.py",
+            manifest={"name": "tiny", "title": "Tiny", "route": "/dashboards/tiny"},
+        )
+        proxy = WorkerProxyWSGIApp(manager, mount_path="/dashboards/tiny", app_name="tiny")
+
+        def get(path):
+            captured = []
+            environ = {
+                "REQUEST_METHOD": "GET",
+                "PATH_INFO": path,
+                "QUERY_STRING": "",
+                "wsgi.input": io.BytesIO(b""),
+                "wsgi.errors": sys.stderr,
+                "wsgi.url_scheme": "http",
+                "SERVER_NAME": "test",
+                "SERVER_PORT": "5000",
+                "HTTP_HOST": "test:5000",
+            }
+            body = b"".join(proxy(environ, lambda status, headers, exc_info=None: captured.append(status)))
+            return captured[0], body.decode()
+
+        status, shell = get("/")
+        assert status.startswith("200"), status
+        assert 'src="/dashboards/tiny/_dash-component-suites/' in shell
+        script = shell.split('src="/dashboards/tiny', 1)[1].split('"', 1)[0]
+        assert get(script)[0].startswith("200")
+    finally:
+        manager.stop_all()
+
+
+_FAILING_CALLBACK_APP_PY = """
+from dash import Dash, Input, Output, html
+
+
+def create_dash_app(server, url_base_pathname, metadata):
+    app = Dash(__name__, server=server, routes_pathname_prefix='/',
+               requests_pathname_prefix=url_base_pathname.rstrip('/') + '/')
+    app.layout = html.Div([html.Button('Go', id='go'), html.Div(id='out')])
+
+    @app.callback(Output('out', 'children'), Input('go', 'n_clicks'))
+    def show(n_clicks):
+        return 1 / 0
+
+    return app
+"""
+
+
+def test_worker_records_a_failing_callback_for_app_inspect_traceback(tmp_path):
+    """A callback that raises in an isolated worker is recorded with its traceback, as in-process."""
+
+    from dash_server.diagnostics import DiagnosticsService
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "app.py").write_text(_FAILING_CALLBACK_APP_PY)
+    diagnostics_root = tmp_path / "diagnostics"
+    manager = AppWorkerManager(workers_root=str(tmp_path / "workers"), diagnostics_root=str(diagnostics_root))
+    try:
+        manager.start(
+            app_name="ratios",
+            revision_number=3,
+            mount_path="/dashboards/ratios",
+            app_source=app_dir / "app.py",
+            manifest={"name": "ratios", "title": "Ratios", "route": "/dashboards/ratios"},
+        )
+        proxy = WorkerProxyWSGIApp(manager, mount_path="/dashboards/ratios", app_name="ratios")
+        body = json.dumps(
+            {
+                "output": "out.children",
+                "outputs": {"id": "out", "property": "children"},
+                "inputs": [{"id": "go", "property": "n_clicks", "value": 1}],
+                "changedPropIds": ["go.n_clicks"],
+                "state": [],
+            }
+        ).encode()
+        captured = []
+        environ = {
+            "REQUEST_METHOD": "POST",
+            "PATH_INFO": "/_dash-update-component",
+            "QUERY_STRING": "",
+            "CONTENT_TYPE": "application/json",
+            "CONTENT_LENGTH": str(len(body)),
+            "wsgi.input": io.BytesIO(body),
+            "wsgi.errors": sys.stderr,
+            "wsgi.url_scheme": "http",
+            "SERVER_NAME": "test",
+            "SERVER_PORT": "5000",
+            "HTTP_HOST": "test:5000",
+        }
+        b"".join(proxy(environ, lambda status, headers, exc_info=None: captured.append(status)))
+        assert captured[0].startswith("500"), captured
+
+        error = DiagnosticsService(str(diagnostics_root)).latest_error("ratios", revision_number=3)
+        assert error is not None
+        assert error["category"] == "dash_callback_error"
+        assert "ZeroDivisionError" in error["traceback_text"]
+        assert error["details"]["output"] == "out.children"
+    finally:
+        manager.stop_all()
+
+
+def test_starting_another_revision_replaces_the_worker_at_its_mount_path(tmp_path):
+    """A deploy mounts a new revision where the old one runs; the old worker must not keep serving."""
+
+    app_dir = _write_tiny_app(tmp_path)
+    manager = AppWorkerManager(workers_root=str(tmp_path / "workers"))
+    try:
+        spec = {
+            "app_name": "tiny",
+            "mount_path": "/dashboards/tiny",
+            "app_source": app_dir / "app.py",
+            "manifest": {"name": "tiny", "title": "Tiny", "route": "/dashboards/tiny"},
+        }
+        first = manager.start(revision_number=1, **spec)
+        assert manager.start(revision_number=1, **spec).pid == first.pid
+        second = manager.start(revision_number=2, **spec)
+        assert second.pid != first.pid
+        assert second.revision_number == 2
+        assert manager.get_record("/dashboards/tiny").revision_number == 2
+        assert not manager._record_is_alive(first)
+    finally:
+        manager.stop_all()
+
+
 def test_worker_proxy_forwards_get_request_to_worker(tmp_path):
     """Spawn a worker, mount the proxy WSGI app, fetch the Dash layout endpoint."""
 
@@ -874,7 +1008,7 @@ def test_phase_4d_env_gc_evicts_unreferenced_envs_past_retention(tmp_path):
     )
     # Create two fake envs on disk by writing .env_record.json files directly.
     for env_id, age_days in [("sha256:keep", 0), ("sha256:evict", 30)]:
-        d = svc.environments_root / env_id
+        d = svc._env_dir(env_id)
         d.mkdir(parents=True)
         from datetime import datetime, timezone, timedelta
 
@@ -897,8 +1031,8 @@ def test_phase_4d_env_gc_evicts_unreferenced_envs_past_retention(tmp_path):
     )
     assert "sha256:evict" in result["evicted"]
     assert "sha256:keep" in result["skipped_referenced"]
-    assert not (svc.environments_root / "sha256:evict").exists()
-    assert (svc.environments_root / "sha256:keep").exists()
+    assert not svc._env_dir("sha256:evict").exists()
+    assert svc._env_dir("sha256:keep").exists()
 
 
 def test_phase_4d_env_gc_skips_recent_envs_below_retention(tmp_path):
@@ -910,7 +1044,7 @@ def test_phase_4d_env_gc_skips_recent_envs_below_retention(tmp_path):
         wheel_cache_root=str(tmp_path / "wheels"),
         pycache_root=str(tmp_path / "pyc"),
     )
-    d = svc.environments_root / "sha256:fresh"
+    d = svc._env_dir("sha256:fresh")
     d.mkdir(parents=True)
     from datetime import datetime, timezone
 
@@ -1048,7 +1182,7 @@ def test_phase_5c_env_eviction_emits_runtime_event(tmp_path):
     # Create one env we'll evict.
     from datetime import datetime, timezone, timedelta
 
-    d = svc.environments_root / "sha256:evictme"
+    d = svc._env_dir("sha256:evictme")
     d.mkdir(parents=True)
     old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat().replace("+00:00", "Z")
     (d / ".env_record.json").write_text(
