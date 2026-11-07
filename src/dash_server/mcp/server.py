@@ -18,6 +18,7 @@ from typing import Any
 from dash_server.consumption import ConsumptionService
 from dash_server.exasol import ExasolDashboardService
 from dash_server.gitops import GitRepoService
+from dash_server.live_routes import localize_live_paths
 from dash_server.mailer import InvitationEmailSender
 from dash_server.mcp.dispatch import DispatchMixin
 from dash_server.mcp.guidance import GuidanceMixin
@@ -53,6 +54,7 @@ class MCPServer(DispatchMixin, ResourcesMixin, SchemasMixin, GuidanceMixin, Hand
         email_sender: InvitationEmailSender | None = None,
         consumption_service: ConsumptionService | None = None,
         session_channel_service: SessionChannelService | None = None,
+        disabled_tools: frozenset[str] = frozenset(),
     ) -> None:
         self.runtime_service = runtime_service
         self.git_repo_service = git_repo_service
@@ -60,10 +62,12 @@ class MCPServer(DispatchMixin, ResourcesMixin, SchemasMixin, GuidanceMixin, Hand
         self.email_sender = email_sender
         self.consumption_service = consumption_service
         self.session_channel_service = session_channel_service
+        # Tools an operator turned off: absent from tools/list, unknown to tools/call.
+        self.disabled_tools = disabled_tools
         # Handler dict is derived from the single ToolSpec table so a tool cannot
         # exist in one structure but not the others.
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-            spec.name: getattr(self, spec.handler) for spec in TOOL_SPECS
+            spec.name: getattr(self, spec.handler) for spec in TOOL_SPECS if spec.name not in disabled_tools
         }
 
     def _tool_definitions(self) -> list[dict[str, Any]]:
@@ -76,16 +80,19 @@ class MCPServer(DispatchMixin, ResourcesMixin, SchemasMixin, GuidanceMixin, Hand
 
         definitions: list[dict[str, Any]] = []
         for spec in TOOL_SPECS:
+            if spec.name in self.disabled_tools:
+                continue
             schema = spec.input_schema
             if isinstance(schema, str):
                 schema = getattr(self, schema)()
             elif isinstance(schema, dict):
                 schema = copy.deepcopy(schema)
+            # Tool texts name the default `/apps/` prefix; show the configured one.
             definition: dict[str, Any] = {
                 "name": spec.name,
                 "title": spec.title,
-                "description": spec.description,
-                "inputSchema": schema,
+                "description": localize_live_paths(spec.description),
+                "inputSchema": localize_live_paths(schema),
             }
             if spec.meta is not None:
                 definition["_meta"] = copy.deepcopy(spec.meta)

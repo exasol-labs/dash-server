@@ -563,3 +563,60 @@ def test_workspace_dispatches_to_subprocess_when_dependency_install_reports_non_
     assert result["status"] == "passed"
     assert captured["subprocess_python"] == fake_python
     assert captured["dependency_install"]["environment_id"] == "sha256:test"
+
+
+def test_environment_directory_has_no_path_separator(tmp_path):
+    # `venv` refuses to create an environment in a directory whose path holds `:`.
+    svc = DependencyEnvironmentService(
+        environments_root=str(tmp_path / "envs"),
+        wheel_cache_root=str(tmp_path / "wheels"),
+        pycache_root=str(tmp_path / "pycache"),
+        helper_package_source=None,
+    )
+    environment_id = svc.compute_environment_id(["dash>=4.0,<5.0"])
+    assert ":" in environment_id
+    assert ":" not in svc._env_dir(environment_id).name
+
+
+def test_helper_install_target_is_the_dash_server_distribution(tmp_path):
+    def target(source):
+        return DependencyEnvironmentService(
+            environments_root=str(tmp_path / "envs"),
+            wheel_cache_root=str(tmp_path / "wheels"),
+            pycache_root=str(tmp_path / "pycache"),
+            helper_package_source=source,
+        )._helper_install_target()
+
+    wheel = tmp_path / "dash_server-0.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'dash-server'\n")
+    package_only = tmp_path / "dash_server_runtime"
+    package_only.mkdir()
+
+    assert target(wheel) == str(wheel)
+    assert target(checkout) == f"-e{checkout}"
+    # A bare package directory is not installable; skip rather than fail every build.
+    assert target(package_only) is None
+    assert target(None) is None
+
+
+def test_describe_callbacks_accepts_a_single_output():
+    # Dash keeps `Output(...)` of a one-output callback as the object itself, not in a list.
+    from dash import Dash, Input, Output, html
+
+    from dash_server_runtime.worker._app_loader import describe_callbacks
+
+    app = Dash(__name__)
+    app.layout = html.Div([html.Button("Go", id="go"), html.Div(id="out")])
+
+    @app.callback(Output("out", "children"), Input("go", "n_clicks"))
+    def show(n_clicks):
+        return n_clicks
+
+    report = describe_callbacks(app)
+    assert report["count"] == 1
+    assert report["callbacks"][0]["outputs"] == [{"id": "out", "property": "children"}]
+    assert report["callbacks"][0]["inputs"] == [{"id": "go", "property": "n_clicks"}]
+    assert report["missing_layout_ids"] == []

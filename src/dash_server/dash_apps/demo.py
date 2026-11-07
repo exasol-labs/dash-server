@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dash_server.live_routes import default_live_route
+
 
 def build_demo_bundle() -> dict[str, object]:
     """Return the built-in demo bundle."""
@@ -10,7 +12,7 @@ def build_demo_bundle() -> dict[str, object]:
         "manifest": {
             "name": "demo",
             "title": "Demo Dashboard",
-            "route": "/apps/demo",
+            "route": default_live_route("demo"),
             "description": "Built-in dashboard used to prove the hosting shape.",
             "template": "metric-cards",
         },

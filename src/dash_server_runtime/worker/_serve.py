@@ -42,7 +42,12 @@ def serve(args: argparse.Namespace) -> int:
         print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "manifest_parse", "error": str(exc)}), flush=True)
         return 1
 
-    mount_path = args.mount_path or manifest_data.get("route") or f"/apps/{args.app_name}"
+    mount_path = (
+        args.mount_path
+        or manifest_data.get("route")
+        # The server's live path prefix (dash_server.live_routes), inherited through the environment.
+        or f"{os.environ.get('DASH_SERVER_LIVE_PATH_PREFIX') or '/apps/'}{args.app_name}"
+    )
     app_source = Path(args.app_source).resolve()
 
     try:
@@ -112,10 +117,12 @@ def serve(args: argparse.Namespace) -> int:
     metadata = {**manifest_data, "route": mount_path}
     try:
         # Worker serves the app at the root of its own HTTP listener; the proxy translates
-        # `/apps/<name>/...` into `/...` before forwarding.
+        # `<mount path>/...` into `/...` before forwarding. The browser still requests the page's
+        # scripts and callbacks under the mount path, so the factory gets it as
+        # `url_base_pathname`, as in-process mounts do, and keeps `routes_pathname_prefix="/"`.
         created = factory(
             server=server,
-            url_base_pathname="/",
+            url_base_pathname=f"{mount_path.rstrip('/')}/",
             metadata=metadata,
         )
     except Exception as exc:
@@ -158,6 +165,13 @@ def serve(args: argparse.Namespace) -> int:
             session_channel=os.environ.get("DASH_SERVER_SESSION_CHANNEL") == "1",
         )
         finalize_dash_app_callbacks(created)
+        if diagnostics_service is not None:
+            # Callback failures reach app_inspect_traceback as they do for in-process mounts.
+            from dash_server.diagnostics.runtime_capture import record_request_exceptions
+
+            record_request_exceptions(
+                server, diagnostics_service, app_name=args.app_name, revision_number=args.revision_number
+            )
     except Exception as exc:
         print(
             json.dumps(

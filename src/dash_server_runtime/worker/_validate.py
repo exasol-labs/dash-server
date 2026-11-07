@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import traceback
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,12 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     app_source = Path(args.app_source).resolve()
-    mount_path = args.mount_path or manifest_data.get("route") or f"/apps/{args.app_name}"
+    mount_path = (
+        args.mount_path
+        or manifest_data.get("route")
+        # The server's live path prefix (dash_server.live_routes), inherited through the environment.
+        or f"{os.environ.get('DASH_SERVER_LIVE_PATH_PREFIX') or '/apps/'}{args.app_name}"
+    )
 
     try:
         module = load_app_module(app_source, args.app_name)

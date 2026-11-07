@@ -52,6 +52,10 @@ class Config:
     )
     DASH_SERVER_AUTH_PROVIDER: str | None = os.environ.get("DASH_SERVER_AUTH_PROVIDER")
     DASH_SERVER_PUBLIC_BASE_URL: str | None = os.environ.get("DASH_SERVER_PUBLIC_BASE_URL")
+    # Seed the built-in `demo` dashboard into a new instance; off starts with no dashboards.
+    DEMO_APP_ENABLED: bool = _env_bool("DASH_SERVER_DEMO_APP_ENABLED", True)
+    # Path prefix of live dashboards, `/apps/` by default; see dash_server.live_routes.
+    LIVE_PATH_PREFIX: str | None = os.environ.get("DASH_SERVER_LIVE_PATH_PREFIX")
     DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED: bool = _env_bool(
         "DASH_SERVER_PUBLIC_DASHBOARDS_ENABLED",
         False,
@@ -203,6 +207,9 @@ class Config:
     # Rewrite an existing bootstrap profile when it differs from the env settings. Off by
     # default so a profile an agent changed over MCP isn't reverted on every restart.
     EXASOL_BOOTSTRAP_OVERWRITE: bool = _env_bool("DASH_SERVER_EXASOL_OVERWRITE", False)
+    # Off makes the operator's profiles the only ones: `exasol_profile_create_local` leaves
+    # `tools/list` and its calls fail with `exasol_profile_creation_disabled`.
+    EXASOL_PROFILE_CREATION_ENABLED: bool = _env_bool("DASH_SERVER_EXASOL_PROFILE_CREATION_ENABLED", True)
     EXASOL_BOOTSTRAP_ROW_LIMIT: int = int(os.environ.get("DASH_SERVER_EXASOL_ROW_LIMIT", "50000"))
     # `;`-separated session statements run on every new connection (e.g. the Semantic Views
     # preprocessor); stored as the profile's `query_defaults.session_init_sql`.
@@ -218,6 +225,9 @@ class Config:
     APP_RUNTIME_MODE: str = os.environ.get("DASH_SERVER_APP_RUNTIME_MODE", "in_process")  # "in_process" | "isolated"
     APP_ENVIRONMENTS_ROOT: str | None = os.environ.get("DASH_SERVER_APP_ENVIRONMENTS_ROOT")
     APP_WHEEL_CACHE_ROOT: str | None = os.environ.get("DASH_SERVER_APP_WHEEL_CACHE_ROOT")
+    # dash-server wheel or source checkout installed into every per-app environment, which
+    # gives workers `dash_server_runtime`; defaults to the source checkout the server runs from.
+    APP_HELPER_PACKAGE: str | None = os.environ.get("DASH_SERVER_APP_HELPER_PACKAGE")
     APP_PYCACHE_ROOT: str | None = os.environ.get("DASH_SERVER_APP_PYCACHE_ROOT")
     APP_ENVIRONMENTS_DISK_CAP_GB: float = float(os.environ.get("DASH_SERVER_APP_ENVIRONMENTS_DISK_CAP_GB", "5.0"))
     APP_WHEEL_CACHE_DISK_CAP_GB: float = float(os.environ.get("DASH_SERVER_APP_WHEEL_CACHE_DISK_CAP_GB", "2.0"))

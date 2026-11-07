@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         email_sender: InvitationEmailSender | None
         consumption_service: ConsumptionService | None
         session_channel_service: SessionChannelService | None
+        disabled_tools: frozenset[str]
         _tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]]
 
         # MCPServer

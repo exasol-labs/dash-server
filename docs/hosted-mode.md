@@ -86,6 +86,20 @@ DASH_SERVER_APP_WORKER_PORT_RANGE=5500-5599
 Do not include `5000` or `7000` in `DASH_SERVER_APP_WORKER_PORT_RANGE` on Macs
 where AirPlay Receiver is enabled.
 
+## Demo Dashboard
+
+A new instance starts with the built-in `demo` dashboard. Set `DASH_SERVER_DEMO_APP_ENABLED=false` before the first start to begin with no dashboards; an instance that already exists keeps what it has.
+
+## Dashboard Path Prefix
+
+Live dashboards are served at `/apps/<name>` by default. To serve them under another path, for example when `dash-server` sits behind a host whose other routes it must not collide with, set one lowercase path segment:
+
+```bash
+DASH_SERVER_LIVE_PATH_PREFIX=/dashboards/
+```
+
+The prefix applies to default routes, manifest validation, live mounts, and the paths that MCP tool descriptions and help resources name; isolated workers inherit it. Previews stay at `/preview/<name>/<revision>`. Routes of `dash-server` itself, such as `/preview/`, `/mcp/`, or `/manage/`, are refused at startup. Dashboards created under another prefix keep the route stored in their manifest, so change the prefix before the first dashboard is created.
+
 ## Minimum Hosted Configuration
 
 Example hosted baseline:
@@ -347,6 +361,8 @@ Denied principals include:
 - one-time-link principals
 
 Operationally, treat `/mcp` as an administrative/control-plane surface, not a general end-user API.
+
+Every caller of `/mcp` can create and rewrite Exasol profiles with `exasol_profile_create_local`. When the operator provides the profiles, set `DASH_SERVER_EXASOL_PROFILE_CREATION_ENABLED=false`: the tool then leaves `tools/list`, its calls fail with `tool_disabled`, and agents can only use the profiles the operator configured (see [Multi-User Recommendation](exasol.md#multi-user-recommendation)).
 
 ## Email Invitations And One-Time Links
 

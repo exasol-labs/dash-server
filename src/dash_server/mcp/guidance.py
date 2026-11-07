@@ -107,6 +107,11 @@ class GuidanceMixin(MCPServerHost):
         related = guidance.get("related_resources")
         if isinstance(related, list):
             guidance["related_resources"] = _dedupe_preserving_order(related)
+        # Never suggest a tool the operator turned off.
+        suggested = guidance.get("suggested_tools")
+        disabled: frozenset[str] = getattr(self, "disabled_tools", frozenset())
+        if isinstance(suggested, list) and disabled:
+            guidance["suggested_tools"] = [tool for tool in suggested if tool not in disabled]
         enriched["guidance"] = guidance
         return enriched
 
