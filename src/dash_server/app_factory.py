@@ -367,9 +367,14 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
             app.logger.warning(
                 "exasol bootstrap: profile %s already exists and differs from the DASH_SERVER_EXASOL_* "
                 "settings, which are being IGNORED (%s). To apply them, set DASH_SERVER_EXASOL_OVERWRITE=true "
-                "and restart, or call exasol_profile_create_local with overwrite=true.",
+                "and restart%s.",
                 profile_name,
                 diff_text,
+                (
+                    ", or call exasol_profile_create_local with overwrite=true"
+                    if coerce_bool(app.config.get("EXASOL_PROFILE_CREATION_ENABLED"), default=True)
+                    else ""
+                ),
             )
             return
         app.logger.warning(
@@ -507,7 +512,15 @@ def _helper_package_source(app: Flask) -> Path | None:
 
     configured = app.config.get("APP_HELPER_PACKAGE")
     if configured:
-        return Path(str(configured))
+        path = Path(str(configured))
+        # Without the helper every per-app env lacks `dash_server_runtime` and each worker fails
+        # later with ModuleNotFoundError, so refuse to start instead.
+        if not (path.is_file() or (path / "pyproject.toml").is_file()):
+            raise _startup_error(
+                f"DASH_SERVER_APP_HELPER_PACKAGE {path} is neither a dash-server wheel nor a source "
+                "checkout with a pyproject.toml."
+            )
+        return path
     checkout = Path(__file__).resolve().parents[2]
     if (checkout / "pyproject.toml").is_file() and (checkout / "src" / "dash_server_runtime").is_dir():
         return checkout

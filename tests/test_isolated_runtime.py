@@ -329,6 +329,39 @@ def test_starting_another_revision_replaces_the_worker_at_its_mount_path(tmp_pat
         manager.stop_all()
 
 
+def test_failed_replacement_keeps_the_previous_revision_serving(tmp_path):
+    """A deploy whose new revision fails to start must leave the old worker at its mount path."""
+
+    app_dir = _write_tiny_app(tmp_path)
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "app.py").write_text("raise ImportError('broken revision')\n")
+    manager = AppWorkerManager(workers_root=str(tmp_path / "workers"))
+    try:
+        spec = {
+            "app_name": "tiny",
+            "mount_path": "/dashboards/tiny",
+            "manifest": {"name": "tiny", "title": "Tiny", "route": "/dashboards/tiny"},
+        }
+        first = manager.start(revision_number=1, app_source=app_dir / "app.py", **spec)
+        with pytest.raises(WorkerStartError):
+            manager.start(revision_number=2, app_source=broken / "app.py", **spec)
+        record = manager.get_record("/dashboards/tiny")
+        assert record is not None and record.pid == first.pid
+        assert manager._record_is_alive(first)
+        assert (tmp_path / "workers" / "tiny" / "1.json").is_file()
+    finally:
+        manager.stop_all()
+
+
+def test_worker_env_carries_the_live_path_prefix(tmp_path):
+    from dash_server.live_routes import configure_live_path_prefix
+
+    configure_live_path_prefix("/dashboards/")
+    manager = AppWorkerManager(workers_root=str(tmp_path / "workers"))
+    assert manager._build_worker_env(None)["DASH_SERVER_LIVE_PATH_PREFIX"] == "/dashboards/"
+
+
 def test_worker_proxy_forwards_get_request_to_worker(tmp_path):
     """Spawn a worker, mount the proxy WSGI app, fetch the Dash layout endpoint."""
 

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import re
 
 import pytest
@@ -92,3 +95,40 @@ def test_created_dashboard_defaults_to_configured_prefix(make_hosted_app):
     result = response.get_json()["result"]
     assert result["isError"] is False, result
     assert json.dumps(result["structuredContent"]).count("/dashboards/sales") >= 1
+
+
+def test_unusable_prefix_in_environment_does_not_break_import(tmp_path):
+    """The prefix is checked by create_app, which reports it as a startup error, not at import."""
+
+    env = {**os.environ, "DASH_SERVER_LIVE_PATH_PREFIX": "/Dashboards/"}
+    completed = subprocess.run(
+        [sys.executable, "-c", "import dash_server.app_factory"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_configuring_the_prefix_leaves_the_environment_alone(monkeypatch):
+    from dash_server.live_routes import configure_live_path_prefix
+
+    monkeypatch.delenv("DASH_SERVER_LIVE_PATH_PREFIX", raising=False)
+    configure_live_path_prefix("/dashboards/")
+    assert "DASH_SERVER_LIVE_PATH_PREFIX" not in os.environ
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [(None, "/apps/demo"), ("/dashboards/", "/dashboards/demo"), ("dashboards", "/dashboards/demo")],
+)
+def test_worker_default_mount_path_normalizes_the_prefix(monkeypatch, env_value, expected):
+    from dash_server_runtime.worker._app_loader import default_mount_path
+
+    if env_value is None:
+        monkeypatch.delenv("DASH_SERVER_LIVE_PATH_PREFIX", raising=False)
+    else:
+        monkeypatch.setenv("DASH_SERVER_LIVE_PATH_PREFIX", env_value)
+    assert default_mount_path("demo", {}) == expected
+    assert default_mount_path("demo", {"route": "/apps/other"}) == "/apps/other"

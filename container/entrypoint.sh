@@ -6,8 +6,15 @@ set -eu
 
 if [ -z "${DASH_SERVER_APP_HELPER_PACKAGE:-}" ]; then
   for wheel in /opt/dash-server/dist/dash_server-*.whl; do
-    DASH_SERVER_APP_HELPER_PACKAGE="$wheel"
+    # An unmatched glob stays literal; only take files that exist.
+    if [ -f "$wheel" ]; then
+      DASH_SERVER_APP_HELPER_PACKAGE="$wheel"
+    fi
   done
+  if [ -z "${DASH_SERVER_APP_HELPER_PACKAGE:-}" ]; then
+    echo "dash-server: no dash-server wheel in /opt/dash-server/dist; set DASH_SERVER_APP_HELPER_PACKAGE." >&2
+    exit 1
+  fi
   export DASH_SERVER_APP_HELPER_PACKAGE
 fi
 

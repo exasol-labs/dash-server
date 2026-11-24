@@ -98,7 +98,7 @@ Live dashboards are served at `/apps/<name>` by default. To serve them under ano
 DASH_SERVER_LIVE_PATH_PREFIX=/dashboards/
 ```
 
-The prefix applies to default routes, manifest validation, live mounts, and the paths that MCP tool descriptions and help resources name; isolated workers inherit it. Previews stay at `/preview/<name>/<revision>`. Routes of `dash-server` itself, such as `/preview/`, `/mcp/`, or `/manage/`, are refused at startup. Dashboards created under another prefix keep the route stored in their manifest, so change the prefix before the first dashboard is created.
+The prefix applies to default routes, manifest validation, live mounts, and the paths that MCP tool descriptions and help resources name. Isolated workers and validate subprocesses receive it from the server. One server process serves one prefix. Previews stay at `/preview/<name>/<revision>`. Routes of `dash-server` itself, such as `/preview/`, `/mcp/`, or `/manage/`, are refused at startup. Dashboards created under another prefix keep the route stored in their manifest, so change the prefix before the first dashboard is created.
 
 ## Minimum Hosted Configuration
 

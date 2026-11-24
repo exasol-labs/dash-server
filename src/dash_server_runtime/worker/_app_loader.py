@@ -7,10 +7,27 @@ per-app environment that only has ``dash_server_runtime`` installed.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
+
+
+def default_mount_path(app_name: str, manifest: dict[str, Any]) -> str:
+    """The mount path when the server passes none: the manifest route, else ``<prefix><name>``.
+
+    The prefix comes from ``DASH_SERVER_LIVE_PATH_PREFIX``, which the server sets to its
+    normalized value (see ``dash_server.live_routes``); it is normalized again here because
+    this module cannot import ``dash_server``.
+    """
+
+    route = manifest.get("route")
+    if route:
+        return str(route)
+    raw = (os.environ.get("DASH_SERVER_LIVE_PATH_PREFIX") or "").strip().strip("/")
+    prefix = f"/{raw}/" if raw else "/apps/"
+    return f"{prefix}{app_name}"
 
 
 def load_app_module(app_source: Path, app_name: str) -> Any:

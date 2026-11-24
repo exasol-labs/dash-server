@@ -208,7 +208,8 @@ class Config:
     # default so a profile an agent changed over MCP isn't reverted on every restart.
     EXASOL_BOOTSTRAP_OVERWRITE: bool = _env_bool("DASH_SERVER_EXASOL_OVERWRITE", False)
     # Off makes the operator's profiles the only ones: `exasol_profile_create_local` leaves
-    # `tools/list` and its calls fail with `exasol_profile_creation_disabled`.
+    # `tools/list`, its calls fail with `tool_disabled`, and payloads that still name it carry a
+    # `disabled_tools` note (dash_server.mcp.disabled_tools).
     EXASOL_PROFILE_CREATION_ENABLED: bool = _env_bool("DASH_SERVER_EXASOL_PROFILE_CREATION_ENABLED", True)
     EXASOL_BOOTSTRAP_ROW_LIMIT: int = int(os.environ.get("DASH_SERVER_EXASOL_ROW_LIMIT", "50000"))
     # `;`-separated session statements run on every new connection (e.g. the Semantic Views

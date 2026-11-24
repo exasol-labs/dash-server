@@ -33,6 +33,8 @@ from ..timestamps import seconds_since
 
 
 _HELPER_PACKAGE_NAME = "dash_server_runtime"
+# The distribution that ships `dash_server_runtime` together with `dash_server`.
+_DISTRIBUTION_NAME = "dash-server"
 
 
 class DependencyEnvironmentService:
@@ -86,6 +88,7 @@ class DependencyEnvironmentService:
         self.pycache_root = Path(pycache_root)
         for path in (self.environments_root, self.wheel_cache_root, self.pycache_root):
             path.mkdir(parents=True, exist_ok=True)
+        self._remove_legacy_env_dirs()
         self.enabled = enabled
         self.base_python_executable = base_python_executable or sys.executable
         self.timeout_seconds = timeout_seconds
@@ -181,6 +184,22 @@ class DependencyEnvironmentService:
         # `venv` refuses directories whose path holds the PATH separator, so `sha256:<digest>`
         # is stored as `sha256-<digest>`.
         return self.environments_root / environment_id.replace(":", "-")
+
+    def _remove_legacy_env_dirs(self) -> None:
+        """Remove env directories named ``sha256:<digest>`` by releases before ``_env_dir``.
+
+        A venv cannot be renamed (its scripts and ``pyvenv.cfg`` hold absolute paths), so they
+        are deleted; the next deploy of each app rebuilds its env under the new name. Left in
+        place they would never be looked up or evicted, yet count against the disk cap.
+        """
+
+        try:
+            entries = list(self.environments_root.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if ":" in entry.name and entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
 
     def lookup(self, environment_id: str) -> dict[str, Any] | None:
         env_dir = self._env_dir(environment_id)
@@ -503,24 +522,17 @@ class DependencyEnvironmentService:
 
             python_executable = self._env_python(env_dir)
 
-            # 2) Install the helper package. Prefer the local source (editable in dev installs)
-            #    so the worker sees exactly what the control plane does.
-            helper_target = self._helper_install_target()
-            commands: list[list[str]] = []
-            if helper_target:
-                commands.append(
-                    [
-                        str(python_executable),
-                        "-m",
-                        "pip",
-                        "install",
-                        "--cache-dir",
-                        str(self.wheel_cache_root),
-                        helper_target,
-                    ]
-                )
-            # 3) Install user requirements with the wheel cache as the find-links source.
-            commands.append(
+            # 2) Put the helper package (the dash-server distribution) on the env's path. A source
+            #    checkout is linked with a `.pth` file so no build backend has to be fetched; its
+            #    dependencies are installed with the user's requirements below.
+            helper_targets = self._helper_install_targets()
+            source_root = self._helper_checkout_src()
+            if source_root is not None:
+                self._link_source_checkout(python_executable, source_root)
+            # 3) Install the helper and the user requirements in one pip run, so the resolver
+            #    refuses requirements that conflict with dash-server's own dependencies instead of
+            #    a later run silently downgrading them.
+            commands: list[list[str]] = [
                 [
                     str(python_executable),
                     "-m",
@@ -528,9 +540,10 @@ class DependencyEnvironmentService:
                     "install",
                     "--cache-dir",
                     str(self.wheel_cache_root),
+                    *helper_targets,
                     *requirements,
                 ]
-            )
+            ]
 
             stdout_chunks: list[str] = []
             stderr_chunks: list[str] = []
@@ -696,22 +709,52 @@ class DependencyEnvironmentService:
             except Exception:
                 return "0.0.0"
 
-    def _helper_install_target(self) -> str | None:
-        """Return a `pip install` target for the helper package, or None to skip.
+    def _helper_install_targets(self) -> list[str]:
+        """Return the `pip install` arguments that provide the helper package.
 
         Workers import `dash_server_runtime`, which imports `dash_server`, so the helper is the
-        whole dash-server distribution: a built wheel (container images and other installs), or
-        a source checkout, installed editable so the worker sees exactly what the control plane
-        does.
+        whole dash-server distribution:
+
+        - a built wheel (container images and other installs): the wheel itself;
+        - a source checkout: dash-server's runtime dependencies, with the checkout's ``src``
+          linked into the env by ``_link_source_checkout`` so the worker sees exactly what the
+          control plane does. When those dependencies are not known (dash-server is not
+          installed in the control plane's interpreter), fall back to an editable install;
+        - nothing configured: no arguments, and validation flags the missing import.
         """
 
         source = self.helper_package_source
         if source is not None and source.is_file():
-            return str(source)
+            return [str(source)]
         if source is not None and (source / "pyproject.toml").is_file():
-            return f"-e{source}"  # pip accepts -e<path> as one arg
-        # Without either, skip the helper install and let validation flag the missing import.
-        return None
+            dependencies = _installed_runtime_dependencies(_DISTRIBUTION_NAME)
+            if dependencies is None:
+                return [f"-e{source}"]  # pip accepts -e<path> as one arg
+            return dependencies
+        return []
+
+    def _helper_checkout_src(self) -> Path | None:
+        """The ``src`` directory to link into each env, when the helper is a source checkout."""
+
+        source = self.helper_package_source
+        if source is None or not (source / "pyproject.toml").is_file():
+            return None
+        if _installed_runtime_dependencies(_DISTRIBUTION_NAME) is None:
+            return None  # installed editable instead; see _helper_install_targets
+        src = source / "src"
+        return src if (src / "dash_server_runtime").is_dir() else None
+
+    def _link_source_checkout(self, python_executable: Path, src: Path) -> None:
+        """Add ``src`` to the env's import path with a ``.pth`` file in its site-packages."""
+
+        purelib = subprocess.run(
+            [str(python_executable), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        ).stdout.strip()
+        Path(purelib, "dash_server_checkout.pth").write_text(f"{src}\n", encoding="utf-8")
 
     def _base_python_tag(self) -> str:
         return (
@@ -732,6 +775,29 @@ class DependencyEnvironmentService:
             except OSError:
                 continue
         return total
+
+
+def _installed_runtime_dependencies(distribution: str) -> list[str] | None:
+    """The non-extra requirements of an installed distribution, or None when it is not installed."""
+
+    import importlib.metadata as md
+
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    try:
+        requires = md.requires(distribution)
+    except md.PackageNotFoundError:
+        return None
+    dependencies: list[str] = []
+    for line in requires or []:
+        try:
+            requirement = Requirement(line)
+        except InvalidRequirement:
+            continue
+        if requirement.marker is not None and "extra" in str(requirement.marker):
+            continue  # optional extras such as `dev`
+        dependencies.append(line)
+    return dependencies
 
 
 def _decode_stream_tail(value: bytes | str | None, *, limit: int = 4000) -> str:

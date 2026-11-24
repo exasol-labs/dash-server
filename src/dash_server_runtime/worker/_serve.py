@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from ._app_loader import load_app_module
+from ._app_loader import default_mount_path, load_app_module
 from ._runtime_services import (
     build_diagnostics_service_for_worker,
     build_exasol_service_for_worker,
@@ -42,12 +42,7 @@ def serve(args: argparse.Namespace) -> int:
         print(json.dumps({KEY_EVENT: EVENT_FAILED, "phase": "manifest_parse", "error": str(exc)}), flush=True)
         return 1
 
-    mount_path = (
-        args.mount_path
-        or manifest_data.get("route")
-        # The server's live path prefix (dash_server.live_routes), inherited through the environment.
-        or f"{os.environ.get('DASH_SERVER_LIVE_PATH_PREFIX') or '/apps/'}{args.app_name}"
-    )
+    mount_path = args.mount_path or default_mount_path(args.app_name, manifest_data)
     app_source = Path(args.app_source).resolve()
 
     try:

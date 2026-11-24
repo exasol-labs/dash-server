@@ -7,9 +7,18 @@ import pytest
 from flask import Flask
 
 from dash_server.app_factory import create_app
+from dash_server.live_routes import reset_live_path_prefix
 from dash_server.runtime.worker_manager import AppWorkerManager
 
 from _helpers import base_test_config, hosted_test_config
+
+
+@pytest.fixture(autouse=True)
+def _reset_live_path_prefix():
+    """The live path prefix is process-wide; keep one test's prefix from leaking into the next."""
+
+    yield
+    reset_live_path_prefix()
 
 
 @pytest.fixture(autouse=True)
