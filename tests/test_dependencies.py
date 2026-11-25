@@ -687,3 +687,44 @@ def test_describe_callbacks_accepts_a_single_output():
     assert report["callbacks"][0]["outputs"] == [{"id": "out", "property": "children"}]
     assert report["callbacks"][0]["inputs"] == [{"id": "go", "property": "n_clicks"}]
     assert report["missing_layout_ids"] == []
+
+
+def test_environment_service_builds_a_real_env_whose_interpreter_starts(tmp_path, monkeypatch):
+    """A per-app env is built with a real ``venv`` and its Python runs.
+
+    The env's interpreter is linked on POSIX, as ``python -m venv`` links it. ``EnvBuilder``'s own
+    default copies it, and a copy of an interpreter that finds its libpython relative to itself
+    (uv's Python on macOS) aborts on its first command, so no env could be built there. Only the
+    ``pip install`` step is faked, to keep the test offline; venv creation and ``ensurepip`` run.
+    """
+    import os
+    import subprocess
+
+    real_run = subprocess.run
+    installs: list[list[str]] = []
+
+    def run_except_installs(command, *args, **kwargs):
+        if list(command[1:4]) == ["-m", "pip", "install"]:
+            installs.append(list(command))
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr("dash_server.dependencies.environment_service.subprocess.run", run_except_installs)
+
+    svc = DependencyEnvironmentService(
+        environments_root=str(tmp_path / "envs"),
+        wheel_cache_root=str(tmp_path / "wheels"),
+        pycache_root=str(tmp_path / "pyc"),
+        helper_package_source=None,
+    )
+    result = svc.ensure_requirements("app-a", ["dash"])
+    monkeypatch.undo()
+
+    assert result["status"] == "succeeded", result
+    assert installs, "the pip install step should have run"
+    python = Path(result["python_executable"])
+    if os.name != "nt":
+        assert python.is_symlink(), f"{python} is a copy; it must link the base interpreter"
+    started = subprocess.run([str(python), "-c", "import sys; print(sys.prefix)"], capture_output=True, text=True)
+    assert started.returncode == 0, started.stderr
+    assert Path(started.stdout.strip()).resolve() == python.parent.parent.resolve()

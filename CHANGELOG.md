@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   help resources.
 
 ### Fixed
+- Per-app environments link their Python interpreter on Linux and macOS, as `python -m venv` does,
+  instead of copying it. A copy of an interpreter that finds its library relative to itself, as uv's
+  Python on macOS does, aborted on its first command, so no per-app environment could be built there.
 - Per-app environments (`DASH_SERVER_APP_DEPENDENCY_ISOLATION=per_app`) build again: they install the
   whole `dash-server` distribution, which `dash_server_runtime` imports, from a wheel or source checkout,
   instead of the bare `dash_server_runtime` directory, which pip cannot install; and their directories

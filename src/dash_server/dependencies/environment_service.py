@@ -516,8 +516,16 @@ class DependencyEnvironmentService:
         self._write_record(env_dir, record_pending)
 
         try:
-            # 1) Create the venv. Setting `with_pip=True` so we can install into it.
-            builder = venv.EnvBuilder(with_pip=True, clear=False, system_site_packages=False)
+            # 1) Create the venv, with pip so we can install into it. Link the interpreter on POSIX,
+            #    as `python -m venv` does: EnvBuilder's own default copies it, and an interpreter
+            #    that finds its libpython relative to itself -- uv's Python on macOS -- aborts as a
+            #    copy, so no per-app environment could be built there.
+            builder = venv.EnvBuilder(
+                with_pip=True,
+                clear=False,
+                system_site_packages=False,
+                symlinks=os.name != "nt",
+            )
             builder.create(str(env_dir))
 
             python_executable = self._env_python(env_dir)
