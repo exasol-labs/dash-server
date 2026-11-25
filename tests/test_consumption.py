@@ -515,8 +515,8 @@ class TestHostedViewerOutputCatalogParity:
     authorization surface against the captured payloads.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def flow(tmp_path_factory):
         tmp_path = tmp_path_factory.mktemp("hosted_outputs")
         hosted_app = create_app(
