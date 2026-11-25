@@ -13,10 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of `dash-server`, `dash`, `plotly`, `pandas`, and `pyexasol`.
 - `DASH_SERVER_DEMO_APP_ENABLED=false` starts a new instance without the built-in `demo` dashboard.
 - `DASH_SERVER_APP_HELPER_PACKAGE` names the `dash-server` wheel or source checkout that per-app
-  environments install to get `dash_server_runtime`.
+  environments install to get `dash_server_runtime`. The server refuses to start when it names neither
+  a wheel nor a source checkout.
 - `DASH_SERVER_EXASOL_PROFILE_CREATION_ENABLED=false` turns off `exasol_profile_create_local`: the
-  tool leaves `tools/list`, its calls fail with `tool_disabled`, and guidance no longer suggests it,
-  so the profiles an operator configured are the only ones.
+  tool leaves `tools/list`, its calls fail with `tool_disabled`, guidance no longer suggests it, and
+  help resources that still name it carry a `disabled_tools` note, so the profiles an operator
+  configured are the only ones.
 - `DASH_SERVER_LIVE_PATH_PREFIX` serves live dashboards under another path than `/apps/`, such as
   `/dashboards/`, in default routes, manifest validation, live mounts, and the texts of tools and
   help resources.
@@ -28,7 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-app environments (`DASH_SERVER_APP_DEPENDENCY_ISOLATION=per_app`) build again: they install the
   whole `dash-server` distribution, which `dash_server_runtime` imports, from a wheel or source checkout,
   instead of the bare `dash_server_runtime` directory, which pip cannot install; and their directories
-  are named `sha256-<digest>`, because `venv` refuses paths that hold `:`.
+  are named `sha256-<digest>`, because `venv` refuses paths that hold `:`. Directories under the old
+  name are removed at startup and rebuilt on the next deploy. The helper and the dashboard's
+  requirements install in one pip run, so a requirement that conflicts with `dash-server`'s own
+  dependencies fails instead of downgrading them, and a source checkout is linked into the
+  environment rather than built, so no build backend is downloaded.
+- Deploying a new revision to an isolated worker keeps the previous revision serving until the new
+  worker is ready, so a revision that fails to start leaves the dashboard up.
 - Dashboards served by isolated workers (`DASH_SERVER_APP_RUNTIME_MODE=isolated`) load their scripts and
   callbacks under their mount path: the worker passes the mount path to `create_dash_app` as
   `url_base_pathname`, as in-process mounts do, instead of `/`, which sent the browser outside the mount.
