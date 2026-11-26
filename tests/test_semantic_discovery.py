@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -154,6 +155,10 @@ def test_a_framework_that_doesnt_route_semantic_sql_is_never_told_to_switch_prep
     assert "PREPROC_RT.MASTER" in model["setup"]
     assert "Don't set SQL_PREPROCESSOR_SCRIPT" in model["setup"]
     assert f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {PREPROCESSOR}" not in model["setup"]
+    # Not in the raw error either: the guard says to run ENABLE_SEMANTIC_SQL(), which would replace the
+    # framework. Its code stays, so the cause can still be told apart.
+    assert "ENABLE_SEMANTIC_SQL" not in json.dumps(model["semantic_sql_check"])
+    assert model["semantic_sql_check"]["error"].startswith("SEMANTIC_SURFACE_001: the published view's guard")
     guidance = _semantic_layer_guidance(layer)
     assert guidance is not None
     assert f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {PREPROCESSOR}" not in guidance["next_step"]

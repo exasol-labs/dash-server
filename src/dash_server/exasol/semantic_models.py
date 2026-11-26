@@ -584,10 +584,35 @@ def probe_failure_note(probe: SemanticSqlProbe) -> str:
 
     if probe.error is None or "SEMANTIC_SURFACE_001" in probe.error:
         return ""
-    error = " ".join(probe.error.split())
-    if len(error) > 400:
-        error = error[:400] + "..."
-    return f"The test query {probe.statement} failed: {error}"
+    return f"The test query {probe.statement} failed: {_one_line(probe.error)}"
+
+
+# The guard's message stands for this, so a caller reading the error still learns what it means.
+_GUARD_REPORT = (
+    "SEMANTIC_SURFACE_001: the published view's guard answered the test query, so Semantic SQL did not "
+    "rewrite it in this session. See setup for what to do."
+)
+
+
+def probe_error_report(probe: SemanticSqlProbe) -> str | None:
+    """The probe's error as ``exasol_profile_validate`` reports it, the guard's advice left out.
+
+    The guard's message (SEMANTIC_SURFACE_001) tells the caller to run ENABLE_SEMANTIC_SQL(), which
+    replaces a database-wide preprocessor in every session; an agent reading the raw error beside
+    ``setup`` would follow it. It is reported by what it shows instead, with its code kept. Any
+    other error is the real cause and is reported as it is, on one line.
+    """
+
+    if probe.error is None:
+        return None
+    if "SEMANTIC_SURFACE_001" in probe.error:
+        return _GUARD_REPORT
+    return _one_line(probe.error)
+
+
+def _one_line(error: str, limit: int = 400) -> str:
+    text = " ".join(error.split())
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _quote(identifier: str) -> str:
@@ -684,6 +709,7 @@ __all__ = [
     "models_from_rows",
     "normalize_identifier",
     "preprocessor_settings",
+    "probe_error_report",
     "probe_failure_note",
     "probe_semantic_sql",
     "published_semantic_models",

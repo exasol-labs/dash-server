@@ -18,6 +18,7 @@ from dash_server.exasol.models import ExasolProfile
 from dash_server.exasol.secrets import ExasolSecretStore
 from dash_server.exasol.semantic_models import (
     preprocessor_settings,
+    probe_error_report,
     probe_failure_note,
     probe_semantic_sql,
     published_semantic_models,
@@ -211,7 +212,7 @@ class ExasolConnectionManager:
                 "preprocessor_active": probe.active,
             }
             if not probe.active:
-                entry["semantic_sql_check"] = {"statement": probe.statement, "error": probe.error}
+                entry["semantic_sql_check"] = {"statement": probe.statement, "error": probe_error_report(probe)}
                 entry["setup"] = " ".join(
                     part for part in (probe_failure_note(probe), semantic_sql_setup_advice(ref, settings)) if part
                 )

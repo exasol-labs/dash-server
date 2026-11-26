@@ -21,7 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   help resources, the scaffold notes, and the bundled skill send the user to an administrator
   instead. `exasol_profile_validate` reports the database-wide and session preprocessor
   (`semantic_layer.database_preprocessor`, `session_preprocessor`), and each model Semantic SQL
-  can't reach carries `setup` and the failed test query (`semantic_sql_check`).
+  can't reach carries `setup` and the failed test query (`semantic_sql_check`). When the test query
+  reached the published view's guard, `semantic_sql_check.error` says so with the guard's code
+  (`SEMANTIC_SURFACE_001`) instead of quoting it, since the guard's message tells the caller to run
+  `ENABLE_SEMANTIC_SQL()`.
 
 ## [0.3.0] - 2026-11-26
 
