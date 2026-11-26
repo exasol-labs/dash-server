@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Profile validation and SQL smoke tell whether a profile's sessions can run Semantic SQL from a test
+  query in the profile's own session, instead of comparing the session's preprocessor with the
+  model's. A database-wide preprocessor that dispatches to Semantic Views, such as the
+  [preprocessor framework](https://github.com/exasol-labs/preprocessor-framework), was reported as
+  Semantic SQL off, which failed the build of every dashboard on a published model. The test runs
+  `SELECT <field> FROM <published view> LIMIT 0` on up to three of the model's objects, metrics
+  first; a compiler refusal (`SEMANTIC_QUERY_*`) counts as Semantic SQL running. (#6)
+- dash-server recommends `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT` in `session_init_sql` only when
+  no preprocessor is set database-wide. With one set, the statement would replace it in every session
+  of the profile and silently turn off everything else it does, so validation, SQL smoke, guidance,
+  help resources, the scaffold notes, and the bundled skill send the user to an administrator
+  instead. `exasol_profile_validate` reports the database-wide and session preprocessor
+  (`semantic_layer.database_preprocessor`, `session_preprocessor`), and each model Semantic SQL
+  can't reach carries `setup` and the failed test query (`semantic_sql_check`).
+
 ## [0.3.0] - 2026-11-26
 
 dash-server 0.3.0 can run as a container beside a database: it adds a container image and settings

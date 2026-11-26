@@ -17,9 +17,11 @@ from dash_server.exasol.dsn import dsn_fingerprint
 from dash_server.exasol.models import ExasolProfile
 from dash_server.exasol.secrets import ExasolSecretStore
 from dash_server.exasol.semantic_models import (
-    normalize_identifier,
+    preprocessor_settings,
+    probe_failure_note,
+    probe_semantic_sql,
     published_semantic_models,
-    session_preprocessor,
+    semantic_sql_setup_advice,
 )
 from dash_server.exasol.session_init import session_init_statements
 
@@ -188,26 +190,37 @@ class ExasolConnectionManager:
         """Report the published Semantic Views models this profile's sessions can see.
 
         Runs after session init, so `preprocessor_active` says whether the profile's own
-        sessions can run Semantic SQL against each model.
+        sessions can run Semantic SQL against each model, whatever routes it there: the model's
+        preprocessor, or a database-wide one (a preprocessor framework) that dispatches to it.
+        It is set from a test query, not from the preprocessor's name.
         """
 
         models = published_semantic_models(connection)
         if not models:
             return {"status": "none_found"}
-        active = session_preprocessor(connection)
+        settings = preprocessor_settings(connection)
+        entries = []
+        for ref in models:
+            probe = probe_semantic_sql(connection, ref, settings)
+            entry: dict[str, Any] = {
+                "model": ref.model,
+                "published_schema": ref.published_schema,
+                "description": ref.description,
+                "readiness": ref.readiness,
+                "preprocessor": ref.preprocessor,
+                "preprocessor_active": probe.active,
+            }
+            if not probe.active:
+                entry["semantic_sql_check"] = {"statement": probe.statement, "error": probe.error}
+                entry["setup"] = " ".join(
+                    part for part in (probe_failure_note(probe), semantic_sql_setup_advice(ref, settings)) if part
+                )
+            entries.append(entry)
         return {
             "status": "found",
-            "models": [
-                {
-                    "model": ref.model,
-                    "published_schema": ref.published_schema,
-                    "description": ref.description,
-                    "readiness": ref.readiness,
-                    "preprocessor": ref.preprocessor,
-                    "preprocessor_active": normalize_identifier(ref.preprocessor) == active,
-                }
-                for ref in models
-            ],
+            "database_preprocessor": settings.system,
+            "session_preprocessor": settings.session,
+            "models": entries,
         }
 
     def _validate_session_init(self, profile: ExasolProfile, connection: Any) -> dict[str, Any]:

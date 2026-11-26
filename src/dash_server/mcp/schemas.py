@@ -112,7 +112,10 @@ class SchemasMixin(MCPServerHost):
                         "One statement per entry; only ALTER SESSION, EXECUTE SCRIPT, and OPEN SCHEMA "
                         "are accepted. Use it for session-level features such as Exasol Semantic "
                         'Views: ["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = '
-                        'SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"].'
+                        'SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"], but only when exasol_profile_validate '
+                        "reports preprocessor_active false and no database-wide preprocessor "
+                        "(semantic_layer.database_preprocessor null): with one set, this would replace "
+                        "it in every session."
                     ),
                 },
                 "overwrite": {

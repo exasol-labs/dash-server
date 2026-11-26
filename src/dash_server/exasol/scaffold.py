@@ -455,8 +455,11 @@ def _semantic_notes_md(blueprint: dict[str, Any]) -> str:
         "",
         "Rules:",
         "",
-        "- The profile needs the model's preprocessor in every session: `session_init_sql` "
-        f'`["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {blueprint["preprocessor"]}"]`.',
+        "- The profile's sessions must run Semantic SQL: `exasol_profile_validate` reports "
+        "`preprocessor_active` for the model. If it is false and no preprocessor is set database-wide "
+        "(`semantic_layer.database_preprocessor` is null), add `session_init_sql` "
+        f'`["ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {blueprint["preprocessor"]}"]`. With a '
+        "database-wide preprocessor, never set it in `session_init_sql`; follow the model's `setup` text.",
         "- Only combine a metric with a dimension listed for it in `SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT`.",
         "- Never paste `COMPILE_SQL` / `COMPILE_REQUEST_JSON` output into `queries/*.sql`: it freezes "
         "today's definition.",
