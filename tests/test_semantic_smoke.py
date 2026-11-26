@@ -31,7 +31,14 @@ class _Connection:
         fusion_health: list[tuple[Any, ...]] | None = None,
         synonyms: list[tuple[str, str, str, str]] | None = None,
         refuse_nested: str | None = None,
+        system_preprocessor: str | None = None,
+        routes_semantic_sql: bool = False,
     ) -> None:
+        # A database-wide preprocessor (a preprocessor framework, say) and whether it dispatches
+        # Semantic SQL: the published-view probe then succeeds whatever the session preprocessor.
+        self.system_preprocessor = system_preprocessor
+        self.routes_semantic_sql = routes_semantic_sql
+        self.probes: list[str] = []
         self.synonyms = synonyms or []
         # A field name Semantic Views refuses inside a nested select (but compiles top-level).
         self.refuse_nested = refuse_nested
@@ -126,7 +133,19 @@ class _Connection:
                 raise RuntimeError("object SEMANTIC_AGENT.MODELS_FOR_AGENT not found")
             return SimpleNamespace(column_names=lambda: self.model_columns, fetchall=lambda: self.models)
         if "EXA_PARAMETERS" in sql:
-            return SimpleNamespace(fetchval=lambda: self.preprocessor)
+            return SimpleNamespace(fetchone=lambda: (self.system_preprocessor, self.preprocessor))
+        if "SEMANTIC_AGENT.FIELDS_FOR_AGENT" in sql and "SQL_COLUMN_NAME IS NOT NULL" in sql:
+            rows = [("SALES", "CUSTOMER_REGION"), ("SALES", "TOTAL_REVENUE")]
+            return SimpleNamespace(fetchall=lambda: rows if params == {"model": "sales"} else [])
+        if sql.startswith('SELECT "CUSTOMER_REGION" FROM "SEMANTIC_SALES"."SALES" LIMIT 0'):
+            # The Semantic SQL probe: a published view only answers when something rewrites the query.
+            self.probes.append(sql)
+            active = self.preprocessor is not None and self.preprocessor.replace('"', "").upper() == PREPROCESSOR
+            if not (active or self.routes_semantic_sql):
+                raise RuntimeError(
+                    'Lua Error "SEMANTIC_SURFACE_001: semantic query requires the Lua SQL preprocessor."'
+                )
+            return SimpleNamespace(close=lambda: None)
         self.statements.append(sql)
         return SimpleNamespace(close=lambda: None)
 
@@ -167,6 +186,43 @@ def test_semantic_query_without_active_preprocessor_fails_with_the_fix() -> None
     assert raw.outcome == "passed"
     # The semantic file isn't executed: its WHERE 1=0 probe could pass and hide the failure.
     assert connection.statements == [f"SELECT * FROM (\n{RAW_QUERY[1]}\n) WHERE 1=0"]
+
+
+def test_semantic_query_through_a_preprocessor_framework_is_smoke_tested_normally() -> None:
+    """A framework session reads PREPROC_RT.P_<hash>, not Semantic Views' preprocessor, yet runs Semantic SQL."""
+
+    connection = _Connection(
+        models=[SALES_MODEL],
+        preprocessor="PREPROC_RT.P_3F9A1C",
+        system_preprocessor="PREPROC_RT.MASTER",
+        routes_semantic_sql=True,
+    )
+
+    report = _smoke(connection, [SEMANTIC_QUERY, ("queries/more.sql", "SELECT total_cost FROM SEMANTIC_SALES.SALES")])
+
+    assert report.overall_status == "passed", [file.error_text for file in report.files]
+    assert [file.semantic_models for file in report.files] == [("sales",), ("sales",)]
+    # Probed once per model, not once per file.
+    assert len(connection.probes) == 1
+
+
+def test_framework_that_doesnt_route_semantic_sql_is_not_told_to_switch_preprocessors() -> None:
+    """Setting the session preprocessor would replace the framework in every dashboard session."""
+
+    connection = _Connection(
+        models=[SALES_MODEL], preprocessor="PREPROC_RT.P_3F9A1C", system_preprocessor="PREPROC_RT.MASTER"
+    )
+
+    report = _smoke(connection, [SEMANTIC_QUERY])
+
+    (semantic,) = report.files
+    assert semantic.outcome == "failed"
+    error = semantic.error_text or ""
+    assert "can't run Semantic SQL" in error
+    assert "PREPROC_RT.MASTER" in error
+    assert f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {PREPROCESSOR}" not in error
+    assert "SEMANTIC_SURFACE_001: semantic query requires" not in error
+    assert connection.statements == []
 
 
 def test_semantic_query_with_active_preprocessor_is_smoke_tested_normally() -> None:

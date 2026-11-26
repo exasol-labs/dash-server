@@ -71,7 +71,7 @@
       "Do not put session setup in queries/*.sql: changes made by a query file are discarded so they can't leak into other apps on the profile."
     ],
     "summary": "Session statements a profile runs on every new connection (dashboards, SQL smoke, exports, validation) before use, like a BI tool's initial SQL.",
-    "use_when": "A feature must be enabled per session, such as the Exasol Semantic Views preprocessor that Semantic SQL against a published model requires."
+    "use_when": "A feature must be enabled per session, such as the Exasol Semantic Views preprocessor when exasol_profile_validate reports preprocessor_active false and no database-wide preprocessor (semantic_layer.database_preprocessor null). Never set SQL_PREPROCESSOR_SCRIPT here when a database-wide preprocessor is set: it would replace that preprocessor in every session of the profile."
   },
   "summary": "Supported Exasol connection modes for phase 0 local dashboard creation."
 }

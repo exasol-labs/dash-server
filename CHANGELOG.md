@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-26
+
+dash-server 0.3.1 works with a database-wide SQL preprocessor that dispatches to Semantic Views, such
+as the preprocessor framework: it tests whether a profile can run Semantic SQL instead of comparing
+preprocessor names, and no longer advises a session setting that would turn the framework off.
+
+### Changed
+- CI pins its actions to commit SHAs, runs with read-only permissions, audits the locked dependencies
+  with pip-audit, and builds the container image for amd64 and arm64. Dependabot proposes updates to
+  the actions and to `uv.lock` once a release has been out for a week.
+
+### Fixed
+- Profile validation and SQL smoke tell whether a profile's sessions can run Semantic SQL from a test
+  query in the profile's own session, instead of comparing the session's preprocessor with the
+  model's. A database-wide preprocessor that dispatches to Semantic Views, such as the
+  [preprocessor framework](https://github.com/exasol-labs/preprocessor-framework), was reported as
+  Semantic SQL off, which failed the build of every dashboard on a published model. The test runs
+  `SELECT <field> FROM <published view> LIMIT 0` on up to three of the model's objects, metrics
+  first; a compiler refusal (`SEMANTIC_QUERY_*`) counts as Semantic SQL running. (#6)
+- dash-server recommends `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT` in `session_init_sql` only when
+  no preprocessor is set database-wide. With one set, the statement would replace it in every session
+  of the profile and silently turn off everything else it does, so validation, SQL smoke, guidance,
+  help resources, the scaffold notes, and the bundled skill send the user to an administrator
+  instead. `exasol_profile_validate` reports the database-wide and session preprocessor
+  (`semantic_layer.database_preprocessor`, `session_preprocessor`), and each model Semantic SQL
+  can't reach carries `setup` and the failed test query (`semantic_sql_check`). When the test query
+  reached the published view's guard, `semantic_sql_check.error` says so with the guard's code
+  (`SEMANTIC_SURFACE_001`) instead of quoting it, since the guard's message tells the caller to run
+  `ENABLE_SEMANTIC_SQL()`.
+
 ## [0.3.0] - 2026-11-26
 
 dash-server 0.3.0 can run as a container beside a database: it adds a container image and settings
@@ -396,7 +426,8 @@ database questions into live, query-backed dashboards through MCP. This release 
 - Agent-facing skills for building Exasol-backed Dash dashboards and using PyExasol
   directly, under [skills/](skills/).
 
-[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/exasol-labs/dash-server/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/exasol-labs/dash-server/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/exasol-labs/dash-server/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/exasol-labs/dash-server/compare/v0.1.1...v0.2.0

@@ -1,9 +1,11 @@
 """Per-profile session init statements, run on every new Exasol connection.
 
 Some Exasol features are configured per session rather than per query. The main case is
-Exasol Semantic Views, whose Semantic SQL only works after the session activates its
-preprocessor (`ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ...` or
-`EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL()`). dash-server opens and replaces
+Exasol Semantic Views on a database with no database-wide preprocessor, whose Semantic SQL
+only works after the session activates its preprocessor (`ALTER SESSION SET
+SQL_PREPROCESSOR_SCRIPT = ...` or `EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL()`).
+Where a preprocessor is set database-wide (a preprocessor framework, say), that statement
+would replace it, so profile validation tests Semantic SQL instead of recommending it. dash-server opens and replaces
 sessions itself (thread cache, idle eviction, reconnect after errors, uncached smoke and
 export connections), so hosted apps can't do this reliably. A profile declares the
 statements instead (`query_defaults.session_init_sql`), and every connection the

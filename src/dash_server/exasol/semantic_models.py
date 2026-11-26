@@ -1,7 +1,7 @@
 """Published Exasol Semantic Views models, as an Exasol session sees them.
 
 Shared by SQL smoke (which semantic models a query file reads, and whether the session
-has their preprocessor active) and profile validation (which models an agent should
+can run Semantic SQL against them) and profile validation (which models an agent should
 build on). Every lookup is best effort: a database without Semantic Views, or a user who
 can't read its agent views, simply has no published models.
 """
@@ -462,17 +462,193 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
-def session_preprocessor(connection: object) -> str | None:
-    """The session's active SQL preprocessor (normalized), or None."""
+@dataclass(frozen=True)
+class PreprocessorSettings:
+    """The ``SQL_PREPROCESSOR_SCRIPT`` parameter of a session, normalized; None when unset."""
+
+    system: str | None
+    session: str | None
+
+
+PREPROCESSOR_SETTINGS_QUERY = (
+    "SELECT SYSTEM_VALUE, SESSION_VALUE FROM EXA_PARAMETERS WHERE PARAMETER_NAME = 'SQL_PREPROCESSOR_SCRIPT'"
+)
+
+
+def preprocessor_settings(connection: object) -> PreprocessorSettings:
+    """The database-wide and session SQL preprocessor; both None when they can't be read."""
 
     try:
-        statement = connection.execute(  # type: ignore[attr-defined]
-            "SELECT SESSION_VALUE FROM EXA_PARAMETERS WHERE PARAMETER_NAME = 'SQL_PREPROCESSOR_SCRIPT'"
-        )
-        value = statement.fetchval()
+        row = connection.execute(PREPROCESSOR_SETTINGS_QUERY).fetchone()  # type: ignore[attr-defined]
     except Exception:
+        return PreprocessorSettings(system=None, session=None)
+    if not row:
+        return PreprocessorSettings(system=None, session=None)
+    system, session = (normalize_identifier(str(value)) if value else None for value in row)
+    return PreprocessorSettings(system=system, session=session)
+
+
+@dataclass(frozen=True)
+class SemanticSqlProbe:
+    """Whether a session can run Semantic SQL against one published model.
+
+    ``probed`` is False when the model's fields can't be read; ``active`` then falls back to
+    comparing the session's preprocessor with the model's.
+    """
+
+    active: bool
+    probed: bool
+    statement: str | None = None
+    error: str | None = None
+
+
+# The model's own fields, metrics first: a metric alone is the query a model refuses least.
+# Not the published schema's catalog, which also holds unguarded views (SEMANTIC_DISCOVERY)
+# that answer without any rewrite.
+_PROBE_FIELDS_QUERY = (
+    "SELECT PUBLISHED_OBJECT_NAME, SQL_COLUMN_NAME FROM SEMANTIC_AGENT.FIELDS_FOR_AGENT "
+    "WHERE MODEL_NAME = {model!s} AND PUBLISHED_OBJECT_NAME IS NOT NULL AND SQL_COLUMN_NAME IS NOT NULL "
+    "ORDER BY CASE WHEN FIELD_KIND = 'METRIC' THEN 0 ELSE 1 END, PUBLISHED_OBJECT_NAME, ORDINAL_POSITION"
+)
+# How many published views the probe tries before concluding Semantic SQL is off.
+_PROBE_ATTEMPTS = 3
+
+
+def probe_semantic_sql(connection: object, ref: SemanticModelRef, settings: PreprocessorSettings) -> SemanticSqlProbe:
+    """Run Semantic SQL against ``ref`` in the session and report whether it is rewritten.
+
+    Comparing the session's preprocessor with the model's misses every other route to Semantic
+    SQL, such as a preprocessor framework that dispatches to it as one of its modules, and
+    whether such a route applies can depend on the user and the client. A test query answers
+    that for this session. A published view returns rows only when Semantic SQL rewrites the
+    query; otherwise its guard raises SEMANTIC_SURFACE_001. ``LIMIT 0`` keeps the probe free
+    and still reaches the guard, unlike a ``WHERE 1=0`` wrapper, which the optimizer answers
+    without evaluating it.
+
+    A field can be one the compiler refuses on its own (SEMANTIC_QUERY_*, a partitioned joined
+    dimension, say). That refusal still proves the rewrite ran. A preprocessor framework may
+    swallow such a refusal and let the statement reach the guard instead, so a field of up to
+    three published objects is tried before the session counts as not rewriting.
+    """
+
+    candidates = _probe_candidates(connection, ref.model)
+    if not candidates:
+        return SemanticSqlProbe(active=normalize_identifier(ref.preprocessor) == settings.session, probed=False)
+    failure: SemanticSqlProbe | None = None
+    for table, column in candidates:
+        statement = f"SELECT {_quote(column)} FROM {_quote(ref.published_schema)}.{_quote(table)} LIMIT 0"
+        try:
+            result = connection.execute(statement)  # type: ignore[attr-defined]
+            close = getattr(result, "close", None)
+            if callable(close):
+                close()
+        except Exception as exc:
+            error = str(exc)
+            if _SEMANTIC_REFUSAL_RE.search(error):
+                return SemanticSqlProbe(active=True, probed=True, statement=statement)
+            # Keep the most telling failure: any error other than the guard's names a real cause.
+            if failure is None or "SEMANTIC_SURFACE_001" in (failure.error or ""):
+                failure = SemanticSqlProbe(active=False, probed=True, statement=statement, error=error)
+            continue
+        return SemanticSqlProbe(active=True, probed=True, statement=statement)
+    assert failure is not None
+    return failure
+
+
+# A compiler refusal (SEMANTIC_QUERY_074: ...) comes from the rewrite itself, so it shows Semantic SQL ran.
+_SEMANTIC_REFUSAL_RE = re.compile(r"\bSEMANTIC_QUERY_\d+")
+
+
+def _probe_candidates(connection: object, model: str) -> list[tuple[str, str]]:
+    """One field of each of up to ``_PROBE_ATTEMPTS`` published objects of ``model``, metrics first."""
+
+    try:
+        rows = connection.execute(_PROBE_FIELDS_QUERY, {"model": model}).fetchall()  # type: ignore[attr-defined]
+    except Exception:
+        return []
+    candidates: dict[str, str] = {}
+    for table, column in rows or []:
+        candidates.setdefault(str(table), str(column))
+        if len(candidates) >= _PROBE_ATTEMPTS:
+            break
+    return list(candidates.items())
+
+
+def probe_failure_note(probe: SemanticSqlProbe) -> str:
+    """The probe's error, unless it is the guard's own message, which says to switch preprocessors.
+
+    Semantic Views' guard (SEMANTIC_SURFACE_001) tells the caller to run ENABLE_SEMANTIC_SQL(),
+    which is wrong wherever a database-wide preprocessor is set; ``semantic_sql_setup_advice``
+    says what to do instead. Any other error (no access to the view, say) is the real cause.
+    """
+
+    if probe.error is None or "SEMANTIC_SURFACE_001" in probe.error:
+        return ""
+    return f"The test query {probe.statement} failed: {_one_line(probe.error)}"
+
+
+# The guard's message stands for this, so a caller reading the error still learns what it means.
+_GUARD_REPORT = (
+    "SEMANTIC_SURFACE_001: the published view's guard answered the test query, so Semantic SQL did not "
+    "rewrite it in this session. See setup for what to do."
+)
+
+
+def probe_error_report(probe: SemanticSqlProbe) -> str | None:
+    """The probe's error as ``exasol_profile_validate`` reports it, the guard's advice left out.
+
+    The guard's message (SEMANTIC_SURFACE_001) tells the caller to run ENABLE_SEMANTIC_SQL(), which
+    replaces a database-wide preprocessor in every session; an agent reading the raw error beside
+    ``setup`` would follow it. It is reported by what it shows instead, with its code kept. Any
+    other error is the real cause and is reported as it is, on one line.
+    """
+
+    if probe.error is None:
         return None
-    return normalize_identifier(value) if value else None
+    if "SEMANTIC_SURFACE_001" in probe.error:
+        return _GUARD_REPORT
+    return _one_line(probe.error)
+
+
+def _one_line(error: str, limit: int = 400) -> str:
+    text = " ".join(error.split())
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _quote(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def semantic_sql_setup_advice(ref: SemanticModelRef, settings: PreprocessorSettings) -> str:
+    """What to do when a profile's sessions can't run Semantic SQL against ``ref``.
+
+    Setting the session's preprocessor is the fix only when no database-wide preprocessor is
+    set. Exasol has one preprocessor slot: with a database-wide preprocessor in it (a
+    preprocessor framework, say), ``ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT`` replaces it for
+    the session and silently turns off everything else it does, or fails where the database
+    forbids overriding it. That is an administrator's decision, never a profile setting.
+    """
+
+    if settings.system is None:
+        return (
+            "No SQL preprocessor is set database-wide. Add this statement to the profile's session_init_sql "
+            "(exasol_profile_create_local with name, overwrite: true and session_init_sql; other settings are "
+            f"kept): ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {ref.preprocessor}"
+        )
+    if settings.system == normalize_identifier(ref.preprocessor):
+        return (
+            f"{ref.preprocessor} is the database-wide SQL preprocessor, so the profile's user most likely "
+            "lacks the privileges to run it: ask a database administrator to grant it SEMANTIC_USER and the "
+            "model's role. Don't add session_init_sql for this."
+        )
+    return (
+        f"The database-wide SQL preprocessor is {settings.system}, and it doesn't run Semantic SQL for this "
+        "profile's user or client. Don't set SQL_PREPROCESSOR_SCRIPT in the profile's session_init_sql, and "
+        f"don't run ENABLE_SEMANTIC_SQL(): either replaces {settings.system} in every session of the profile "
+        "and turns off everything else it does. Ask a database administrator to have it route Semantic SQL "
+        "for this user (for a preprocessor framework: a Semantic Views module rule that covers the user and "
+        "client), or to grant the user SEMANTIC_USER and the model's role."
+    )
 
 
 # Marks of SQL compiled by Exasol Semantic Views (COMPILE_SQL / COMPILE_REQUEST_JSON). Fused
@@ -519,9 +695,12 @@ __all__ = [
     "GOVERNED_SOURCES_QUERY",
     "MODELS_COLUMNS",
     "MODELS_QUERY",
+    "PREPROCESSOR_SETTINGS_QUERY",
     "FusionHealth",
     "FusionPart",
+    "PreprocessorSettings",
     "SemanticModelRef",
+    "SemanticSqlProbe",
     "ValidationIssue",
     "apply_finished_runs",
     "governed_sources",
@@ -529,10 +708,14 @@ __all__ = [
     "looks_like_compiled_semantic_sql",
     "models_from_rows",
     "normalize_identifier",
+    "preprocessor_settings",
+    "probe_error_report",
+    "probe_failure_note",
+    "probe_semantic_sql",
     "published_semantic_models",
     "referenced_governed_sources",
     "referenced_models",
-    "session_preprocessor",
+    "semantic_sql_setup_advice",
     "with_finished_validation",
     "with_fusion",
     "with_synonyms",

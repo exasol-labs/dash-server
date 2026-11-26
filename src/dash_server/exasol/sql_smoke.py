@@ -38,14 +38,18 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .runtime import database_message, describe_query_error
 from .semantic_models import (
+    PreprocessorSettings,
     SemanticModelRef,
+    SemanticSqlProbe,
     governed_sources,
     looks_like_compiled_semantic_sql,
-    normalize_identifier,
+    preprocessor_settings,
+    probe_failure_note,
+    probe_semantic_sql,
     published_semantic_models,
     referenced_governed_sources,
     referenced_models,
-    session_preprocessor,
+    semantic_sql_setup_advice,
     with_fusion,
     with_synonyms,
     with_validation_issues,
@@ -250,24 +254,23 @@ def _smoke_one(
     governed_reads = _governed_reads(stripped, semantic) if semantic is not None else ()
     warnings = _governed_source_warnings(stripped, semantic, frozen=frozen) if semantic is not None else ()
     inactive = [
-        ref
-        for ref in semantic_models
-        if semantic is not None and normalize_identifier(ref.preprocessor) != semantic.session_preprocessor
+        (ref, probe) for ref in semantic_models if semantic is not None and not (probe := semantic.probe(ref)).active
     ]
     if inactive:
-        ref = inactive[0]
+        ref, probe = inactive[0]
+        assert semantic is not None
+        advice = " ".join(
+            part for part in (probe_failure_note(probe), semantic_sql_setup_advice(ref, semantic.settings)) if part
+        )
         return SqlSmokeFile(
             relative_path=relative_path,
             outcome="failed",
             semantic_models=model_names,
             error_text=(
                 f"This query reads the published semantic model {ref.model!r} ({ref.published_schema}), "
-                f"which needs the {ref.preprocessor} SQL preprocessor active in the session, but "
-                f"sessions opened by Exasol profile {profile_name!r} don't activate it. Without it the "
-                "dashboard fails at runtime (SEMANTIC_SURFACE_001 or 'not a valid GROUP BY expression'). "
-                "Add this statement to the profile's session_init_sql (exasol_profile_create_local with "
-                f"name, overwrite: true and session_init_sql; other settings are kept): "
-                f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {ref.preprocessor}"
+                f"but a test query shows sessions opened by Exasol profile {profile_name!r} can't run "
+                "Semantic SQL against it. The dashboard would fail at runtime (SEMANTIC_SURFACE_001 or "
+                f"'not a valid GROUP BY expression'). {advice}"
             ),
         )
 
@@ -450,17 +453,30 @@ class _SemanticContext:
     def __init__(self, connection: object) -> None:
         self._connection = connection
         self._models: list[SemanticModelRef] | None = None
-        self._session_preprocessor: str | None = None
+        self._settings = PreprocessorSettings(system=None, session=None)
         self._governed_sources: dict[str, list[tuple[str, str]]] = {}
+        self._probes: dict[str, SemanticSqlProbe] = {}
 
     @property
     def models(self) -> list[SemanticModelRef]:
         if self._models is None:
             self._models = published_semantic_models(self._connection)
             if self._models:
-                self._session_preprocessor = session_preprocessor(self._connection)
+                self._settings = preprocessor_settings(self._connection)
                 self._governed_sources = governed_sources(self._connection)
         return self._models
+
+    @property
+    def settings(self) -> PreprocessorSettings:
+        self.models  # noqa: B018 - looks up the session state on first use
+        return self._settings
+
+    def probe(self, ref: SemanticModelRef) -> SemanticSqlProbe:
+        """Whether this session can run Semantic SQL against ``ref``; probed once per model."""
+
+        if ref.model not in self._probes:
+            self._probes[ref.model] = probe_semantic_sql(self._connection, ref, self.settings)
+        return self._probes[ref.model]
 
     @property
     def governed_sources(self) -> dict[str, list[tuple[str, str]]]:
@@ -472,11 +488,6 @@ class _SemanticContext:
         """The models looked up so far, without triggering a lookup."""
 
         return self._models or []
-
-    @property
-    def session_preprocessor(self) -> str | None:
-        self.models  # noqa: B018 - looks up the session state on first use
-        return self._session_preprocessor
 
 
 def collect_sql_files(artifact_root: Path) -> list[tuple[str, str]]:

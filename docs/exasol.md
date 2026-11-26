@@ -237,9 +237,16 @@ statements that run on **every** connection the profile opens, before it is used
 dashboard connections, SQL smoke checks during builds, exports, and `exasol_profile_validate`.
 It works like a BI tool's "initial SQL".
 
-The main use is [Exasol Semantic Views](https://github.com/exasol-labs/exasol-semantic-views):
-Semantic SQL against a published model only works once the session has its preprocessor
-activated. The `dash://exasol/help/semantic-layer` resource has the full recipe for dashboards on
+The main use is [Exasol Semantic Views](https://github.com/exasol-labs/exasol-semantic-views) on
+a database with no database-wide preprocessor: Semantic SQL against a published model only works
+once the session has its preprocessor activated. `exasol_profile_validate` tests this with a query
+in the profile's own session and reports it per model as `preprocessor_active`, so it is true
+whenever Semantic SQL works, also through a database-wide preprocessor such as the
+[preprocessor framework](https://github.com/exasol-labs/preprocessor-framework), which dispatches
+to Semantic Views as one of its modules. When a preprocessor is set database-wide
+(`semantic_layer.database_preprocessor`), don't set `SQL_PREPROCESSOR_SCRIPT` here: Exasol has one
+preprocessor slot, so the statement replaces the database's preprocessor in every session of the
+profile and silently turns off everything else it does. The `dash://exasol/help/semantic-layer` resource has the full recipe for dashboards on
 a semantic model: finding published models, query style, grants for a non-SYS profile user,
 governed labels from `FIELDS_FOR_AGENT`, and why compiled SQL must never be saved into
 `queries/*.sql`.

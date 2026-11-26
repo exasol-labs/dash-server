@@ -3,21 +3,23 @@
   "summary": "Build Exasol dashboards on the governed semantic layer (Exasol Semantic Views) when the database has one, so each number is the certified definition and multi-grain or multi-source data is combined correctly.",
   "why": "Metric SQL written by hand over raw tables can disagree with the certified definition (a different status filter, a different cost formula) or double-count when an order-level amount is summed over order lines. Validation, SQL smoke and the healthcheck all pass in that case, because the SQL is valid: only the number is wrong.",
   "check_first": [
-    "exasol_profile_validate lists the published semantic models the profile can see (semantic_layer.models), and whether each one's preprocessor is active in the profile's sessions.",
+    "exasol_profile_validate lists the published semantic models the profile can see (semantic_layer.models), and whether the profile's sessions can run Semantic SQL against each one (preprocessor_active, from a test query in the profile's own session). It also reports the database-wide SQL preprocessor (semantic_layer.database_preprocessor), if any.",
     "Before writing any metric SQL, look for published semantic models: SELECT MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION, AGENT_READINESS FROM SEMANTIC_AGENT.MODELS_FOR_AGENT WHERE MODEL_STATUS = 'PUBLISHED'. If the view doesn't exist, the database has no semantic layer; write SQL as usual.",
     "If a published model covers the question, query its published views (SEMANTIC_<MODEL>.<OBJECT>) instead of the tables behind them. SEMANTIC_<MODEL>.SEMANTIC_DISCOVERY and SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT describe what the model offers.",
     "Find fields in SEMANTIC_AGENT.FIELDS_FOR_AGENT and valid metric/dimension pairs in SEMANTIC_AGENT.VALID_COMBINATIONS_FOR_AGENT. A pair that isn't listed is not valid (usually a grain fan-out).",
     "If the model lacks a metric the user asked for, say so. Don't silently hand-write it next to certified ones; if you must derive a number, label it as not certified in the dashboard."
   ],
   "profile_setup": {
-    "summary": "Semantic SQL needs the model's SQL preprocessor active in every session. Declare it once on the profile; dash-server runs it on every connection it opens (dashboards, SQL smoke, exports).",
+    "summary": "Semantic SQL needs Semantic Views' preprocessor to rewrite each statement. On many databases that already happens in every session: an administrator set it database-wide, or a database-wide preprocessor framework dispatches to it as one of its modules. exasol_profile_validate tests this in the profile's own session (preprocessor_active). Only when it is false and no preprocessor is set database-wide does the profile declare it; dash-server then runs it on every connection it opens (dashboards, SQL smoke, exports).",
+    "when_database_preprocessor_is_set": "Exasol has one preprocessor slot. If semantic_layer.database_preprocessor is set, never set SQL_PREPROCESSOR_SCRIPT in session_init_sql and never run EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL(), even when SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT or a SEMANTIC_SURFACE_001 error says to: either replaces the database's preprocessor in every session of the profile and silently turns off everything else it does, or fails where the database forbids overriding it. If preprocessor_active is false there, follow the model's setup text: an administrator has to route Semantic SQL for the profile's user, or grant it SEMANTIC_USER and the model's role.",
     "session_init_sql": [
       "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR"
     ],
-    "setup_statements": "Either statement activates the preprocessor and either works in session_init_sql: ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR (names the preprocessor), or EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL() (the form SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT names). MODELS_FOR_AGENT.PREPROCESSOR_QUALIFIED_NAME says which preprocessor a model needs.",
+    "setup_statements": "Only for a database with no database-wide preprocessor. Either statement activates the preprocessor and either works in session_init_sql: ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = SEMANTIC_ADMIN.SEMANTIC_PREPROCESSOR (names the preprocessor), or EXECUTE SCRIPT SEMANTIC_ADMIN.ENABLE_SEMANTIC_SQL() (the form SEMANTIC_AGENT.INSTRUCTIONS_FOR_AGENT names). MODELS_FOR_AGENT.PREPROCESSOR_QUALIFIED_NAME says which preprocessor a model needs.",
     "steps": [
-      "exasol_profile_create_local with session_init_sql. To add it to an existing profile, pass just name, overwrite: true and session_init_sql; the profile's other settings are kept.",
-      "exasol_profile_validate and confirm session_init.status == \"applied\"."
+      "exasol_profile_validate. If every model you need has preprocessor_active true, skip the remaining steps.",
+      "If semantic_layer.database_preprocessor is null: exasol_profile_create_local with session_init_sql. To add it to an existing profile, pass just name, overwrite: true and session_init_sql; the profile's other settings are kept.",
+      "exasol_profile_validate again and confirm session_init.status == \"applied\" and preprocessor_active."
     ],
     "grants": "A profile user other than SYS needs the model granted (EXECUTE SCRIPT SEMANTIC_ADMIN.GRANT_MODEL_ROLE('<model>', '<role of the user>')) plus SELECT on the model's physical source tables. Broad privileges such as SELECT ANY TABLE are not enough: with them, the preprocessor can be set but semantic queries are refused."
   },
@@ -31,7 +33,7 @@
   ],
   "never": [
     "Never paste the GENERATED_SQL of SEMANTIC_ADMIN.COMPILE_SQL or COMPILE_REQUEST_JSON into queries/*.sql. It freezes today's definition: a certified metric fix never reaches the dashboard, a fused model's coverage and authority stop moving with the data. app_run_healthcheck's semantic_models probe fails on such files (details.frozen_files). Query the published view live.",
-    "Never put session setup (ALTER SESSION, EXECUTE SCRIPT ...ENABLE_SEMANTIC_SQL()) in queries/*.sql. It belongs in the profile's session_init_sql; a query file's session change is discarded so it can't leak into other apps."
+    "Never put session setup (ALTER SESSION, EXECUTE SCRIPT ...ENABLE_SEMANTIC_SQL()) in queries/*.sql. Where it is needed at all, it belongs in the profile's session_init_sql; a query file's session change is discarded so it can't leak into other apps."
   ],
   "presentation": {
     "summary": "Take labels, descriptions, formats and certification from the model instead of hard-coding them, so a renamed or corrected metric keeps its certified label.",
@@ -50,7 +52,7 @@
   ],
   "checks": [
     "SQL smoke (app_build preflight, app_run_healthcheck) runs Semantic SQL exactly as the dashboard will, so an unknown field, an invalid combination or a dropped metric fails the check instead of waiting for a viewer.",
-    "A query file that reads a published model on a profile without the preprocessor fails SQL smoke with the session_init_sql line to add.",
+    "A query file that reads a published model fails SQL smoke when a test query shows the profile's sessions can't run Semantic SQL against it. The failure says what to do: the session_init_sql line to add when no preprocessor is set database-wide, otherwise to have an administrator route Semantic SQL for the user.",
     "app_run_healthcheck's semantic_models probe reports each model the app reads, through its published schema or its source tables. It fails when a model is INVALID, PRECONDITION or NOT_PUBLISHED, or when a query file is saved compiled SQL (details.frozen_files). Each model that isn't VALID carries the rule codes and messages behind its status (issues). Readiness comes from the newest finished validation run, so a run left unfinished doesn't read as VALID. Hand-written SQL over a model's source tables is listed under details.raw_governed_reads without failing.",
     "SQL smoke warns (sql_smoke details.warnings) when a query file reads a table that backs a published model, naming the published schema to use instead.",
     "app_validate warns when a query file looks like saved COMPILE_SQL / COMPILE_REQUEST_JSON output.",

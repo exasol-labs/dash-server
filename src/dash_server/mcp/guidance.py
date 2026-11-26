@@ -44,18 +44,28 @@ def _semantic_layer_guidance(semantic_layer: Any) -> dict[str, Any] | None:
     related = ["dash://exasol/help/semantic-layer", "dash://exasol/help/agent-workflow"]
     inactive = [model for model in models if not model.get("preprocessor_active")]
     if inactive:
-        statement = f"ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {inactive[0].get('preprocessor')}"
-        return {
-            "next_step": (
-                f"Published semantic models are available: {names}. This profile's sessions don't activate "
-                "their preprocessor, so Semantic SQL against them would fail. Add it to the profile: "
-                f'exasol_profile_create_local with name, overwrite: true and session_init_sql ["{statement}"] '
-                "(other settings are kept), validate again, then build metrics on the published views instead of the raw tables behind them. "
-                "Read dash://exasol/help/semantic-layer first."
-            ),
-            "suggested_tools": ["exasol_profile_create_local", "exasol_profile_validate"],
-            "related_resources": related,
-        }
+        # `setup` (from profile validation) says what to do; it recommends session_init_sql only
+        # when no database-wide preprocessor is set, since one would be replaced by it.
+        setup = inactive[0].get("setup") or ""
+        database_preprocessor = semantic_layer.get("database_preprocessor")
+        next_step = (
+            f"Published semantic models are available: {names}. A test query shows this profile's sessions "
+            f"can't run Semantic SQL against {inactive[0].get('model')}, so dashboards on its published views "
+            f"would fail. {setup} "
+        )
+        if database_preprocessor:
+            next_step += (
+                "Until that is fixed, tell the user Semantic SQL is unavailable for this profile rather than "
+                "rewriting the dashboard over the raw tables. Read dash://exasol/help/semantic-layer."
+            )
+            suggested = ["exasol_profile_validate"]
+        else:
+            next_step += (
+                "Validate again, then build metrics on the published views instead of the raw tables behind "
+                "them. Read dash://exasol/help/semantic-layer first."
+            )
+            suggested = ["exasol_profile_create_local", "exasol_profile_validate"]
+        return {"next_step": next_step, "suggested_tools": suggested, "related_resources": related}
     return {
         "next_step": (
             f"Published semantic models are available: {names}. Build metrics on their published views "
