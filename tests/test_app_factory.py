@@ -2458,8 +2458,8 @@ class TestStartupReconcileFromExternalGitCommit:
     current-revision pointer advanced) against the captured payloads.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def reconciled(tmp_path_factory):
         tmp_path = tmp_path_factory.mktemp("startup_reconcile")
         config = {
