@@ -10,6 +10,7 @@ from flask import Flask
 
 from dash_server.dash_apps.branding import apply_hosted_footer
 from dash_server.exceptions import DashServerError
+from dash_server.live_routes import default_live_route, is_live_route, live_path_prefix, localized
 from dash_server.consumption import consumption_contract_hash, normalize_consumption_contract
 from dash_server.registry.models import AppManifest
 
@@ -20,6 +21,7 @@ _APP_AUTHORING_GUIDE_RESOURCE = "dash://meta/app-authoring-guide"
 _SUPPORTED_TEMPLATES = ("metric-cards", "exasol-analytics")
 
 
+@localized
 def app_create_example_bundle() -> dict[str, Any]:
     return {
         "manifest": {
@@ -40,6 +42,7 @@ def app_create_example_bundle() -> dict[str, Any]:
     }
 
 
+@localized
 def app_create_schema_help() -> dict[str, Any]:
     return {
         "tool": "app_create",
@@ -95,6 +98,7 @@ def app_create_schema_help() -> dict[str, Any]:
     }
 
 
+@localized
 def app_create_from_files_example() -> dict[str, Any]:
     return {
         "name": "markets-dashboard",
@@ -120,6 +124,7 @@ def app_create_from_files_example() -> dict[str, Any]:
     }
 
 
+@localized
 def app_create_from_files_schema_help() -> dict[str, Any]:
     return {
         "tool": "app_create_from_files",
@@ -158,6 +163,7 @@ def app_create_from_files_schema_help() -> dict[str, Any]:
     }
 
 
+@localized
 def app_authoring_guide() -> dict[str, Any]:
     return {
         "resource": _APP_AUTHORING_GUIDE_RESOURCE,
@@ -423,15 +429,15 @@ def validate_manifest_payload(raw_manifest: Any) -> AppManifest:
         )
 
     title = _require_non_empty_string(raw_manifest.get("title"), "manifest.title")
-    route = raw_manifest.get("route") or f"/apps/{name}"
-    if not isinstance(route, str) or not route.startswith("/apps/"):
+    route = raw_manifest.get("route") or default_live_route(name)
+    if not is_live_route(route):
         raise DashServerError(
             category="manifest_validation_error",
-            summary="Manifest route must start with /apps/.",
+            summary=f"Manifest route must start with {live_path_prefix()}.",
             details={
                 "field": "manifest.route",
                 "value": route,
-                "expected_prefix": "/apps/",
+                "expected_prefix": live_path_prefix(),
                 "help_resource": _APP_CREATE_HELP_RESOURCE,
             },
         )
@@ -661,7 +667,7 @@ def canonicalize_files_bundle(bundle: dict[str, Any]) -> tuple[dict[str, Any], l
 
     name = _require_non_empty_string(bundle.get("name"), "bundle.name")
     title = bundle.get("title") if isinstance(bundle.get("title"), str) else _humanize_name(name)
-    route = bundle.get("route") or f"/apps/{name}"
+    route = bundle.get("route") or default_live_route(name)
     description = bundle.get("description") or f"{title} hosted by dash-server."
     template = bundle.get("template") or "metric-cards"
     data_sources = bundle.get("data_sources")

@@ -128,6 +128,12 @@ class DispatchMixin(MCPServerHost):
                     details={"tool": name},
                 )
             handler = self._tool_handlers.get(name)
+            if handler is None and name in self.disabled_tools:
+                raise DashServerError(
+                    category="tool_disabled",
+                    summary=f"{name} is turned off on this server.",
+                    details={"tool": name},
+                )
             if handler is None:
                 raise DashServerError(
                     category="tool_not_found",

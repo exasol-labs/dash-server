@@ -8,6 +8,7 @@ import hashlib
 from flask import Blueprint, Response, current_app, jsonify, redirect, render_template
 
 from dash_server.auth import Principal, current_auth_context
+from dash_server.live_routes import default_live_route, live_path_prefix
 from dash_server.timestamps import utc_now_naive
 
 
@@ -146,14 +147,14 @@ def create_public_blueprint() -> Blueprint:
             return redirect(runtime_service.preview_path(app.name, app.preview_revision_number))
         return redirect(app.route)
 
-    @blueprint.get("/apps/<name>")
-    @blueprint.get("/apps/<name>/<path:_rest>")
+    @blueprint.get(f"{live_path_prefix()}<name>")
+    @blueprint.get(f"{live_path_prefix()}<name>/<path:_rest>")
     def unmounted_dashboard(name: str, _rest: str = ""):
         # Only reached when the dispatcher found no mounted app for this path: either no
         # such app exists, or it is registered but failed to mount (bootstrap logs and
         # skips those). Say which, instead of a bare 404 that reads as a broken install.
         registry = current_app.extensions["registry"]
-        app = registry.get_app_by_route(f"/apps/{name}")
+        app = registry.get_app_by_route(default_live_route(name))
         # A disabled app is unpublished on purpose; keep it indistinguishable from a missing one.
         if app is not None and app.enabled:
             authorization_service = current_app.extensions["authorization_service"]
@@ -186,7 +187,7 @@ def create_public_blueprint() -> Blueprint:
                 {
                     "error": {
                         "category": "dashboard_not_found",
-                        "message": f"No dashboard is served at /apps/{name}. See / for the dashboards available to you.",
+                        "message": f"No dashboard is served at {default_live_route(name)}. See / for the dashboards available to you.",
                     }
                 }
             ),

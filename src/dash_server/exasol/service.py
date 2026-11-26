@@ -7,6 +7,7 @@ from typing import Any
 
 from dash_server.exceptions import DashServerError
 from dash_server.gitops import GitRepoService
+from dash_server.live_routes import default_live_route
 
 from .connection_manager import ExasolConnectionManager
 from .dsn import default_tls_verify, dsn_parse_error
@@ -421,7 +422,7 @@ class ExasolDashboardService:
         return build_exasol_dashboard_bundle(
             app_name=app_name,
             title=title or self._humanize_name(app_name),
-            route=route or f"/apps/{app_name}",
+            route=route or default_live_route(app_name),
             description=description or f"Live Exasol dashboard backed by profile {profile.name}.",
             profile_name=profile.name,
             pattern=pattern,
@@ -465,7 +466,7 @@ class ExasolDashboardService:
         return build_schema_scaffold_bundle(
             app_name=app_name,
             title=title or f"{self._humanize_name(app_name)} Analytics",
-            route=route or f"/apps/{app_name}",
+            route=route or default_live_route(app_name),
             description=description
             or f"Schema-tailored Exasol analytics app for {source} backed by profile {profile.name}.",
             profile_name=profile.name,

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dash import Dash
-from flask import Flask, got_request_exception, request
+from flask import Flask
 
 from dash_server.artifacts_io import (
     APP_ENTRYPOINT_FILENAME,
@@ -31,6 +31,7 @@ from dash_server.dash_apps.callback_isolation import (
     isolated_dash_callback_globals,
 )
 from dash_server.dash_apps.factory import validate_bundle, validate_manifest_payload
+from dash_server.diagnostics.runtime_capture import record_request_exceptions
 from dash_server.dash_apps.runtime_checks import verify_dash_mount
 from dash_server.exceptions import DashServerError
 from dash_server.imports import isolated_local_imports
@@ -241,80 +242,9 @@ class RuntimeMounter:
     ) -> None:
         if not isinstance(wsgi_app, Flask):
             return
-        if getattr(wsgi_app, "_dash_server_diagnostics_instrumented", False):
-            return
-
-        def handle_runtime_exception(sender, exception, **extra):
-            traceback_text = "".join(
-                traceback.format_exception(
-                    type(exception),
-                    exception,
-                    exception.__traceback__,
-                )
-            )
-            path = request.path
-            if path.endswith("/_dash-update-component"):
-                callback_payload = request.get_json(silent=True)
-                details = {
-                    "path": path,
-                    "method": request.method,
-                    **self._callback_request_details(callback_payload),
-                }
-                summary = self._callback_failure_summary(details)
-                self.svc.diagnostics_service.record_callback_failure(
-                    app_name,
-                    summary=summary,
-                    details=details,
-                    traceback_text=traceback_text,
-                    revision_number=revision_number,
-                )
-                return
-
-            category = self.svc.diagnostics_service.inspect_traceback(traceback_text)["traceback"]["category"]
-            summary = f"Unhandled runtime exception while serving {path}."
-            self.svc.diagnostics_service.record_error(
-                app_name,
-                source="runtime",
-                category=category,
-                summary=summary,
-                details={
-                    "path": path,
-                    "method": request.method,
-                },
-                traceback_text=traceback_text,
-                revision_number=revision_number,
-            )
-
-        got_request_exception.connect(handle_runtime_exception, wsgi_app, weak=False)
-        # Idempotency marker (mirrored read via `getattr` at the top of this function).
-        # Flask doesn't declare arbitrary attributes; this is the documented sentinel pattern.
-        wsgi_app._dash_server_diagnostics_instrumented = True  # type: ignore[attr-defined]
-
-    def _callback_request_details(self, payload: Any) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            return {
-                "output": None,
-                "outputs": None,
-                "changed_prop_ids": [],
-                "inputs": [],
-                "state": [],
-            }
-        return {
-            "output": payload.get("output"),
-            "outputs": payload.get("outputs"),
-            "changed_prop_ids": payload.get("changedPropIds") or [],
-            "inputs": payload.get("inputs") or [],
-            "state": payload.get("state") or [],
-        }
-
-    def _callback_failure_summary(self, details: dict[str, Any]) -> str:
-        output = details.get("output")
-        if isinstance(output, str) and output:
-            return f"Dash callback failed for output {output}."
-        changed = details.get("changed_prop_ids")
-        if isinstance(changed, list) and changed:
-            return f"Dash callback failed after input change {changed[0]}."
-        return "Dash callback failed during callback dispatch."
+        record_request_exceptions(
+            wsgi_app, self.svc.diagnostics_service, app_name=app_name, revision_number=revision_number
+        )
 
     def _load_workspace_artifact_wsgi_app(
         self,

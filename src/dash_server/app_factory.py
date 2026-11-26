@@ -34,6 +34,7 @@ from .exasol import ExasolDashboardService
 from .exasol.session_init import normalize_session_init_sql, split_sql_statements
 from .exceptions import DashServerError
 from .gitops import GitRepoService, GitWorktreeService
+from .live_routes import configure_live_path_prefix
 from .mailer import InvitationEmailSender
 from .mcp.blueprint import create_mcp_blueprint
 from .mcp.server import MCPServer
@@ -366,9 +367,14 @@ def _bootstrap_exasol_profile(app: Flask, exasol_dashboard_service: ExasolDashbo
             app.logger.warning(
                 "exasol bootstrap: profile %s already exists and differs from the DASH_SERVER_EXASOL_* "
                 "settings, which are being IGNORED (%s). To apply them, set DASH_SERVER_EXASOL_OVERWRITE=true "
-                "and restart, or call exasol_profile_create_local with overwrite=true.",
+                "and restart%s.",
                 profile_name,
                 diff_text,
+                (
+                    ", or call exasol_profile_create_local with overwrite=true"
+                    if coerce_bool(app.config.get("EXASOL_PROFILE_CREATION_ENABLED"), default=True)
+                    else ""
+                ),
             )
             return
         app.logger.warning(
@@ -454,7 +460,7 @@ def _build_dependency_layer(
 
     dependency_environment_service: DependencyEnvironmentService | None = None
     if app.config.get("APP_DEPENDENCY_ISOLATION") == "per_app":
-        helper_source = Path(__file__).resolve().parent.parent / "dash_server_runtime"
+        helper_source = _helper_package_source(app)
         # Phase 5b config: read GC settings from app.config so they can be overridden in tests.
         env_gc_enabled = bool(app.config["APP_ENV_GC_ENABLED"])
         wheel_gc_enabled = bool(app.config["APP_WHEEL_CACHE_GC_ENABLED"])
@@ -471,7 +477,7 @@ def _build_dependency_layer(
             enabled=bool(app.config["AUTO_INSTALL_DEPENDENCIES"]),
             base_python_executable=app.config["PYTHON_EXECUTABLE"],
             timeout_seconds=int(app.config["DEPENDENCY_INSTALL_TIMEOUT_SECONDS"]),
-            helper_package_source=helper_source if helper_source.exists() else None,
+            helper_package_source=helper_source,
             backend="venv",  # Phase 5a: stdlib backend; wheel-cache GC is no-op until uv lands
             diagnostics_service=diagnostics_service,
             env_gc_enabled=env_gc_enabled,
@@ -495,6 +501,30 @@ def _build_dependency_layer(
         timeout_seconds=int(app.config["DEPENDENCY_INSTALL_TIMEOUT_SECONDS"]),
     )
     return dependency_installer, dependency_environment_service
+
+
+def _helper_package_source(app: Flask) -> Path | None:
+    """What every per-app environment installs to get `dash_server_runtime`.
+
+    ``APP_HELPER_PACKAGE`` (a dash-server wheel or source checkout) wins; otherwise the source
+    checkout this module runs from, if it is one.
+    """
+
+    configured = app.config.get("APP_HELPER_PACKAGE")
+    if configured:
+        path = Path(str(configured))
+        # Without the helper every per-app env lacks `dash_server_runtime` and each worker fails
+        # later with ModuleNotFoundError, so refuse to start instead.
+        if not (path.is_file() or (path / "pyproject.toml").is_file()):
+            raise _startup_error(
+                f"DASH_SERVER_APP_HELPER_PACKAGE {path} is neither a dash-server wheel nor a source "
+                "checkout with a pyproject.toml."
+            )
+        return path
+    checkout = Path(__file__).resolve().parents[2]
+    if (checkout / "pyproject.toml").is_file() and (checkout / "src" / "dash_server_runtime").is_dir():
+        return checkout
+    return None
 
 
 def _build_worker_manager(
@@ -585,8 +615,11 @@ def _build_services(
         session_channel_enabled=session_channel_service.enabled,
     )
     if not git_repo_service.is_bootstrapped():
-        runtime_service.ensure_demo_app()
-        git_repo_service.ensure_phase0_repository(runtime_service.workspace_service.read_all_files("demo"))
+        if coerce_bool(app.config.get("DEMO_APP_ENABLED"), default=True):
+            runtime_service.ensure_demo_app()
+            git_repo_service.ensure_phase0_repository(runtime_service.workspace_service.read_all_files("demo"))
+        else:
+            git_repo_service.ensure_phase0_repository(None)
     for hosted_app in registry.list_apps():
         runtime_service.workspace_service.ensure_workspace_backend(hosted_app.name)
     runtime_service.backfill_revision_git_metadata()
@@ -629,6 +662,9 @@ def _build_services(
         email_sender=email_sender,
         consumption_service=consumption_service,
         session_channel_service=session_channel_service,
+        disabled_tools=frozenset()
+        if coerce_bool(app.config.get("EXASOL_PROFILE_CREATION_ENABLED"), default=True)
+        else frozenset({"exasol_profile_create_local"}),
     )
     return identity_service, authorization_service
 
@@ -713,6 +749,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     project_root = Path(__file__).resolve().parents[2]
     app = _create_flask_app(test_config, project_root)
+
+    # Stage: the live path prefix, which routes, manifests, and tool texts all read.
+    try:
+        configure_live_path_prefix(app.config.get("LIVE_PATH_PREFIX"))
+    except ValueError as exc:
+        raise _startup_error(str(exc)) from exc
 
     # Stage: deployment-mode + startup validation (must precede everything else).
     auth_context = _configure_deployment_mode(app)

@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from ._app_loader import describe_callbacks, load_app_module
+from ._app_loader import default_mount_path, describe_callbacks, load_app_module
 
 
 def validate(args: argparse.Namespace) -> dict[str, Any]:
@@ -28,7 +28,7 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     app_source = Path(args.app_source).resolve()
-    mount_path = args.mount_path or manifest_data.get("route") or f"/apps/{args.app_name}"
+    mount_path = args.mount_path or default_mount_path(args.app_name, manifest_data)
 
     try:
         module = load_app_module(app_source, args.app_name)

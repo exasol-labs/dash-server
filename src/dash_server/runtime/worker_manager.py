@@ -44,6 +44,7 @@ from dash_server_runtime.worker.protocol import (
     READY_READ_EVENTS,
 )
 
+from ..live_routes import LIVE_PATH_PREFIX_ENV_VAR, live_path_prefix
 from ..timestamps import now_iso as _now_iso
 from ..timestamps import seconds_since
 
@@ -259,135 +260,184 @@ class AppWorkerManager:
         environment_id: str | None = None,
         extra_env: dict[str, str] | None = None,
     ) -> WorkerRecord:
-        """Spawn a worker, wait for its ready event, return the record."""
+        """Spawn a worker, wait for its ready event, return the record.
+
+        When another revision's worker is live at ``mount_path`` (as after a deploy), it keeps
+        serving until the replacement is ready; only then is it retired. A replacement that
+        fails to start (restart cap, import error, timeout) leaves the previous worker in place.
+        """
 
         with self._lock:
             existing = self._records.get(mount_path)
-            if existing is not None and self._record_is_alive(existing):
+            alive = existing is not None and self._record_is_alive(existing)
+            if (
+                existing is not None
+                and alive
+                and existing.app_name == app_name
+                and existing.revision_number == revision_number
+            ):
                 return existing
-            # Stale record — drop it before we start the replacement.
-            self._records.pop(mount_path, None)
-
-            # Phase 4c: enforce restart cap before any spawn work.
-            self._check_restart_cap(mount_path, app_name=app_name)
-
-            # Phase 4g: time the spawn so dash://runtime/workers can report p50 cold-start.
-            start_perf = time.monotonic()
-
-            python = python_executable or sys.executable
-
-            # Phase 3.5c: try forkserver baseline first when enabled. On any miss
-            # (no baseline, mismatched python, fork error) fall back to spawn below.
-            if self.enable_forkserver:
-                forked = self._try_baseline_start(
-                    app_name=app_name,
-                    revision_number=revision_number,
-                    mount_path=mount_path,
-                    app_source=app_source,
-                    manifest=manifest,
-                    python_executable=python,
-                    environment_id=environment_id,
-                    extra_env=extra_env,
-                )
-                if forked is not None:
-                    self._record_start_duration_ms((time.monotonic() - start_perf) * 1000)
-                    return forked
-                # Forkserver miss — log structured event and fall through to spawn.
-                self._emit_worker_event(
-                    app_name,
-                    "forkserver_miss",
-                    "forkserver_miss: falling back to spawn",
-                    level="warning",
-                    python_executable=python,
-                    mount_path=mount_path,
-                )
-
-            cmd = [
-                python,
-                "-m",
-                "dash_server_runtime.worker",
-                "--mode=serve",
-                "--app-name",
-                app_name,
-                "--app-source",
-                str(app_source),
-                "--mount-path",
-                mount_path,
-                "--manifest-json",
-                json.dumps(manifest),
-                "--revision-number",
-                str(revision_number),
-                "--listen-host",
-                self.host,
-                "--listen-port",
-                "0",
-            ]
-            if self.port_range:
-                cmd += ["--listen-port-range", self.port_range]
-            if self.gitops_repo_path:
-                cmd += ["--gitops-repo-path", self.gitops_repo_path]
-            if self.exasol_secrets_root:
-                cmd += ["--exasol-secrets-root", self.exasol_secrets_root]
-            if self.diagnostics_root:
-                cmd += ["--diagnostics-root", self.diagnostics_root]
-
-            env = self._build_worker_env(extra_env)
-
-            try:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env,
-                    text=True,
-                    bufsize=1,
-                )
-            except OSError as exc:
-                raise WorkerStartError(f"Failed to launch worker subprocess: {exc!s}") from exc
-
-            ready_payload = self._read_ready_event(process)
-            if ready_payload is None or ready_payload.get(KEY_EVENT) != EVENT_READY:
-                # Worker died or emitted an error event; gather its tail for diagnostics.
-                stderr_tail = ""
-                stdout_tail = ""
-                try:
-                    process.terminate()
-                    out, err = process.communicate(timeout=5)
-                    stdout_tail = (out or "")[-4000:]
-                    stderr_tail = (err or "")[-4000:]
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                raise WorkerStartError(
-                    "Worker did not emit a ready event. "
-                    f"Last stdout chunk: {stdout_tail!r}; stderr tail: {stderr_tail!r}; "
-                    f"failure payload: {ready_payload!r}"
-                )
-
-            record = WorkerRecord(
+            previous = existing if alive else None
+            if previous is None:
+                # Stale record — drop it before we start the replacement.
+                self._records.pop(mount_path, None)
+            record = self._start_locked(
                 app_name=app_name,
                 revision_number=revision_number,
                 mount_path=mount_path,
-                pid=int(ready_payload.get("pid") or process.pid),
-                host=str(ready_payload.get("host") or self.host),
-                port=int(ready_payload["port"]),
+                app_source=app_source,
+                manifest=manifest,
+                python_executable=python_executable,
+                environment_id=environment_id,
+                extra_env=extra_env,
+            )
+        # The replacement now owns the mount path; stop the old revision outside the lock so a
+        # slow shutdown does not block starts for other apps.
+        if previous is not None and previous is not record:
+            self._retire_worker(previous)
+        return record
+
+    def _retire_worker(self, record: WorkerRecord) -> None:
+        """Stop a worker that has already been replaced in ``_records`` and drop its spec."""
+
+        if record.handle is not None:
+            record.handle.stop(timeout_seconds=10.0)
+        self._remove_persisted(record)
+
+    def _start_locked(
+        self,
+        *,
+        app_name: str,
+        revision_number: int,
+        mount_path: str,
+        app_source: Path,
+        manifest: dict[str, Any],
+        python_executable: str | None,
+        environment_id: str | None,
+        extra_env: dict[str, str] | None,
+    ) -> WorkerRecord:
+        """Spawn the worker for ``start``; caller holds ``self._lock``."""
+
+        # Phase 4c: enforce restart cap before any spawn work.
+        self._check_restart_cap(mount_path, app_name=app_name)
+
+        # Phase 4g: time the spawn so dash://runtime/workers can report p50 cold-start.
+        start_perf = time.monotonic()
+
+        python = python_executable or sys.executable
+
+        # Phase 3.5c: try forkserver baseline first when enabled. On any miss
+        # (no baseline, mismatched python, fork error) fall back to spawn below.
+        if self.enable_forkserver:
+            forked = self._try_baseline_start(
+                app_name=app_name,
+                revision_number=revision_number,
+                mount_path=mount_path,
+                app_source=app_source,
+                manifest=manifest,
                 python_executable=python,
                 environment_id=environment_id,
-                started_at=_now_iso(),
-                app_source=str(app_source),
-                manifest=manifest,
-                extra_env=dict(extra_env) if extra_env else None,
-                handle=SubprocessHandle(process=process),
-                status="running",
+                extra_env=extra_env,
             )
-            self._records[mount_path] = record
-            self._persist_record(record)
-            # Continue draining the worker's stdout into the diagnostics channel. The drain
-            # thread also tracks the last-seen status code so the `worker_http` probe can
-            # read it without a separate HTTP roundtrip.
-            self._start_drain(record)
-            # Phase 4g: record spawn duration for p50 reporting.
-            self._record_start_duration_ms((time.monotonic() - start_perf) * 1000)
-            return record
+            if forked is not None:
+                self._record_start_duration_ms((time.monotonic() - start_perf) * 1000)
+                return forked
+            # Forkserver miss — log structured event and fall through to spawn.
+            self._emit_worker_event(
+                app_name,
+                "forkserver_miss",
+                "forkserver_miss: falling back to spawn",
+                level="warning",
+                python_executable=python,
+                mount_path=mount_path,
+            )
+
+        cmd = [
+            python,
+            "-m",
+            "dash_server_runtime.worker",
+            "--mode=serve",
+            "--app-name",
+            app_name,
+            "--app-source",
+            str(app_source),
+            "--mount-path",
+            mount_path,
+            "--manifest-json",
+            json.dumps(manifest),
+            "--revision-number",
+            str(revision_number),
+            "--listen-host",
+            self.host,
+            "--listen-port",
+            "0",
+        ]
+        if self.port_range:
+            cmd += ["--listen-port-range", self.port_range]
+        if self.gitops_repo_path:
+            cmd += ["--gitops-repo-path", self.gitops_repo_path]
+        if self.exasol_secrets_root:
+            cmd += ["--exasol-secrets-root", self.exasol_secrets_root]
+        if self.diagnostics_root:
+            cmd += ["--diagnostics-root", self.diagnostics_root]
+
+        env = self._build_worker_env(extra_env)
+
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            raise WorkerStartError(f"Failed to launch worker subprocess: {exc!s}") from exc
+
+        ready_payload = self._read_ready_event(process)
+        if ready_payload is None or ready_payload.get(KEY_EVENT) != EVENT_READY:
+            # Worker died or emitted an error event; gather its tail for diagnostics.
+            stderr_tail = ""
+            stdout_tail = ""
+            try:
+                process.terminate()
+                out, err = process.communicate(timeout=5)
+                stdout_tail = (out or "")[-4000:]
+                stderr_tail = (err or "")[-4000:]
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise WorkerStartError(
+                "Worker did not emit a ready event. "
+                f"Last stdout chunk: {stdout_tail!r}; stderr tail: {stderr_tail!r}; "
+                f"failure payload: {ready_payload!r}"
+            )
+
+        record = WorkerRecord(
+            app_name=app_name,
+            revision_number=revision_number,
+            mount_path=mount_path,
+            pid=int(ready_payload.get("pid") or process.pid),
+            host=str(ready_payload.get("host") or self.host),
+            port=int(ready_payload["port"]),
+            python_executable=python,
+            environment_id=environment_id,
+            started_at=_now_iso(),
+            app_source=str(app_source),
+            manifest=manifest,
+            extra_env=dict(extra_env) if extra_env else None,
+            handle=SubprocessHandle(process=process),
+            status="running",
+        )
+        self._records[mount_path] = record
+        self._persist_record(record)
+        # Continue draining the worker's stdout into the diagnostics channel. The drain
+        # thread also tracks the last-seen status code so the `worker_http` probe can
+        # read it without a separate HTTP roundtrip.
+        self._start_drain(record)
+        # Phase 4g: record spawn duration for p50 reporting.
+        self._record_start_duration_ms((time.monotonic() - start_perf) * 1000)
+        return record
 
     def stop(
         self,
@@ -754,6 +804,8 @@ class AppWorkerManager:
             env["PYTHONPYCACHEPREFIX"] = self.pycache_root
         if self.session_channel_enabled:
             env["DASH_SERVER_SESSION_CHANNEL"] = "1"
+        # The worker's fallback route when no mount path is given (dash_server.live_routes).
+        env[LIVE_PATH_PREFIX_ENV_VAR] = live_path_prefix()
         # Phase 3.5a: the worker module lives in `dash_server_runtime`, which Phase 1 installs
         # into every per-app env. The env's site-packages is enough; no PYTHONPATH dance.
         # In editable dev installs the parent of the source tree is on sys.path automatically

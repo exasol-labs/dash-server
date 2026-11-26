@@ -97,6 +97,7 @@ CATEGORY_CODES: dict[str, tuple[int, int]] = {
     "session_channel_timeout": (-32042, 408),
     "session_channel_unavailable": (-32043, 403),
     "share_link_not_found": (-32602, 404),
+    "tool_disabled": (-32602, 403),
     "tool_not_found": (-32602, 400),
     "tool_validation_error": (-32602, 400),
     "unexpected_runtime_error": (-32603, 500),

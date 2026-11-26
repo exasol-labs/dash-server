@@ -7,10 +7,27 @@ per-app environment that only has ``dash_server_runtime`` installed.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
+
+
+def default_mount_path(app_name: str, manifest: dict[str, Any]) -> str:
+    """The mount path when the server passes none: the manifest route, else ``<prefix><name>``.
+
+    The prefix comes from ``DASH_SERVER_LIVE_PATH_PREFIX``, which the server sets to its
+    normalized value (see ``dash_server.live_routes``); it is normalized again here because
+    this module cannot import ``dash_server``.
+    """
+
+    route = manifest.get("route")
+    if route:
+        return str(route)
+    raw = (os.environ.get("DASH_SERVER_LIVE_PATH_PREFIX") or "").strip().strip("/")
+    prefix = f"/{raw}/" if raw else "/apps/"
+    return f"{prefix}{app_name}"
 
 
 def load_app_module(app_source: Path, app_name: str) -> Any:
@@ -42,9 +59,9 @@ def describe_callbacks(dash_app: Any) -> dict[str, Any]:
     callback_map = getattr(dash_app, "callback_map", {}) or {}
     layout_ids = collect_layout_ids(dash_app)
     for output_key, spec in callback_map.items():
-        inputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("inputs", []) or []]
-        outputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("output", []) or []]
-        state = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in spec.get("state", []) or []]
+        inputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in _deps(spec.get("inputs"))]
+        outputs = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in _deps(spec.get("output"))]
+        state = [{"id": _dep_id(dep), "property": _dep_property(dep)} for dep in _deps(spec.get("state"))]
         referenced_ids = {dep["id"] for dep in inputs + outputs + state}
         missing = sorted(referenced_ids - layout_ids)
         callbacks.append(
@@ -89,9 +106,24 @@ def collect_layout_ids(dash_app: Any) -> set[str]:
     return seen
 
 
+def _deps(value: Any) -> list[Any]:
+    """A callback's dependencies as a list: Dash keeps a single ``Output`` as the object itself."""
+
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 def _dep_id(dep: Any) -> str:
+    # Dash keeps outputs as `Output` objects and inputs and state as `{"id": ..., "property": ...}` dicts.
+    if isinstance(dep, dict):
+        return str(dep.get("id", ""))
     return str(getattr(dep, "component_id", getattr(dep, "id", "")))
 
 
 def _dep_property(dep: Any) -> str:
+    if isinstance(dep, dict):
+        return str(dep.get("property", ""))
     return str(getattr(dep, "component_property", getattr(dep, "property", "")))

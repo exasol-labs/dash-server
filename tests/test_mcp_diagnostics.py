@@ -29,8 +29,8 @@ class TestMcpDiagnosticsRepairFlow:
     diagnostic surface against the captured payloads.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def flow(tmp_path_factory):
         tmp_path = tmp_path_factory.mktemp("mcp_diagnostics_repair")
         app = create_app(base_test_config(tmp_path))

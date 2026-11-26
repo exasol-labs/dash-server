@@ -12,6 +12,7 @@ from typing import Any
 from dash_server.mcp._host import MCPServerHost
 from dash_server.exceptions import DashServerError
 from dash_server.mcp.tool_specs import TOOL_SPECS_BY_NAME
+from dash_server.mcp.disabled_tools import annotate_disabled_tools
 
 
 def _dedupe_preserving_order(items: list[str]) -> list[str]:
@@ -108,7 +109,8 @@ class GuidanceMixin(MCPServerHost):
         if isinstance(related, list):
             guidance["related_resources"] = _dedupe_preserving_order(related)
         enriched["guidance"] = guidance
-        return enriched
+        # Never steer the agent to a tool the operator turned off.
+        return annotate_disabled_tools(enriched, getattr(self, "disabled_tools", frozenset()))
 
     def _guidance_for_tool(
         self,

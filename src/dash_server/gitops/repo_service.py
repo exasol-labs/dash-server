@@ -11,6 +11,7 @@ from typing import Any
 from collections.abc import Mapping
 
 from dash_server.artifacts_io import load_manifest_from_dir, read_artifact_files
+from dash_server.live_routes import default_live_route
 from dash_server.timestamps import to_iso
 
 
@@ -131,43 +132,48 @@ class GitRepoService:
     """Own a local Git repository used as the GitOps foundation."""
 
     _bootstrap_tag = "dash-server/demo/r000001"
+    # Marks a repository bootstrapped without the demo app (DASH_SERVER_DEMO_APP_ENABLED=false).
+    _empty_bootstrap_tag = "dash-server/bootstrap"
 
     def __init__(self, repo_root: str) -> None:
         self.repo_root = Path(repo_root)
 
-    def ensure_phase0_repository(self, demo_files: Mapping[str, str]) -> dict[str, Any]:
-        """Initialize the repo, export the seeded demo app, and expose repo status."""
+    def ensure_phase0_repository(self, demo_files: Mapping[str, str] | None) -> dict[str, Any]:
+        """Initialize the repo, export the seeded demo app unless ``demo_files`` is None, and expose repo status."""
 
         self.initialize()
-        managed_files = {f"apps/demo/{relative_path}": content for relative_path, content in demo_files.items()}
-        managed_files["desired-state/live/demo.yaml"] = self._render_demo_live_state()
+        managed_files: dict[str, str] = {}
+        if demo_files is not None:
+            managed_files.update(
+                {f"apps/demo/{relative_path}": content for relative_path, content in demo_files.items()}
+            )
+            managed_files["desired-state/live/demo.yaml"] = self._render_demo_live_state()
+            managed_files[self.history_path("demo")] = self._render_history_entries(
+                [
+                    {
+                        "timestamp": self._timestamp(),
+                        "app": "demo",
+                        "event_type": "app_seeded",
+                        "revision_number": 1,
+                        "data": {"revision_number": 1, "status": "running"},
+                    }
+                ]
+            )
         managed_files[".dash-server/repo-meta.yaml"] = self._render_repo_meta()
         managed_files[".gitignore"] = self._render_gitignore()
-        managed_files[self.history_path("demo")] = self._render_history_entries(
-            [
-                {
-                    "timestamp": self._timestamp(),
-                    "app": "demo",
-                    "event_type": "app_seeded",
-                    "revision_number": 1,
-                    "data": {"revision_number": 1, "status": "running"},
-                }
-            ]
-        )
 
         touched_paths = self._write_files(managed_files)
         if touched_paths:
             self._git("add", *touched_paths)
             self._git("commit", "-m", "system: initialize dash-server gitops repo")
 
-        if self.head_commit() and not self.tag_exists(self._bootstrap_tag):
-            self._git(
-                "tag",
-                "-a",
-                self._bootstrap_tag,
-                "-m",
-                "Seeded demo app release for the initial GitOps repository bootstrap.",
-            )
+        tag, message = (
+            (self._bootstrap_tag, "Seeded demo app release for the initial GitOps repository bootstrap.")
+            if demo_files is not None
+            else (self._empty_bootstrap_tag, "Initial GitOps repository bootstrap without the demo app.")
+        )
+        if self.head_commit() and not self.tag_exists(tag):
+            self._git("tag", "-a", tag, "-m", message)
 
         return self.status()
 
@@ -550,7 +556,9 @@ class GitRepoService:
         mean "has been initialized".
         """
 
-        return self.has_commits() and self.tag_exists(self._bootstrap_tag)
+        return self.has_commits() and (
+            self.tag_exists(self._bootstrap_tag) or self.tag_exists(self._empty_bootstrap_tag)
+        )
 
     def branch_exists(self, branch_name: str) -> bool:
         """Return whether a local branch exists."""
@@ -899,7 +907,7 @@ class GitRepoService:
             commit_sha="",
             git_tag=self._bootstrap_tag,
             release_manifest_path=self.release_manifest_path("demo", 1),
-            route="/apps/demo",
+            route=default_live_route("demo"),
             visibility="private",
             auth_policy="inherited",
             enabled=True,

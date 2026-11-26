@@ -17,13 +17,13 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Set up uv and Python ${{ matrix.python-version }}
-        uses: astral-sh/setup-uv@v10.3.2
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           # Same uv that writes uv.lock locally, so `--locked` judges it consistently.
-          version: "0.13.5"
+          version: "0.13.10"
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 
@@ -48,3 +48,25 @@ jobs:
         # The whole suite, including the `slow` tests that start real apps, subprocess
         # workers, and background jobs. `pytest -m "not slow"` is the fast local loop.
         run: uv run pytest
+
+  image:
+    name: container image (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the image
+        run: docker build --platform linux/arm64 -t dash-server:ci .
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.4.0
+        with:
+          version: "0.13.10"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Test the image
+        run: |
+          uv sync --locked --extra dev
+          DASH_SERVER_TEST_IMAGE=dash-server:ci uv run pytest tests/test_container_image.py
