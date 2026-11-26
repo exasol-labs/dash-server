@@ -578,28 +578,95 @@ def test_environment_directory_has_no_path_separator(tmp_path):
     assert ":" not in svc._env_dir(environment_id).name
 
 
-def test_helper_install_target_is_the_dash_server_distribution(tmp_path):
-    def target(source):
+def test_helper_install_targets_are_the_dash_server_distribution(tmp_path, monkeypatch):
+    from dash_server.dependencies import environment_service
+
+    def service(source):
         return DependencyEnvironmentService(
             environments_root=str(tmp_path / "envs"),
             wheel_cache_root=str(tmp_path / "wheels"),
             pycache_root=str(tmp_path / "pycache"),
             helper_package_source=source,
-        )._helper_install_target()
+        )
 
     wheel = tmp_path / "dash_server-0.0.0-py3-none-any.whl"
     wheel.write_bytes(b"")
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
+    (checkout / "src" / "dash_server_runtime").mkdir(parents=True)
     (checkout / "pyproject.toml").write_text("[project]\nname = 'dash-server'\n")
     package_only = tmp_path / "dash_server_runtime"
     package_only.mkdir()
 
-    assert target(wheel) == str(wheel)
-    assert target(checkout) == f"-e{checkout}"
+    assert service(wheel)._helper_install_targets() == [str(wheel)]
+    assert service(wheel)._helper_checkout_src() is None
+    # A checkout is linked into the env and only its dependencies are installed, so no build
+    # backend has to be fetched; optional extras such as `dev` are left out.
+    targets = service(checkout)._helper_install_targets()
+    assert any(target.lower().startswith("dash") for target in targets)
+    assert not any("pytest" in target for target in targets)
+    assert service(checkout)._helper_checkout_src() == checkout / "src"
+    # Without installed metadata to read the dependencies from, fall back to an editable install.
+    monkeypatch.setattr(environment_service, "_installed_runtime_dependencies", lambda name: None)
+    assert service(checkout)._helper_install_targets() == [f"-e{checkout}"]
+    assert service(checkout)._helper_checkout_src() is None
     # A bare package directory is not installable; skip rather than fail every build.
-    assert target(package_only) is None
-    assert target(None) is None
+    assert service(package_only)._helper_install_targets() == []
+    assert service(None)._helper_install_targets() == []
+
+
+def test_helper_and_requirements_install_in_one_pip_run(tmp_path, monkeypatch):
+    """One resolver run, so a requirement that conflicts with dash-server's dependencies fails."""
+
+    import subprocess
+
+    from dash_server.dependencies import environment_service
+
+    class _Builder:
+        def __init__(self, **kwargs):
+            pass
+
+        def create(self, env_dir):
+            Path(env_dir).mkdir(parents=True, exist_ok=True)
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(environment_service.venv, "EnvBuilder", _Builder)
+    monkeypatch.setattr(environment_service.subprocess, "run", fake_run)
+    wheel = tmp_path / "dash_server-0.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    svc = DependencyEnvironmentService(
+        environments_root=str(tmp_path / "envs"),
+        wheel_cache_root=str(tmp_path / "wheels"),
+        pycache_root=str(tmp_path / "pycache"),
+        helper_package_source=wheel,
+    )
+    result = svc.ensure_requirements("sales", ["dash==2.18"])
+    assert result["status"] != "failed", result
+    installs = [command for command in commands if command[1:4] == ["-m", "pip", "install"]]
+    assert len(installs) == 1
+    assert str(wheel) in installs[0] and "dash==2.18" in installs[0]
+
+
+def test_legacy_colon_env_dirs_are_removed(tmp_path):
+    envs = tmp_path / "envs"
+    legacy = envs / "sha256:0123456789abcdef"
+    legacy.mkdir(parents=True)
+    (legacy / ".env_record.json").write_text(json.dumps({"environment_id": "sha256:0123456789abcdef"}))
+    current = envs / "sha256-fedcba9876543210"
+    current.mkdir()
+    svc = DependencyEnvironmentService(
+        environments_root=str(envs),
+        wheel_cache_root=str(tmp_path / "wheels"),
+        pycache_root=str(tmp_path / "pycache"),
+        helper_package_source=None,
+    )
+    assert not legacy.exists()
+    assert current.exists()
+    assert [record["environment_id"] for record in svc.list_environments()] == ["sha256-fedcba9876543210"]
 
 
 def test_describe_callbacks_accepts_a_single_output():
@@ -620,3 +687,44 @@ def test_describe_callbacks_accepts_a_single_output():
     assert report["callbacks"][0]["outputs"] == [{"id": "out", "property": "children"}]
     assert report["callbacks"][0]["inputs"] == [{"id": "go", "property": "n_clicks"}]
     assert report["missing_layout_ids"] == []
+
+
+def test_environment_service_builds_a_real_env_whose_interpreter_starts(tmp_path, monkeypatch):
+    """A per-app env is built with a real ``venv`` and its Python runs.
+
+    The env's interpreter is linked on POSIX, as ``python -m venv`` links it. ``EnvBuilder``'s own
+    default copies it, and a copy of an interpreter that finds its libpython relative to itself
+    (uv's Python on macOS) aborts on its first command, so no env could be built there. Only the
+    ``pip install`` step is faked, to keep the test offline; venv creation and ``ensurepip`` run.
+    """
+    import os
+    import subprocess
+
+    real_run = subprocess.run
+    installs: list[list[str]] = []
+
+    def run_except_installs(command, *args, **kwargs):
+        if list(command[1:4]) == ["-m", "pip", "install"]:
+            installs.append(list(command))
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr("dash_server.dependencies.environment_service.subprocess.run", run_except_installs)
+
+    svc = DependencyEnvironmentService(
+        environments_root=str(tmp_path / "envs"),
+        wheel_cache_root=str(tmp_path / "wheels"),
+        pycache_root=str(tmp_path / "pyc"),
+        helper_package_source=None,
+    )
+    result = svc.ensure_requirements("app-a", ["dash"])
+    monkeypatch.undo()
+
+    assert result["status"] == "succeeded", result
+    assert installs, "the pip install step should have run"
+    python = Path(result["python_executable"])
+    if os.name != "nt":
+        assert python.is_symlink(), f"{python} is a copy; it must link the base interpreter"
+    started = subprocess.run([str(python), "-c", "import sys; print(sys.prefix)"], capture_output=True, text=True)
+    assert started.returncode == 0, started.stderr
+    assert Path(started.stdout.strip()).resolve() == python.parent.parent.resolve()

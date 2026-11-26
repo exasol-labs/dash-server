@@ -25,6 +25,7 @@ from dash_server.dash_apps.factory import (
     app_create_schema_help,
 )
 from dash_server.exceptions import DashServerError
+from dash_server.mcp.disabled_tools import annotate_disabled_tools
 
 # `dash://apps/<app>/outputs` and `dash://exports/<job>` are the only resources
 # gated by a capability (dashboard.export); both the server dispatch table and
@@ -529,6 +530,7 @@ class ResourcesMixin(MCPServerHost):
 
     def _resource_contents(self, uri: str, payload: dict[str, Any]) -> dict[str, Any]:
         payload = self._attach_absolute_urls(payload)
+        payload = annotate_disabled_tools(payload, getattr(self, "disabled_tools", frozenset()))
         return {
             "contents": [
                 {

@@ -41,6 +41,7 @@ from dash_server.exceptions import DashServerError
 from dash_server.paths import safe_join
 from dash_server.gitops import GitWorktreeService
 from dash_server.imports import isolated_local_imports
+from dash_server.live_routes import LIVE_PATH_PREFIX_ENV_VAR, live_path_prefix
 from dash_server.registry.models import AppManifest
 from dash_server.workspace.validation_pipeline import (
     ValidationContext,
@@ -665,6 +666,7 @@ class WorkspaceService:
         env["PYTHONPATH"] = (
             f"{src_root}{__import__('os').pathsep}{existing_pythonpath}" if existing_pythonpath else src_root
         )
+        env[LIVE_PATH_PREFIX_ENV_VAR] = live_path_prefix()
 
         cmd = [
             subprocess_python,

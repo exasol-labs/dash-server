@@ -5,9 +5,9 @@
 # packages builds its per-app environment without downloading them.
 # Build for the target platform, for example: docker build --platform linux/arm64 -t dash-server .
 
-ARG PYTHON_IMAGE=docker.io/library/python:3.12-slim-bookworm
+ARG PYTHON_IMAGE=docker.io/library/python:3.12-slim-trixie
 # uv from PyPI, the glibc build, whose resolver works on every build network; the same version as CI.
-ARG UV_VERSION=0.13.5
+ARG UV_VERSION=0.13.10
 
 # The dash-server wheel and its locked runtime requirements.
 FROM ${PYTHON_IMAGE} AS build

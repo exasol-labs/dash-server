@@ -894,8 +894,8 @@ class TestMcpWorkspaceEditToRollback:
     behaviour against the captured payloads so a failure localises to a phase.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def flow(tmp_path_factory):
         tmp_path = tmp_path_factory.mktemp("mcp_edit_rollback")
         app = create_app(base_test_config(tmp_path))

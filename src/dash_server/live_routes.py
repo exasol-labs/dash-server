@@ -2,8 +2,12 @@
 
 Live dashboards are served at ``<prefix><name>`` (``/apps/<name>`` by default); previews
 stay at ``/preview/<name>/<revision>``. The prefix is set once per server from
-``DASH_SERVER_LIVE_PATH_PREFIX`` (config key ``LIVE_PATH_PREFIX``) by ``create_app``,
-and isolated workers inherit it through the same environment variable.
+``DASH_SERVER_LIVE_PATH_PREFIX`` (config key ``LIVE_PATH_PREFIX``) by ``create_app``.
+Worker and validate subprocesses always receive an explicit ``--mount-path``; the
+worker manager also passes the prefix to them in ``DASH_SERVER_LIVE_PATH_PREFIX``.
+
+The prefix is process-wide: one server process serves one prefix. ``create_app`` with a
+different prefix re-points every app already built in the same process.
 """
 
 from __future__ import annotations
@@ -54,34 +58,45 @@ def normalize_live_path_prefix(value: str | None) -> str:
     return prefix
 
 
-_live_path_prefix = normalize_live_path_prefix(os.environ.get(LIVE_PATH_PREFIX_ENV_VAR))
+# Resolved lazily so an unusable environment value surfaces through ``create_app``'s startup
+# error rather than as a bare ValueError while importing the package.
+_live_path_prefix: str | None = None
 
 
 def configure_live_path_prefix(value: str | None) -> str:
-    """Set the prefix for this process and for the workers it starts; return it normalized."""
+    """Set the prefix for this process; return it normalized."""
 
     global _live_path_prefix
     _live_path_prefix = normalize_live_path_prefix(value)
-    os.environ[LIVE_PATH_PREFIX_ENV_VAR] = _live_path_prefix
     return _live_path_prefix
+
+
+def reset_live_path_prefix() -> None:
+    """Forget the configured prefix so the next read resolves it from the environment again."""
+
+    global _live_path_prefix
+    _live_path_prefix = None
 
 
 def live_path_prefix() -> str:
     """The configured prefix, with leading and trailing slash, e.g. ``/apps/``."""
 
+    global _live_path_prefix
+    if _live_path_prefix is None:
+        _live_path_prefix = normalize_live_path_prefix(os.environ.get(LIVE_PATH_PREFIX_ENV_VAR))
     return _live_path_prefix
 
 
 def default_live_route(app_name: str) -> str:
     """The live route of an app that names none: ``<prefix><app_name>``."""
 
-    return f"{_live_path_prefix}{app_name}"
+    return f"{live_path_prefix()}{app_name}"
 
 
 def is_live_route(route: Any) -> bool:
     """Whether ``route`` is a path under the live prefix."""
 
-    return isinstance(route, str) and route.startswith(_live_path_prefix)
+    return isinstance(route, str) and route.startswith(live_path_prefix())
 
 
 def localize_live_paths(value: Any) -> Any:
@@ -91,10 +106,11 @@ def localize_live_paths(value: Any) -> Any:
     ``/manage/apps/...`` routes are left alone.
     """
 
-    if _live_path_prefix == DEFAULT_LIVE_PATH_PREFIX:
+    prefix = live_path_prefix()
+    if prefix == DEFAULT_LIVE_PATH_PREFIX:
         return value
     if isinstance(value, str):
-        return _DEFAULT_PREFIX_IN_TEXT.sub(_live_path_prefix, value)
+        return _DEFAULT_PREFIX_IN_TEXT.sub(prefix, value)
     if isinstance(value, list):
         return [localize_live_paths(item) for item in value]
     if isinstance(value, dict):
