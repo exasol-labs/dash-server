@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-26
+
+dash-server 0.3.0 can run as a container beside a database: it adds a container image and settings
+that let an operator control the live path prefix, the demo dashboard, and Exasol profile creation.
+It also makes per-app environments and isolated workers work end to end.
+
 ### Added
 - A container image (`Dockerfile`, [docs/container-image.md](docs/container-image.md)) with hosted-ready
   defaults, a non-root user, the instance directory on a volume, and a pip cache that holds the wheels
@@ -23,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/dashboards/`, in default routes, manifest validation, live mounts, and the texts of tools and
   help resources.
 
+### Changed
+- Runtime dependencies are locked at their latest compatible releases, among them dash 4.5.1 and
+  plotly 7.2.0.
+- CI uses uv 0.13.10 through `astral-sh/setup-uv` v10.4.0, and `actions/checkout` v7. The container
+  image uses the same uv and is based on `python:3.12-slim-trixie`.
+
 ### Fixed
 - Per-app environments link their Python interpreter on Linux and macOS, as `python -m venv` does,
   instead of copying it. A copy of an interpreter that finds its library relative to itself, as uv's
@@ -35,8 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requirements install in one pip run, so a requirement that conflicts with `dash-server`'s own
   dependencies fails instead of downgrading them, and a source checkout is linked into the
   environment rather than built, so no build backend is downloaded.
-- Deploying a new revision to an isolated worker keeps the previous revision serving until the new
-  worker is ready, so a revision that fails to start leaves the dashboard up.
 - Dashboards served by isolated workers (`DASH_SERVER_APP_RUNTIME_MODE=isolated`) load their scripts and
   callbacks under their mount path: the worker passes the mount path to `create_dash_app` as
   `url_base_pathname`, as in-process mounts do, instead of `/`, which sent the browser outside the mount.
@@ -49,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CURRENT_SCHEMA`, reserved words in Exasol, so its summary query passes the SQL smoke test.
 - Deploying a new revision in isolated mode replaces the worker at the dashboard's mount path. The running
   worker of the previous revision used to keep serving the old code, so a redeployed dashboard did not change.
+  The previous worker keeps serving until the new one is ready, so a revision that fails to start leaves the
+  dashboard up.
 
 ## [0.2.1] - 2026-10-26
 
@@ -384,7 +396,8 @@ database questions into live, query-backed dashboards through MCP. This release 
 - Agent-facing skills for building Exasol-backed Dash dashboards and using PyExasol
   directly, under [skills/](skills/).
 
-[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/exasol-labs/dash-server/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/exasol-labs/dash-server/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/exasol-labs/dash-server/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/exasol-labs/dash-server/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/exasol-labs/dash-server/compare/v0.1.0...v0.1.1
